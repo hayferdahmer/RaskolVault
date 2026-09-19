@@ -1,0 +1,31 @@
+# Валюты сервера «РАСКОЛ | ДВЕ КОРОНЫ»
+# GLOBAL   — проксируется в EssentialsX (единственная: gold)
+# NATIONAL — привязана к Towny-нации (резиденты получают автоматически)
+# WORLD    — свободная валюта, не привязана к нациям
+
+currencies:
+  gold:
+    display-name: "Золото"
+    symbol: "⚜"
+    type: GLOBAL
+    decimals: 2
+    tradeable: true
+
+  # Примеры национальных валют (создаются админом после этапа 3
+  # командой /rv admin currency create или автоматически при создании нации):
+  #
+  # denarius:
+  #   display-name: "Рассветный денарий"
+  #   symbol: "☀"
+  #   type: NATIONAL
+  #   nation-id: Svetozarie
+  #   decimals: 0
+  #   tradeable: true
+  #
+  # crown:
+  #   display-name: "Вальрадисская крона"
+  #   symbol: "☾"
+  #   type: NATIONAL
+  #   nation-id: Mrakograd
+  #   decimals: 2
+  #   tradeable: true
