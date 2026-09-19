@@ -1,0 +1,73 @@
+name: RaskolVault
+version: ${project.version}
+main: dev.raskol.vault.RaskolVault
+api-version: '1.21'
+author: hayferdahmer, niklee
+description: Multi-currency economy layer over EssentialsX for RASKOL | TWO CROWNS
+website: https://github.com/hayferdahmer/raskol-vault
+
+load: POSTWORLD
+
+depend:
+  - Essentials
+  - Vault
+
+softdepend:
+  - RaskolCore
+  - Towny
+  - LuckPerms
+  - PlaceholderAPI
+
+commands:
+  rv:
+    description: RaskolVault — multi-currency wallet
+    usage: /rv help
+    aliases: [raskolvault, wallet]
+    permission: raskolvault.use
+
+permissions:
+  raskolvault.use:
+    description: Use /rv balance, pay, convert, wallet
+    default: true
+  raskolvault.convert:
+    description: Exchange currencies
+    default: true
+  raskolvault.admin:
+    description: All admin commands
+    default: op
+  raskolvault.admin.currency:
+    description: Create/delete/list currencies
+    default: op
+  raskolvault.admin.rates:
+    description: Manage exchange rates
+    default: op
+  raskolvault.admin.give:
+    description: Give currency to player
+    default: op
+  raskolvault.admin.take:
+    description: Take currency from player
+    default: op
+  raskolvault.admin.set:
+    description: Set player balance
+    default: op
+  raskolvault.admin.mint:
+    description: Mint new currency (treasury emission)
+    default: op
+  raskolvault.admin.burn:
+    description: Burn currency
+    default: op
+  raskolvault.admin.audit:
+    description: View audit log
+    default: op
+  raskolvault.admin.reload:
+    description: Reload configs
+    default: op
+  raskolvault.admin.debug:
+    description: Run hook diagnostics
+    default: op
+  raskolvault.admin.view:
+    description: View other players' balances
+    default: op
+  raskolvault.admin.notify:
+    description: Receive admin notifications
+    default: op
