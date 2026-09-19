@@ -1,0 +1,37 @@
+name: RaskolVault
+version: '1.0.0'
+main: dev.raskol.vault.RaskolVault
+api-version: '1.21'
+author: hayferdahmer
+description: Многовалютный экономический слой поверх EssentialsX: национальные и мировые валюты, курсы, комиссии, SQLite-аудит
+
+softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI]
+
+commands:
+  rv:
+    description: Команды RaskolVault
+    usage: /rv [help|version|debug]
+    aliases: [raskolvault, wallet]
+
+permissions:
+  raskolvault.use:
+    description: Базовые команды кошелька
+    default: true
+  raskolvault.convert:
+    description: Обмен валют
+    default: true
+  raskolvault.admin:
+    description: Все админские подкоманды
+    default: op
+    children:
+      raskolvault.admin.view: true
+      raskolvault.admin.currency: true
+      raskolvault.admin.rates: true
+      raskolvault.admin.give: true
+      raskolvault.admin.take: true
+      raskolvault.admin.set: true
+      raskolvault.admin.mint: true
+      raskolvault.admin.burn: true
+      raskolvault.admin.audit: true
+      raskolvault.admin.reload: true
+      raskolvault.admin.debug: true
