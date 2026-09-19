@@ -1,0 +1,67 @@
+# RaskolVault 1.0.0 — многовалютный слой поверх EssentialsX
+# «РАСКОЛ | ДВЕ КОРОНЫ»
+
+general:
+  debug: false
+  locale: ru
+  # Интервал автосохранения балансов из кэша в хранилище
+  auto-save-minutes: 5
+
+# Глобальная валюта: проксируется в EssentialsX (⚜)
+global-currency:
+  id: gold
+  display-name: "Золото"
+  symbol: "⚜"
+  decimals: 2
+  # Синхронизировать баланс gold с Essentials при старте и операциях
+  essentials-sync: true
+
+exchange:
+  enabled: true
+  # Комиссия по умолчанию для пары, если у пары не задана своя (доля от суммы)
+  default-fee: 0.02
+  # Требовать явное подтверждение обмена (/rv confirm)
+  require-confirm: true
+  # Защита от спама: не более N обменов в секунду на игрока
+  rate-limit-per-second: 10
+
+auto-convert:
+  # Автоконвертация при /pay, если у плательщика другая валюта (opt-in в 1.0.0)
+  enabled: false
+  require-confirm: true
+
+hooks:
+  essentials:
+    enabled: true
+  towny:
+    enabled: true
+    # Создавать национальную валюту автоматически при создании нации
+    auto-create-national: true
+  luckperms:
+    enabled: true
+  raskolcore:
+    enabled: true
+    # Регистрироваться провайдером в EconomyRegistry (вытесняет VaultEconomyProvider)
+    register-as-provider: true
+  placeholderapi:
+    enabled: true
+
+storage:
+  sqlite:
+    file: data/ledger.sqlite
+    pool-size: 5
+  yaml-backup:
+    enabled: true
+    file: data/balances.yml
+  daily-backup:
+    enabled: true
+    time: "04:00"
+    keep-days: 7
+
+audit:
+  log-to-file: true
+  log-to-console: false
+  rotation-mb: 5
+
+messages:
+  file: messages.yml
