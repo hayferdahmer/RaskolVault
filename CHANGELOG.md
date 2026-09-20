@@ -4,73 +4,79 @@
 Версионирование: [SemVer](https://semver.org/lang/ru/).
 Лицензия: RASKOL Proprietary License v1.0 (см. LICENSE).
 
-## [1.0.4] — 2026-09-21 — Observability (без DiscordSRV-алертов)
+## [1.0.5] — 2026-09-20 — Анти-дюп контур
 
 ### Добавлено
-- **`/rv admin health`** — живая сводка: TPS (1/5/15 мин), online, JVM memory,
-  SQLite pool idle/wait, writer queue/applied/failed, cache rows/hit-rate/H/M,
-  tx/min (60s sliding window), WAL size, последняя транзакция, arbitrage loops.
-- **PAPI-плейсхолдеры observability:**
-  `%raskolvault_tps%`, `%raskolvault_tps_5m%`, `%raskolvault_tps_15m%`,
-  `%raskolvault_ledger_queue%`, `%raskolvault_cache_hit%`,
-  `%raskolvault_tx_per_min%`, `%raskolvault_writer_applied%`,
-  `%raskolvault_writer_failed%`, `%raskolvault_pool_idle%`,
-  `%raskolvault_pool_wait%`, `%raskolvault_currencies_count%`,
-  `%raskolvault_rates_count%`.
-- **`TxPerMinuteCounter`** — sliding window 60 сек на уровне леджера
-  (считает записанные транзакции, а не API-вызовы).
-- **`SparkHook`** — опциональный хук к Spark profiler через рефлексию.
-  Без compile-зависимости: если Spark не установлен — молча no-op; если есть —
-  регистрирует таймеры `rv.deposit.projection`, `rv.withdraw.projection`,
-  `rv.transfer.projection`, `rv.convert.projection` на синхронной проекции кэша.
-- **Cache hit/miss счётчики** в WalletService (для метрики coverage валюты
-  среди игроков; `cache_hit` = hit/(hit+miss)).
-- **`SQLiteLedger.lastTransactionTimestamp()`** и `dbFile()` — для `/rv admin health`.
-- Permission `raskolvault.admin.health` (включён в группу `raskolvault.admin`).
+- **TokenBucket rate-limit** (`security.rate-limit`): per-player ведро токенов
+  (capacity 8, refill 2/с) на `/rv pay` и `/rv convert` (preview).
+  Счётчик отклонений: `%raskolvault_rate_limited%`.
+- **Оптимистичная блокировка в SQL** (`commitAbsoluteChecked`): коммит балансов
+  применяется только если текущее amount в БД совпадает с ожидаемым старым значением
+  (`ON CONFLICT DO UPDATE ... WHERE balances.amount=?`). Гонка/ручная правка БД/restore
+  во время работы = откат транзакции целиком + SEVERE + лечение кэша из БД (heal).
+- **Инфляционный чекпоинт** (`security.inflation-check`, каждый час, async):
+  инвариант `SUM(balances) == SIGNSUM(transactions)` для каждой НЕ-глобальной валюты
+  (SIGNSUM: +amount для from=NULL/to!=NULL, −amount для from!=NULL/to=NULL, 0 для PAY).
+  Расхождение > 0.01 = SEVERE + `%raskolvault_inflation_anomalies%`.
+  GLOBAL не проверяется (источник правды — Essentials). Побочно: purgeIdle для TokenBucket.
+- PAPI-плейсхолдеры: `%raskolvault_inflation_anomalies%`, `%raskolvault_rate_limited%`.
+- messages.yml: `error.rate-limited`.
 
 ### Изменено
-- `plugin.yml`: `spark` добавлен в `softdepend` (без него плагин работает,
-  просто без таймеров).
-- Лог старта: добавил `Spark on/off` в сводку.
+- **GLOBAL-мутации под projectionLock** (WalletService): чтение+запись Essentials
+  атомарны относительно параллельных вызовов — закрыта гонка lost-update 1.0.4.
+- Неблобальные коммиты переведены с `commitAbsolute` на `commitAbsoluteChecked`;
+  при отказе коммита кэш лечится чтением из БД, операция отклоняется с SEVERE-логом
+  (в логе явно указано, что проверить: ручные правки БД / restore).
+- `compensateGlobal` при отказе convert-коммита тоже под локом.
 
-### Отклонения от дорожной карты (осознанные)
-- **DiscordSRV-алерты не реализованы** (по запросу). Материал для алертов
-  (`writer_failed > 0`, `arbitrage_loop > 0`, `pool_wait > 0`) доступен
-  через `/rv admin health` и PAPI-плейсхолдеры.
-- **Spark-тайминги** только для синхронной проекции кэша (основной вклад
-  в main-thread latency); асинхронный коммит леджера Spark не замеряет
-  (он вне main-thread).
+### Совместимость
+- Схема БД не менялась (schema v1), миграции не нужны.
+- Конфиг: новые секции `security.rate-limit` и `security.inflation-check`
+  (дефолты включены; capacity 0 или enabled false = выключено).
 
-### Версия
-- 1.0.3 → 1.0.4 (pom.xml, plugin.yml).
+## [1.0.4] — 2026-09-20 — Observability (без DiscordSRV-алертов)
+
+### Добавлено
+- `/rv admin health`: TPS 1/5/15m, online, JVM memory, SQLite pool idle/wait,
+  writer queue/applied/failed, cache rows/hit-rate/H/M, tx/min, WAL size,
+  last tx, arbitrage loops.
+- PAPI-плейсхолдеры observability: tps/tps_5m/tps_15m, ledger_queue, cache_hit,
+  tx_per_min, writer_applied, writer_failed, pool_idle, pool_wait,
+  currencies_count, rates_count.
+- SparkHook: опциональные тайминги проекций (rv.deposit.projection и т.п.)
+  через рефлексию, без compile-зависимости от Spark.
+- Cache hit/miss счётчики в WalletService.
+- Permission `raskolvault.admin.health`.
+
+### Отклонения от дорожной карты
+- DiscordSRV-алерты не реализованы (по запросу владельца).
 
 ## [1.0.3] — 2026-09-20 — Асинхронность леджера (single-writer)
 
 ### Добавлено
-- LedgerWriter: единственный упорядоченный поток записи с ограниченной очередью
-  (writer-queue-cap, дефолт 10000) и backpressure.
-- Async-API кошелька: depositAsync/withdrawAsync/transferAsync/exchangeAsync.
-- `/rv pay` и `/rv convert`+`/rv confirm` больше не блокируют main-thread на SQLite.
-- Метрики писателя (queue/applied/failed) в `describeStats()`.
+- LedgerWriter: единственный упорядоченный поток записи, очередь 10000, backpressure.
+- Async-API: depositAsync/withdrawAsync/transferAsync/exchangeAsync.
+- `/rv pay`, `/rv convert` + `/rv confirm` не блокируют main-thread на SQLite.
 
 ### Изменено
-- Модель записи: проекция кэша на потоке вызова + атомарный коммит в писателе.
-- Синхронный контракт (Core-хук, админки, казна) = тот же путь + join с таймаутом.
-- Graceful-stop: очередь писателя дренируется ДО закрытия пула.
+- Модель записи: проекция кэша под projectionLock на потоке вызова +
+  атомарный коммит в писателе; sync-контракт = join с таймаутом.
+- Graceful-stop: очередь дренируется до закрытия пула.
 
 ## [1.0.2] — 2026-09-20 — SQLite-пул и WAL-гигиена
 
 ### Добавлено
-- ConnectionPool: фиксированный пул SQLite-соединений (1..16, дефолт 5).
-- WAL-гигиена: `PRAGMA wal_checkpoint(TRUNCATE)` по расписанию и на выключении.
+- ConnectionPool (1..16, дефолт 5), PRAGMAs на соединение.
+- WAL-checkpoint по расписанию и на выключении.
 - Атомарный коммит «баланс+аудит» одной SQL-транзакцией.
+- SQLiteLedger: lastTransactionTimestamp, dbFile, pool-геттеры, attachTxCounter.
 
 ## [1.0.1] — 2026-09-20 — Hotfix + гигиена лога
 
 ### Исправлено
 - Арбитражный сканер: tradeable-фильтр, пустой граф = информативный пропуск.
-- Стартовая сводка без сырых section-кодов.
-- `saveResource` без WARN «already exists».
+- Сводка старта без сырых section-кодов; saveResource без WARN «already exists».
 - Миграция legado-ID молчит при нулевом переносе.
 - MessagesConfig: убран deprecated ChatColor.
 
@@ -82,7 +88,6 @@
 арбитражный сканер, PAPI-плейсхолдеры, бекапы, нагрузочный тест.
 
 ## [Unreleased] — запланировано
-- 1.0.5: token bucket rate-limit, атомарный UPDATE с проверкой баланса в SQL, анти-инфляционный чекпоинт.
 - 1.0.6: Tab-completion offline-игроков, TownyRename/DeleteNation-слушатели, миграция валют.
 - 1.0.7: stress-suite, restore из бекапа, документация миграции на 1.1.
 - 1.1: автоконвертация при /pay, Parties-мост, кланы, RaskolCore 1.5.0 «Картографический слой».
