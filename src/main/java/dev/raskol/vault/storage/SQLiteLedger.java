@@ -22,22 +22,15 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * SQLite-леджер на пуле соединений (1.0.2) + атомарный коммит (1.0.3)
- * + оптимистичная блокировка commitAbsoluteChecked и агрегаты инварианта (1.0.5).
+ * SQLite-леджер (1.0.6: +renameNationId, +renameCurrency).
  */
 public final class SQLiteLedger {
 
     public static final int SCHEMA_VERSION = 1;
 
-    /** Абсолютная запись баланса без проверки (служебные пути). */
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {
     }
 
-    /**
-     * Абсолютная запись с оптимистичной проверкой (1.0.5):
-     * коммит применится ТОЛЬКО если текущее значение в БД == expectedOld.
-     * Иначе 0 затронутых строк → LedgerException → лечение кэша наверху.
-     */
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {
     }
 
@@ -71,7 +64,7 @@ public final class SQLiteLedger {
         try {
             Class.forName("org.sqlite.JDBC");
         } catch (ClassNotFoundException e) {
-            throw new SQLException("Драйвер org.sqlite.JDBC не найден в jar (проверь shade в pom): " + e.getMessage(), e);
+            throw new SQLException("Драйвер org.sqlite.JDBC не найден в jar: " + e.getMessage(), e);
         }
         this.pool = new ConnectionPool(plugin, dbFile, poolSize, synchronous, borrowTimeoutMillis);
     }
@@ -147,10 +140,10 @@ public final class SQLiteLedger {
                             + "updated_at INTEGER NOT NULL)");
                     st.execute("PRAGMA user_version=" + SCHEMA_VERSION);
                 }
-                plugin.getLogger().info("SQLiteLedger: схема создана с нуля (v" + SCHEMA_VERSION + ")");
+                plugin.getLogger().info("SQLiteLedger: схема создана (v" + SCHEMA_VERSION + ")");
             } else if (version > SCHEMA_VERSION) {
                 plugin.getLogger().warning("SQLiteLedger: схема v" + version + " новее поддерживаемой v"
-                        + SCHEMA_VERSION + " — откати jar или восстанови БД из бекапа, данные не трогаю");
+                        + SCHEMA_VERSION + " — откати jar или восстанови БД из бекапа");
             }
             ok = true;
         } finally {
@@ -220,6 +213,65 @@ public final class SQLiteLedger {
         }
     }
 
+    /** 1.0.6: переименование nation_id в таблице currencies (при Towny RenameNationEvent). */
+    public int renameNationId(String oldNation, String newNation) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE currencies SET nation_id=? WHERE nation_id=?")) {
+            ps.setString(1, newNation);
+            ps.setString(2, oldNation);
+            int affected = ps.executeUpdate();
+            ok = true;
+            return affected;
+        } catch (SQLException e) {
+            throw new LedgerException("Не удалось обновить nation_id: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    /**
+     * 1.0.6: переименование валюты (атомарно: currencies + balances + transactions).
+     * Требует отключения FOREIGN KEY CASCADE или использования deferred FK (в SQLite по умолчанию deferred).
+     */
+    public void renameCurrency(String oldId, String newId) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            c.setAutoCommit(false);
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE currencies SET id=? WHERE id=?")) {
+                ps.setString(1, newId);
+                ps.setString(2, oldId);
+                int n = ps.executeUpdate();
+                if (n == 0) {
+                    throw new SQLException("валюта '" + oldId + "' не найдена");
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE balances SET currency_id=? WHERE currency_id=?")) {
+                ps.setString(1, newId);
+                ps.setString(2, oldId);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE transactions SET currency_id=? WHERE currency_id=?")) {
+                ps.setString(1, newId);
+                ps.setString(2, oldId);
+                ps.executeUpdate();
+            }
+            c.commit();
+            ok = true;
+        } catch (SQLException e) {
+            rollbackQuiet(c);
+            throw new LedgerException("Не удалось переименовать валюту '" + oldId + "' → '" + newId + "': "
+                    + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
     public synchronized void migrateLegacyCurrencyIds(Map<String, String> mapping) {
         if (mapping.isEmpty()) {
             return;
@@ -228,8 +280,6 @@ public final class SQLiteLedger {
         boolean ok = false;
         try {
             c.setAutoCommit(false);
-            int totalBalances = 0;
-            int totalTx = 0;
             for (Map.Entry<String, String> entry : mapping.entrySet()) {
                 String from = entry.getKey();
                 String to = entry.getValue();
@@ -257,8 +307,6 @@ public final class SQLiteLedger {
                     ps.setString(1, from);
                     ps.executeUpdate();
                 }
-                totalBalances += bal;
-                totalTx += tx;
                 plugin.getLogger().info("RaskolVault: миграция '" + from + "' → '" + to
                         + "' (балансов " + bal + ", транзакций " + tx + ")");
             }
@@ -305,7 +353,7 @@ public final class SQLiteLedger {
                 return rs.next() ? rs.getDouble(1) : 0.0D;
             }
         } catch (SQLException e) {
-            throw new LedgerException("Не могу прочитать баланс " + owner + "/" + currencyId + ": " + e.getMessage(), e);
+            throw new LedgerException("Не могу прочитать баланс: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
@@ -336,19 +384,12 @@ public final class SQLiteLedger {
             }
         } catch (SQLException e) {
             rollbackQuiet(c);
-            throw new LedgerException("Атомарный коммит провален ("
-                    + balances.size() + " балансов, " + txs.size() + " транзакций): " + e.getMessage(), e);
+            throw new LedgerException("Атомарный коммит провален: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
     }
 
-    /**
-     * 1.0.5: коммит с оптимистичной проверкой старых значений.
-     * Каждая строка баланса применяется только если текущее amount в БД совпадает
-     * с expectedOld. Любое расхождение (гонка, ручная правка БД, restore во время
-     * работы) = LedgerException, транзакция откатывается целиком.
-     */
     public void commitAbsoluteChecked(List<CheckedBalance> balances, List<Transaction> txs) {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -379,8 +420,7 @@ public final class SQLiteLedger {
             }
         } catch (SQLException e) {
             rollbackQuiet(c);
-            throw new LedgerException("Проверенный коммит отклонён ("
-                    + balances.size() + " балансов, " + txs.size() + " транзакций): " + e.getMessage(), e);
+            throw new LedgerException("Проверенный коммит отклонён: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
@@ -416,16 +456,12 @@ public final class SQLiteLedger {
                 return rs.next() ? rs.getDouble(1) : 0.0D;
             }
         } catch (SQLException e) {
-            throw new LedgerException("Не могу посчитать сумму балансов " + currencyId + ": " + e.getMessage(), e);
+            throw new LedgerException("sumBalances failed: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
     }
 
-    /**
-     * Ожидаемая эмиссия: +amount для (from NULL, to NOT NULL),
-     * −amount для (from NOT NULL, to NULL), 0 для PAY (оба заполнены).
-     */
     public double expectedSupply(String currencyId) {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -440,13 +476,13 @@ public final class SQLiteLedger {
                 return rs.next() ? rs.getDouble(1) : 0.0D;
             }
         } catch (SQLException e) {
-            throw new LedgerException("Не могу посчитать ожидаемую эмиссию " + currencyId + ": " + e.getMessage(), e);
+            throw new LedgerException("expectedSupply failed: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
     }
 
-    // ---------- аудит-чтение ----------
+    // ---------- аудит ----------
 
     public List<Transaction> queryTransactions(UUID owner, int limit) {
         List<Transaction> out = new ArrayList<>();
@@ -476,7 +512,7 @@ public final class SQLiteLedger {
             }
             ok = true;
         } catch (SQLException e) {
-            throw new LedgerException("Не могу прочитать историю " + owner + ": " + e.getMessage(), e);
+            throw new LedgerException("queryTransactions failed: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
@@ -499,7 +535,7 @@ public final class SQLiteLedger {
             ok = true;
             return rs.next() ? rs.getInt(1) : 0;
         } catch (SQLException e) {
-            throw new LedgerException("Не могу посчитать строки: " + e.getMessage(), e);
+            throw new LedgerException("count failed: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
@@ -517,7 +553,7 @@ public final class SQLiteLedger {
             ok = true;
             return checkpointed;
         } catch (SQLException e) {
-            plugin.getLogger().warning("RaskolVault: WAL checkpoint не удался: " + e.getMessage());
+            plugin.getLogger().warning("RaskolVault: WAL checkpoint failed: " + e.getMessage());
             return -1L;
         } finally {
             finish(c, ok);
