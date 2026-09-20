@@ -1,4 +1,4 @@
-# RaskolVault 1.0.0 — многовалютный экономический слой поверх EssentialsX
+# RaskolVault — многовалютный экономический слой поверх EssentialsX
 # для сервера «РАСКОЛ | ДВЕ КОРОНЫ»
 #
 # Фракции и столицы: Рассвет (Лайтрис) и Вальрадис (Драгос).
@@ -16,6 +16,7 @@ global-currency:
   display-name: "Золото"
   symbol: "⚜"
   decimals: 2
+  # Синхронизировать баланс gold с Essentials при старте и операциях
   essentials-sync: true
 
 exchange:
@@ -26,14 +27,14 @@ exchange:
   require-confirm: true
   # Сколько секунд живёт ожидание подтверждения после /rv convert
   confirm-timeout-seconds: 30
-  # Файл курсов обмена (формат ключей: <from>_<to>)
+  # Файл курсов обмена (формат ключей: <FROM>_<TO>)
   rates-file: rates.yml
-  # Резерв (этап 6): лимит обменов в секунду на игрока (анти-спам)
+  # Резерв (1.0.5): лимит обменов в секунду на игрока (анти-спам)
   rate-limit-per-second: 10
 
 auto-convert:
   # Резерв: автоконвертация при /pay, если у плательщика другая валюта.
-  # В 1.0.0 выключено: переводы идут только в валюте получателя.
+  # В 1.0.x выключено: переводы идут только в валюте получателя.
   enabled: false
   require-confirm: true
 
@@ -44,9 +45,7 @@ hooks:
     enabled: true
     # Авто-создание национальной валюты при NewNationEvent
     auto-create-national: true
-    # Точный символ на ID нации (lower-case от имени нации в Towny).
-    # Рассвет — столица Лайтрис, Вальрадис — столица Драгос.
-    # Ключи должны совпадать с именами наций в Towny (проверь /n list).
+    # Точный символ на ID нации (lower-case от имени нации в Towny)
     nation-symbols:
       rassvet: "☀"
       valradis: "☾"
@@ -64,19 +63,25 @@ hooks:
 storage:
   sqlite:
     file: data/ledger.sqlite
-    # Резерв: пул соединений (сейчас одно соединение + synchronized)
+    # 1.0.2: пул соединений (1..16). 5 хватает на 100+ онлайна с запасом.
     pool-size: 5
+    # NORMAL — скорость (WAL защищает от краша процесса).
+    # FULL — медленнее записи, но защищает от обрыва питания сервера.
+    synchronous: NORMAL
+    # Сколько мс ждать свободное соединение из пула до громкой ошибки
+    borrow-timeout-ms: 5000
+    # WAL-гигиена: PRAGMA wal_checkpoint(TRUNCATE) каждые N минут (0 = выключить)
+    checkpoint-interval-minutes: 5
   yaml-backup:
     enabled: true
     file: data/balances.yml
   daily-backup:
-    # Резерв (этап 6): ежедневный бекап SQLite-файла
     enabled: true
     time: "04:00"
     keep-days: 7
 
 audit:
-  # Резерв: дублирование аудита в отдельный лог-файл с ротацией
+  # Резерв (1.0.4): дублирование аудита в отдельный лог-файл с ротацией
   log-to-file: true
   log-to-console: false
   rotation-mb: 5
