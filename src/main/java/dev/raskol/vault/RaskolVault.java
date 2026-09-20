@@ -2,6 +2,8 @@
 package dev.raskol.vault;
 
 import dev.raskol.vault.api.currency.CurrencyRegistry;
+import dev.raskol.vault.arbitrage.ArbitrageScanner;
+import dev.raskol.vault.audit.InflationCheckpoint;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.config.MessagesConfig;
@@ -9,12 +11,16 @@ import dev.raskol.vault.confirm.ConfirmManager;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
+import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.listener.TownyNationLifecycleListener;
 import dev.raskol.vault.nation.NationTreasury;
+import dev.raskol.vault.observability.SparkHook;
+import dev.raskol.vault.observability.TxCounter;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
+import dev.raskol.vault.safety.RateLimiter;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SafeStorage;
@@ -64,6 +70,13 @@ public final class RaskolVault extends JavaPlugin {
     private BukkitTask inflationTask;
     private ConvertSubcommand convertSubcommand;
 
+    // 1.1.0-a: восстановлены поля observability/safety/arbitrage (используются во всех sub-командах и PAPI)
+    private SparkHook sparkHook;
+    private RateLimiter rateLimiter;
+    private TxCounter txCounter;
+    private InflationCheckpoint inflationCheckpoint;
+    private ArbitrageScanner arbitrage;
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -106,12 +119,24 @@ public final class RaskolVault extends JavaPlugin {
         ledger.attachWriterStats(() -> " · writer queue " + writer.queueSize()
                 + " · applied " + writer.applied() + " · failed " + writer.failed());
 
+        // 1.1.0-a: observability-хуки (Spark/Tx/Inflation/Arbitrage)
+        this.sparkHook = new SparkHook(this);
+        double rps = getConfig().getDouble("exchange.rate-limit-per-second", 10.0);
+        this.rateLimiter = new RateLimiter(rps, Math.max(1.0, rps));
+        this.txCounter = new TxCounter(60);
+        this.inflationCheckpoint = new InflationCheckpoint(ledger, currencies,
+                getConfig().getDouble("audit.inflation.tolerance", 0.01));
+        this.arbitrage = new ArbitrageScanner(rates != null ? rates : new RatesService(this, 0.02), currencies);
+
         wallets = new WalletService(this, ledger, writer, currencies, essentialsHook,
-                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000));
+                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000), sparkHook);
         wallets.init();
 
         rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
         rates.load(new File(getDataFolder(), getConfig().getString("exchange.rates-file", "rates.yml")));
+
+        // Переинициализируем arbitrage после того, как rates подгружен
+        this.arbitrage = new ArbitrageScanner(rates, currencies);
 
         exchange = new ExchangeService(this, wallets, currencies, rates);
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
@@ -141,7 +166,7 @@ public final class RaskolVault extends JavaPlugin {
 
         if (placeholderPresent && getConfig().getBoolean("hooks.placeholderapi.enabled", true)) {
             try {
-                new dev.raskol.vault.hook.PlaceholderApiHook(this).register();
+                new PlaceholderApiHook(this).register();
                 getLogger().info("RaskolVault: PAPI-экспаншн зарегистрирован (%raskolvault_*)");
             } catch (Throwable t) {
                 getLogger().warning("RaskolVault: PAPI-регистрация не удалась: " + t.getMessage());
@@ -267,6 +292,13 @@ public final class RaskolVault extends JavaPlugin {
     public BackupService getBackups() { return backups; }
     public LoadSimulator getLoadSimulator() { return loadSimulator; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
+
+    // 1.1.0-a: восстановлены геттеры observability/safety/arbitrage
+    public SparkHook getSparkHook() { return sparkHook; }
+    public RateLimiter getRateLimiter() { return rateLimiter; }
+    public TxCounter getTxCounter() { return txCounter; }
+    public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
+    public ArbitrageScanner getArbitrage() { return arbitrage; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
