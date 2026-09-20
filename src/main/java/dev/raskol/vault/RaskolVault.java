@@ -1,6 +1,7 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault;
 
+import dev.raskol.vault.arbitrage.ArbitrageSimulator;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.config.MessagesConfig;
 import dev.raskol.vault.confirm.ConfirmManager;
@@ -9,6 +10,9 @@ import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
+import dev.raskol.vault.hook.TownyHook;
+import dev.raskol.vault.listener.NationAutoCurrencyListener;
+import dev.raskol.vault.nation.NationTreasury;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
@@ -23,12 +27,6 @@ import java.sql.SQLException;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * RaskolVault v1.0.0 — многовалютный экономический слой поверх EssentialsX
- * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
- *
- * Этап 4: обмен валют, P2P-переводы, админ-команды, подтверждение транзакций.
- */
 public final class RaskolVault extends JavaPlugin {
 
     private boolean corePresent;
@@ -46,6 +44,9 @@ public final class RaskolVault extends JavaPlugin {
     private ExchangeService exchange;
     private ConfirmManager confirms;
     private RaskolCoreHook coreHook;
+    private TownyHook townyHook;
+    private NationTreasury treasury;
+    private ArbitrageSimulator arbitrage;
 
     @Override
     public void onEnable() {
@@ -88,8 +89,24 @@ public final class RaskolVault extends JavaPlugin {
         rates.load(new File(getDataFolder(), getConfig().getString("exchange.rates-file", "rates.yml")));
 
         exchange = new ExchangeService(this, wallets, currencies, rates);
-
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
+
+        townyHook = new TownyHook(this);
+        if (townyPresent && getConfig().getBoolean("hooks.towny.enabled", true)) {
+            townyHook.init();
+        }
+
+        treasury = new NationTreasury(wallets);
+        arbitrage = new ArbitrageSimulator(this, currencies, rates);
+
+        if (townyHook.isAvailable()
+                && getConfig().getBoolean("hooks.towny.auto-create-national", true)) {
+            NationAutoCurrencyListener listener = new NationAutoCurrencyListener(
+                    this, currencies, ledger,
+                    getConfig().getString("hooks.towny.light-prefix", "svet"),
+                    getConfig().getString("hooks.towny.dark-prefix", "mrak"));
+            listener.register();
+        }
 
         if (corePresent && getConfig().getBoolean("hooks.raskolcore.register-as-provider", true)) {
             coreHook = new RaskolCoreHook(this, wallets, currencies);
@@ -105,23 +122,16 @@ public final class RaskolVault extends JavaPlugin {
             getLogger().warning("Команда rv не описана в plugin.yml — команды отключены");
         }
 
+        arbitrage.logReport();
+
         getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён"
                 + " · Paper/MC " + getServer().getVersion()
-                + " · Java " + System.getProperty("java.version")
                 + " · Core " + (corePresent ? "on" : "off")
                 + " · CoreProvider " + (coreHook != null && coreHook.isRegistered() ? "§aregistered§r" : "§coff§r")
                 + " · Essentials " + (essentialsPresent ? "on" : "off")
-                + " · Towny " + (townyPresent ? "on" : "off")
+                + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "§ahooked§r" : "§coff§r")
                 + " · LP " + (luckPermsPresent ? "on" : "off")
                 + " · PAPI " + (placeholderPresent ? "on" : "off"));
-        if (!essentialsPresent) {
-            getLogger().warning("Essentials не найден: глобальная валюта ⚜ недоступна для операций, "
-                    + "национальные валюты работают автономно");
-        }
-        if (corePresent && (coreHook == null || !coreHook.isRegistered())) {
-            getLogger().warning("RaskolCore на месте, но регистрация EconomyProvider не прошла — "
-                    + "раскол-плагины продолжат ходить в Vault/Essentials напрямую");
-        }
     }
 
     @Override
@@ -176,6 +186,9 @@ public final class RaskolVault extends JavaPlugin {
     public ExchangeService getExchange() { return exchange; }
     public ConfirmManager getConfirms() { return confirms; }
     public RaskolCoreHook getCoreHook() { return coreHook; }
+    public TownyHook getTownyHook() { return townyHook; }
+    public NationTreasury getTreasury() { return treasury; }
+    public ArbitrageSimulator getArbitrage() { return arbitrage; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
