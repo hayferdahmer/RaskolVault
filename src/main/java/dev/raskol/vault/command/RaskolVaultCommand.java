@@ -2,29 +2,31 @@
 package dev.raskol.vault.command;
 
 import dev.raskol.vault.RaskolVault;
+import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.command.sub.AdminSubcommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.command.sub.PaySubcommand;
 import dev.raskol.vault.command.sub.RatesSubcommand;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
+import dev.raskol.vault.util.Formatter;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
- * /rv — корневой роутер. 1.1.0-a: /rv balance убран у игроков (только /rv admin balance),
- * /rv rates возвращён.
+ * /rv — корневой роутер. 1.1.0-a: /rv balance только для админов (через admin balance),
+ * /rv rates возвращён, /rv confirm исполняет отложенный обмен.
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
-
-    private static final List<String> ROOT = List.of(
-            "pay", "convert", "confirm", "rates", "nation", "admin", "help", "version");
 
     private final RaskolVault plugin;
     private final PaySubcommand paySubcommand;
@@ -62,7 +64,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    /** 1.1.0-a: /rv balance → только админам, как /rv admin balance <ник>. */
+    /** 1.1.0-a: /rv balance доступен только админам и маршрутизируется в /rv admin balance. */
     private void redirectBalance(CommandSender sender, String[] args) {
         if (!sender.hasPermission("raskolvault.admin.view")) {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.balance-admin-only", null));
@@ -72,7 +74,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     }
 
     private void confirm(CommandSender sender) {
-        if (!(sender instanceof org.bukkit.entity.Player player)) {
+        if (!(sender instanceof Player player)) {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.console-cannot-convert", null));
             return;
         }
@@ -81,7 +83,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(prefix() + plugin.getMessages().get("confirm.none", null));
             return;
         }
-        convertSubcommand.runConfirmed(player, pending.get().preview(), sender);
+        convertSubcommand.runConfirmed(player, pending.get(), sender);
     }
 
     private void help(CommandSender sender) {
@@ -95,11 +97,13 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    /** ["rv", X, ...rest] → ["rv", "admin"|"nation", X, ...rest] не нужен; строим ["admin", X, ...]. */
+    /** ["rv", X, ...rest] → ["X", ...rest] для передачи в sub-команды. */
     private String[] prepend(String sub, String[] args) {
         String[] out = new String[args.length];
         out[0] = sub;
-        System.arraycopy(args, 1, out, 1, args.length - 1);
+        if (args.length > 1) {
+            System.arraycopy(args, 1, out, 1, args.length - 1);
+        }
         return out;
     }
 
@@ -110,9 +114,9 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            List<String> subs = new ArrayList<>(ROOT);
-            if (!sender.hasPermission("raskolvault.admin")) {
-                subs.remove("admin");
+            List<String> subs = new ArrayList<>(Arrays.asList("help", "version", "convert", "confirm", "rates", "nation", "pay"));
+            if (sender.hasPermission("raskolvault.admin")) {
+                subs.add("admin");
             }
             String p = args[0].toLowerCase(Locale.ROOT);
             return subs.stream().filter(s -> s.startsWith(p)).toList();
@@ -124,25 +128,22 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 case "pay" -> {
                     return offline == null ? Collections.emptyList() : offline.matchNames(args[1], 50);
                 }
-                case "convert", "rates" -> {
-                    return currencyTab(args[1]);
-                }
+                case "convert", "rates" -> currencyTab(args[1]);
                 case "admin" -> {
-                    if (!sender.hasPermission("raskolvault.admin")) return Collections.emptyList();
-                    return filter(List.of("health", "give", "take", "set", "mint", "burn", "currency",
-                            "simulate", "simulate-load", "stress", "audit", "reload", "backup", "restore", "balance"), args[1]);
+                    if (!sender.hasPermission("raskolvault.admin")) {
+                        return Collections.emptyList();
+                    }
+                    return filter(Arrays.asList("health", "balance", "give", "take", "set", "mint", "burn",
+                            "currency", "simulate", "simulate-load", "stress", "audit", "reload", "backup", "restore"), args[1]);
+                }
+                default -> {
+                    return Collections.emptyList();
                 }
             }
-            return Collections.emptyList();
         }
         if (args.length == 3) {
             switch (op) {
-                case "pay" -> {
-                    return currencyTab(args[2]);
-                }
-                case "convert" -> {
-                    return currencyTab(args[2]);
-                }
+                case "pay", "convert" -> currencyTab(args[2]);
                 case "admin" -> {
                     String sub = args[1].toLowerCase(Locale.ROOT);
                     if (sub.equals("give") || sub.equals("take") || sub.equals("set")
@@ -153,11 +154,14 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                         return currencyTab(args[2]);
                     }
                     if (sub.equals("currency")) {
-                        return filter(List.of("list", "rename", "create", "remove"), args[2]);
+                        return filter(Arrays.asList("list", "rename", "create", "remove"), args[2]);
                     }
+                    return Collections.emptyList();
+                }
+                default -> {
+                    return Collections.emptyList();
                 }
             }
-            return Collections.emptyList();
         }
         if (args.length == 4 && op.equals("admin")) {
             String sub = args[1].toLowerCase(Locale.ROOT);
@@ -169,9 +173,10 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     }
 
     private List<String> currencyTab(String prefix) {
+        String p = prefix.toLowerCase(Locale.ROOT);
         return plugin.getCurrencies().all().stream()
-                .map(c -> c.id().toLowerCase(Locale.ROOT))
-                .filter(s -> s.startsWith(prefix.toLowerCase(Locale.ROOT)))
+                .map(Currency::id)
+                .filter(s -> s.toLowerCase(Locale.ROOT).startsWith(p))
                 .toList();
     }
 
