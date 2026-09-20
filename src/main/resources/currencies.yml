@@ -1,34 +1,31 @@
-# RaskolVault 1.0.0 — валюты сервера «РАСКОЛ | ДВЕ КОРОНЫ»
-#
-# ПРАВИЛО ID: ровно 3 буквы капсом ([A-Z]{3}).
-# Это требование бренда и совместимости с PAPI (%raskolvault_balance_<ID>%).
-#
-# GLOBAL   — единственная проксируемая в EssentialsX.
-# NATIONAL — привязана к Towny-нации, создаётся автоматически при NewNationEvent
-#            или вручную через /rv admin currency create.
-# WORLD    — свободная валюта без привязки (опционально).
+# RaskolVault 1.1.0 — валюты сервера «РАСКОЛ | ДВЕ КОРОНЫ»
+# ID валют = 3 буквы капсом. symbol = буквенный код (символы-глифы убраны).
+# icon — предмет GUI (этап 1.1.0-d).
+# ПРОВЕРЬ имена наций: /n list — nation-id должен совпадать с именем нации Towny
+# (регистр не важен). Если нации называются иначе — правь nation-id здесь.
 
 currencies:
   GLD:
-    display-name: "Золото"
-    symbol: "⚜"
+    display-name: 'Золото'
+    symbol: 'GLD'
+    icon: GOLD_INGOT
     type: GLOBAL
     decimals: 2
     tradeable: true
 
-  # Национальные валюты столиц (создадутся автоматически,
-  # если имена наций в Towny = Rassvet и Valradis — ниже в nation-symbols)
   RAS:
-    display-name: "Рассветный денарий"
-    symbol: "☀"
+    display-name: 'Динар Рассвета'
+    symbol: 'RAS'
+    icon: SUNFLOWER
     type: NATIONAL
     nation-id: rassvet
     decimals: 2
     tradeable: true
 
   VLR:
-    display-name: "Вальрадисская крона"
-    symbol: "☾"
+    display-name: 'Вальрадисская Крона'
+    symbol: 'VLR'
+    icon: GOLDEN_HELMET
     type: NATIONAL
     nation-id: valradis
     decimals: 2
