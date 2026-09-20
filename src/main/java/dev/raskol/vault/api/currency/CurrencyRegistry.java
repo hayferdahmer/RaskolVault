@@ -147,12 +147,12 @@ public final class CurrencyRegistry {
         return true;
     }
 
-    /** 1.0.6: добавить валюту в реестр (используется NationAutoCurrencyListener). */
+    /** 1.0.7: добавить валюту в реестр (используется NationAutoCurrencyListener). */
     public void addCurrency(Currency currency) {
         byId.put(currency.id(), currency);
     }
 
-    /** 1.0.6: удалить валюту из реестра. */
+    /** 1.0.7: удалить валюту из реестра. */
     public void removeCurrency(String id) {
         byId.remove(id.toUpperCase(Locale.ROOT));
     }
