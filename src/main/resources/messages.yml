@@ -1,3 +1,5 @@
+# RaskolVault 1.0.0 — локализация (RU)
+# Плейсхолдеры {…} подставляются до покраски; & — цветовые коды.
 ru:
   prefix: "&8[&6RaskolVault&8]&r "
   balance:
@@ -15,7 +17,10 @@ ru:
     header: "&6=== Курсы обмена (комиссия {fee}) ==="
     empty: "&7Курсы не настроены (rates.yml)"
   confirm:
-    none: "&cНет ожидающего обмена — сначала /rv convert"
+    none: "&7Нет ожидающего обмена — сначала /rv convert"
+  nation:
+    header: "&6=== Нация {nation} ==="
+    not-in-nation: "&7Ты не в нации"
   error:
     no-permission: "&cНедостаточно прав"
     unknown-currency: "&cВалюта {id} не найдена"
@@ -23,13 +28,19 @@ ru:
     console-needs-nick: "&cИз консоли укажи ник"
     console-cannot-pay: "&cИз консоли нельзя платить"
     console-cannot-convert: "&cИз консоли нельзя менять"
+    console-cannot-nation: "&cИз консоли нельзя смотреть нацию"
+    console-cannot-mint: "&cИз консоли нельзя минтить и жечь"
     insufficient: "&cНедостаточно {symbol}: нужно {needed}, есть {balance}"
     storage: "&cОшибка хранилища, операция отменена (см. лог)"
     self-pay: "&cНельзя платить самому себе"
     invalid-amount: "&cНекорректная сумма: {value}"
+    towny-unavailable: "&cTowny недоступен — национальные валюты отключены"
+    not-national-currency: "&cВалюта {id} не национальная"
+    not-king: "&cТолько король нации {nation} может минтить и жечь"
+    currency:
+      exists: "&cВалюта {id} уже существует"
     convert:
       same-currency: "&cНельзя менять валюту на саму себя"
-      unknown-currency: "&cНеизвестная валюта в паре {from}/{to}"
       no-rate: "&cКурс для пары {from}→{to} не задан (rates.yml)"
       insufficient: "&cНедостаточно средств для обмена"
       invalid-amount: "&cНекорректная сумма"
