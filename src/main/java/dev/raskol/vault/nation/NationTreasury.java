@@ -6,9 +6,6 @@ import dev.raskol.vault.wallet.WalletService;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
-/**
- * Казна нации: детерминированный UUID по имени нации.
- */
 public final class NationTreasury {
 
     private final WalletService wallets;
@@ -21,6 +18,7 @@ public final class NationTreasury {
         return UUID.nameUUIDFromBytes(("nation:" + nationId).getBytes(StandardCharsets.UTF_8));
     }
 
+    /** 1.0.7: convenience-метод для получения баланса казны. */
     public double balance(String nationId, String currencyId) {
         return wallets.getBalance(treasuryUuid(nationId), currencyId);
     }
