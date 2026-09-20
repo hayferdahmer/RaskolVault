@@ -24,6 +24,7 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.sql.SQLException;
@@ -34,8 +35,8 @@ import java.util.UUID;
  * RaskolVault — многовалютный экономический слой поверх EssentialsX
  * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
  *
- * 1.0.1: тихий старт — saveResource только при отсутствии файла,
- * плоский текст в логах (без section-кодов), миграция логируется только при переносе строк.
+ * 1.0.2: пул SQLite-соединений, атомарные коммиты «баланс+аудит»,
+ * WAL-checkpoint по расписанию и на выключении, метрика очереди пула в describeStats.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -60,6 +61,7 @@ public final class RaskolVault extends JavaPlugin {
     private PlaceholderApiHook papiHook;
     private BackupService backups;
     private LoadSimulator loadSimulator;
+    private BukkitTask checkpointTask;
 
     @Override
     public void onEnable() {
@@ -75,7 +77,10 @@ public final class RaskolVault extends JavaPlugin {
 
         File dbFile = new File(getDataFolder(), getConfig().getString("storage.sqlite.file", "data/ledger.sqlite"));
         try {
-            ledger = new SQLiteLedger(this, dbFile);
+            ledger = new SQLiteLedger(this, dbFile,
+                    getConfig().getInt("storage.sqlite.pool-size", 5),
+                    getConfig().getString("storage.sqlite.synchronous", "NORMAL"),
+                    getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000));
             ledger.init();
             getLogger().info(() -> "RaskolVault: SQLite-леджер открыт (" + dbFile.getPath() + ") · " + ledger.describeStats());
         } catch (SQLException e) {
@@ -92,7 +97,6 @@ public final class RaskolVault extends JavaPlugin {
                 getConfig().getInt("global-currency.decimals", 2));
         currencies.syncToLedger(ledger);
 
-        // Миграция старых строчных ID в 3-буквенные капсом (тихая, если переносить нечего)
         ledger.migrateLegacyCurrencyIds(Map.of(
                 "gold", "GLD",
                 "denarius", "RAS",
@@ -148,6 +152,18 @@ public final class RaskolVault extends JavaPlugin {
             backups.start();
         }
 
+        long checkpointMinutes = getConfig().getLong("storage.sqlite.checkpoint-interval-minutes", 5);
+        if (checkpointMinutes > 0) {
+            long periodTicks = checkpointMinutes * 60L * 20L;
+            checkpointTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+                long pages = ledger.checkpoint();
+                if (getConfig().getBoolean("general.debug", false)) {
+                    getLogger().info("RaskolVault: WAL checkpoint, страниц свёрнуто: " + pages);
+                }
+            }, periodTicks, periodTicks);
+            getLogger().info("RaskolVault: WAL-checkpoint каждые " + checkpointMinutes + " мин");
+        }
+
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
 
         RaskolVaultCommand executor = new RaskolVaultCommand(this);
@@ -173,6 +189,10 @@ public final class RaskolVault extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (checkpointTask != null) {
+            checkpointTask.cancel();
+            checkpointTask = null;
+        }
         if (coreHook != null) {
             coreHook.shutdown();
         }
@@ -189,12 +209,11 @@ public final class RaskolVault extends JavaPlugin {
             saveBalancesBackup();
         }
         if (ledger != null) {
-            ledger.close();
+            ledger.close(); // внутри: финальный checkpoint + закрытие пула
         }
         getLogger().info("RaskolVault выключен");
     }
 
-    /** saveResource без WARN-шума: ресурс пишется только если файла ещё нет. */
     private void saveResourceIfAbsent(String name) {
         if (!new File(getDataFolder(), name).exists()) {
             saveResource(name, false);
