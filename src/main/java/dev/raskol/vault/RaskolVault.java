@@ -31,11 +31,11 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault v1.0.0 — многовалютный экономический слой поверх EssentialsX
+ * RaskolVault — многовалютный экономический слой поверх EssentialsX
  * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
  *
- * Этап 6: 3-буквенные ID (GLD/RAS/VLR) + миграция старых ID из леджера,
- * PAPI-экспаншн, ежедневный бекап SQLite, нагрузочный симулятор.
+ * 1.0.1: тихий старт — saveResource только при отсутствии файла,
+ * плоский текст в логах (без section-кодов), миграция логируется только при переносе строк.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -64,9 +64,9 @@ public final class RaskolVault extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        saveResource("currencies.yml", false);
-        saveResource("messages.yml", false);
-        saveResource("rates.yml", false);
+        saveResourceIfAbsent("currencies.yml");
+        saveResourceIfAbsent("messages.yml");
+        saveResourceIfAbsent("rates.yml");
 
         messages = new MessagesConfig(this);
         messages.load(new File(getDataFolder(), getConfig().getString("messages.file", "messages.yml")));
@@ -92,7 +92,7 @@ public final class RaskolVault extends JavaPlugin {
                 getConfig().getInt("global-currency.decimals", 2));
         currencies.syncToLedger(ledger);
 
-        // Этап 6: миграция старых строчных ID в 3-буквенные капсом
+        // Миграция старых строчных ID в 3-буквенные капсом (тихая, если переносить нечего)
         ledger.migrateLegacyCurrencyIds(Map.of(
                 "gold", "GLD",
                 "denarius", "RAS",
@@ -164,9 +164,9 @@ public final class RaskolVault extends JavaPlugin {
         getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён"
                 + " · Paper/MC " + getServer().getVersion()
                 + " · Core " + (corePresent ? "on" : "off")
-                + " · CoreProvider " + (coreHook != null && coreHook.isRegistered() ? "§aregistered§r" : "§coff§r")
+                + " · CoreProvider " + (coreHook != null && coreHook.isRegistered() ? "registered" : "off")
                 + " · Essentials " + (essentialsPresent ? "on" : "off")
-                + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "§ahooked§r" : "§coff§r")
+                + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
                 + " · LP " + (luckPermsPresent ? "on" : "off")
                 + " · PAPI " + (placeholderPresent ? "on" : "off"));
     }
@@ -192,6 +192,13 @@ public final class RaskolVault extends JavaPlugin {
             ledger.close();
         }
         getLogger().info("RaskolVault выключен");
+    }
+
+    /** saveResource без WARN-шума: ресурс пишется только если файла ещё нет. */
+    private void saveResourceIfAbsent(String name) {
+        if (!new File(getDataFolder(), name).exists()) {
+            saveResource(name, false);
+        }
     }
 
     private void saveBalancesBackup() {
