@@ -1,7 +1,5 @@
 # RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX
 # «РАСКОЛ | ДВЕ КОРОНЫ»
-# ВАЖНО: на живом сервере удали старый plugins/RaskolVault/config.yml на стопе —
-# сгенерируется этот шаблон. Все ключи ниже уже являются дефолтами кода.
 
 general:
   debug: false
@@ -11,17 +9,39 @@ general:
 global-currency:
   id: GLD
   display-name: 'Золото'
-  symbol: 'GLD'          # 1.1.0: символы заменены буквенными кодами
+  symbol: 'GLD'
   decimals: 2
   essentials-sync: true
 
 exchange:
   enabled: true
+  # Базовая комиссия конвертации (сжигается). Налог нации-цели добавляется сверху.
   default-fee: 0.02
   require-confirm: true
   confirm-timeout-seconds: 30
   rates-file: rates.yml
-  rate-limit-per-second: 10
+
+# 1.1.0-b: Валютный совет (золотое покрытие национальных валют)
+reserve:
+  # Минимальное допустимое покрытие резервом. Ниже — кризис: цена падает до резерв/эмиссия.
+  coverage-floor: 0.5
+  # Границы паритета (официального курса нации к золоту).
+  parity-min: 0.5
+  parity-max: 2.0
+  # Максимальный налог конвертации в валюту нации (доля от суммы).
+  tax-max: 0.05
+  # Доля резерва, которую король может вывести за сутки.
+  withdraw-daily-share: 0.25
+  # Период кризисного чекпоинта покрытия, минут.
+  check-interval-minutes: 60
+  # Файл паритета/налога наций.
+  file: nations.yml
+
+# 1.1.0-b: rate-limit конвертаций на игрока (token bucket)
+safety:
+  rate-limit:
+    capacity: 5.0
+    refill-per-second: 0.5
 
 auto-convert:
   enabled: false
