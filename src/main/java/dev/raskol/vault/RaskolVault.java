@@ -15,8 +15,10 @@ import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.nation.NationTreasury;
+import dev.raskol.vault.observability.InflationCheckpoint;
 import dev.raskol.vault.observability.SparkHook;
 import dev.raskol.vault.observability.TxPerMinuteCounter;
+import dev.raskol.vault.security.TokenBucket;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SafeStorage;
@@ -38,7 +40,8 @@ import java.util.UUID;
 /**
  * RaskolVault — многовалютный экономический слой поверх EssentialsX.
  *
- * 1.0.4: observability (PAPI-метрики, /rv admin health, Spark-тайминги).
+ * 1.0.5: TokenBucket rate-limit, оптимистичные коммиты + heal,
+ * почасовой инфляционный чекпоинт, GLOBAL-мутации под локом.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -65,9 +68,12 @@ public final class RaskolVault extends JavaPlugin {
     private BackupService backups;
     private LoadSimulator loadSimulator;
     private BukkitTask checkpointTask;
+    private BukkitTask inflationTask;
     private ConvertSubcommand convertSubcommand;
     private TxPerMinuteCounter txCounter;
     private SparkHook spark;
+    private TokenBucket rateLimiter;
+    private InflationCheckpoint inflationCheckpoint;
 
     @Override
     public void onEnable() {
@@ -95,10 +101,16 @@ public final class RaskolVault extends JavaPlugin {
             return;
         }
 
-        // 1.0.4: observability
         txCounter = new TxPerMinuteCounter();
         ledger.attachTxCounter(txCounter);
         spark = new SparkHook(this);
+
+        // 1.0.5: rate-limit (capacity <= 0 = выключен)
+        rateLimiter = new TokenBucket(
+                getConfig().getBoolean("security.rate-limit.enabled", true)
+                        ? getConfig().getDouble("security.rate-limit.capacity", 8.0D)
+                        : 0.0D,
+                getConfig().getDouble("security.rate-limit.refill-per-second", 2.0D));
 
         writer = new LedgerWriter(this, getConfig().getInt("storage.sqlite.writer-queue-cap", 10000));
         ledger.attachWriterStats(() -> " · writer queue " + writer.queueSize()
@@ -180,6 +192,16 @@ public final class RaskolVault extends JavaPlugin {
             getLogger().info("RaskolVault: WAL-checkpoint каждые " + checkpointMinutes + " мин");
         }
 
+        // 1.0.5: инфляционный чекпоинт (первый прогон через 100 тиков, далее каждый час)
+        if (getConfig().getBoolean("security.inflation-check.enabled", true)) {
+            inflationCheckpoint = new InflationCheckpoint(this, ledger, currencies, rateLimiter);
+            long intervalTicks = getConfig().getLong("security.inflation-check.interval-minutes", 60L) * 60L * 20L;
+            inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this,
+                    inflationCheckpoint, 100L, Math.max(1200L, intervalTicks));
+            getLogger().info("RaskolVault: инфляционный чекпоинт каждые "
+                    + getConfig().getLong("security.inflation-check.interval-minutes", 60L) + " мин");
+        }
+
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
 
         convertSubcommand = new ConvertSubcommand(this);
@@ -202,11 +224,16 @@ public final class RaskolVault extends JavaPlugin {
                 + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
                 + " · LP " + (luckPermsPresent ? "on" : "off")
                 + " · PAPI " + (placeholderPresent ? "on" : "off")
-                + " · Spark " + (spark.isAvailable() ? "on" : "off"));
+                + " · Spark " + (spark.isAvailable() ? "on" : "off")
+                + " · RateLimit " + (rateLimiter.isEnabled() ? "on" : "off"));
     }
 
     @Override
     public void onDisable() {
+        if (inflationTask != null) {
+            inflationTask.cancel();
+            inflationTask = null;
+        }
         if (checkpointTask != null) {
             checkpointTask.cancel();
             checkpointTask = null;
@@ -285,6 +312,8 @@ public final class RaskolVault extends JavaPlugin {
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public TxPerMinuteCounter getTxCounter() { return txCounter; }
     public SparkHook getSpark() { return spark; }
+    public TokenBucket getRateLimiter() { return rateLimiter; }
+    public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
