@@ -24,7 +24,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * /rv admin (1.0.4: подкоманда `health`; treasury-операции через wallets+UUID нации).
+ * /rv admin (1.0.6: + `currency rename <old> <new>`).
  */
 public final class AdminSubcommand {
 
@@ -114,6 +114,9 @@ public final class AdminSubcommand {
 
         int loops = plugin.getArbitrage().scan().size();
         sender.sendMessage("§7Arbitrage loops: " + (loops == 0 ? "§a0 ✓§r" : "§c" + loops + " ⚠"));
+
+        sender.sendMessage("§7Offline-registry: §f"
+                + (plugin.getOfflinePlayerRegistry() == null ? "null" : plugin.getOfflinePlayerRegistry().size()));
 
         sender.sendMessage(plugin.getMessages().prefix() + "§e╚═════════════════════════╝");
     }
@@ -300,7 +303,7 @@ public final class AdminSubcommand {
             return;
         }
         if (args.length < 3) {
-            sender.sendMessage(plugin.getMessages().prefix() + "§e/rv admin currency <list|create|remove> ...");
+            sender.sendMessage(plugin.getMessages().prefix() + "§e/rv admin currency <list|rename|create|remove> ...");
             return;
         }
         String op = args[2].toLowerCase(Locale.ROOT);
@@ -313,10 +316,61 @@ public final class AdminSubcommand {
                             + ", tradeable=" + c.tradeable() + ")");
                 }
             }
+            case "rename" -> currencyRename(sender, args);
             case "create", "remove" -> sender.sendMessage(plugin.getMessages().prefix()
                     + "§cСоздание/удаление валют через CLI в 1.0.x не поддерживается. Правь currencies.yml и /rv admin reload.");
             default -> sender.sendMessage(plugin.getMessages().prefix() + "§cОперация: " + op);
         }
+    }
+
+    /**
+     * 1.0.6: /rv admin currency rename <old> <new>.
+     * Атомарно переименовывает валюту: в currencies, balances, transactions (в БД) и в реестре в памяти.
+     * Требует простоя (никто не делает операции с этой валютой в момент переименования).
+     */
+    private void currencyRename(CommandSender sender, String[] args) {
+        if (args.length < 5) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + "§e/rv admin currency rename <old-id> <new-id>");
+            return;
+        }
+        String oldId = args[3].toUpperCase(Locale.ROOT);
+        String newId = args[4].toUpperCase(Locale.ROOT);
+        if (oldId.equals(newId)) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§cID совпадают: " + oldId);
+            return;
+        }
+        Currency old = plugin.getCurrencies().get(oldId).orElse(null);
+        if (old == null) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.unknown-currency", Map.of("id", oldId)));
+            return;
+        }
+        if (plugin.getCurrencies().get(newId).isPresent()) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + "§cВалюта '" + newId + "' уже существует — выбери другой ID");
+            return;
+        }
+        try {
+            plugin.getLedger().renameCurrency(oldId, newId);
+        } catch (LedgerException e) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§cОшибка БД: " + e.getMessage());
+            return;
+        }
+        boolean renamed = plugin.getCurrencies().rename(oldId, newId);
+        if (!renamed) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + "§cБД обновлена, но реестр не обновился — перезагрузи плагин");
+            return;
+        }
+        try {
+            plugin.getLedger().upsertCurrency(plugin.getCurrencies().get(newId).orElseThrow());
+        } catch (LedgerException ignored) {
+        }
+        sender.sendMessage(plugin.getMessages().prefix()
+                + "§aВалюта переименована: §f" + oldId + " §7→ §f" + newId);
+        sender.sendMessage(plugin.getMessages().prefix()
+                + "§7Все балансы и история транзакций перенесены на новый ID.");
     }
 
     private void simulate(CommandSender sender, String[] args) {
@@ -445,6 +499,12 @@ public final class AdminSubcommand {
                 .filter(p -> p.getUniqueId().equals(uuid)).findFirst();
         if (player.isPresent()) {
             return player.get().getName();
+        }
+        if (plugin.getOfflinePlayerRegistry() != null) {
+            String name = plugin.getOfflinePlayerRegistry().resolveName(uuid);
+            if (name != null) {
+                return name;
+            }
         }
         String s = uuid.toString();
         return s.substring(0, 8);
