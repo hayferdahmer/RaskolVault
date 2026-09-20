@@ -2,7 +2,7 @@
 package dev.raskol.vault.arbitrage;
 
 import dev.raskol.vault.api.currency.Currency;
-import dev.raskol.vault.currency.CurrencyRegistry;
+import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.exchange.RatesService;
 import org.bukkit.plugin.Plugin;
 
@@ -13,16 +13,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Симулятор арбитражных петель: BFS по графу курсов, ищет циклы длины 2–4,
- * где product(rate × (1-fee)) > 1.0.
- *
- * Петля = последовательность валют A→B→C→…→A.
- * Если такой цикл даёт прибыль на 1 единицу входа — экономика сломана.
- * Логируем все найденные петли как WARN при /rv admin simulate и при /rv admin reload.
- *
- * Ограничение: depth до 4 шагов (дальше — экзотика, не актуальная для 1.0.0).
- */
 public final class ArbitrageSimulator {
 
     public record Loop(List<String> path, double product) {
@@ -96,7 +86,6 @@ public final class ArbitrageSimulator {
         }
     }
 
-    /** Каноническое представление петли: начинаем с минимального элемента. */
     private String canonicalize(List<String> path) {
         int min = 0;
         for (int i = 1; i < path.size(); i++) {
