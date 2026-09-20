@@ -163,6 +163,50 @@ public final class SQLiteLedger {
         }
     }
 
+    /**
+     * Этап 6: миграция старых строчных ID (gold/denarius/crown)
+     * в новые 3-буквенные капсом (GLD/RAS/VLR).
+     * Запускается один раз при старте, логирует количество перенесённых строк.
+     */
+    public synchronized void migrateLegacyCurrencyIds(Map<String, String> mapping) {
+        if (mapping.isEmpty()) {
+            return;
+        }
+        try {
+            for (Map.Entry<String, String> entry : mapping.entrySet()) {
+                String from = entry.getKey();
+                String to = entry.getValue();
+                if (from.equals(to)) {
+                    continue;
+                }
+                int balanceUpdates;
+                int txUpdates;
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "UPDATE balances SET currency_id=? WHERE currency_id=?")) {
+                    ps.setString(1, to);
+                    ps.setString(2, from);
+                    balanceUpdates = ps.executeUpdate();
+                }
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "UPDATE transactions SET currency_id=? WHERE currency_id=?")) {
+                    ps.setString(1, to);
+                    ps.setString(2, from);
+                    txUpdates = ps.executeUpdate();
+                }
+                // Старую строку currencies удаляем: новая уже вставлена syncToLedger()
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "DELETE FROM currencies WHERE id=?")) {
+                    ps.setString(1, from);
+                    ps.executeUpdate();
+                }
+                plugin.getLogger().info("RaskolVault: миграция '" + from + "' → '" + to
+                        + "' (балансов " + balanceUpdates + ", транзакций " + txUpdates + ")");
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("Миграция ID валют провалена: " + e.getMessage(), e);
+        }
+    }
+
     // ---------- balances ----------
 
     public synchronized Map<UUID, Map<String, Double>> loadAllBalances() {
