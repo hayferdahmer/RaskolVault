@@ -13,8 +13,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * /rv pay (1.0.3): проекция и постановка в очередь на main-thread,
- * сообщения игрокам — из callback писателя (Adventure thread-safe на Paper).
+ * /rv pay (1.0.5: + token-bucket rate-limit на игрока).
  */
 public final class PaySubcommand {
 
@@ -33,6 +32,12 @@ public final class PaySubcommand {
         if (!sender.hasPermission("raskolvault.use")) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        // 1.0.5: rate-limit до любой работы
+        if (!plugin.getRateLimiter().tryConsume(from.getUniqueId())) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.rate-limited", null));
             return;
         }
         if (args.length < 4) {
