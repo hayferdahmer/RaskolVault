@@ -45,7 +45,6 @@ public final class WalletService {
     private final Object projectionLock = new Object();
     private final long joinTimeoutMillis;
 
-    // Observability (1.0.4)
     private final AtomicLong cacheHits = new AtomicLong(0L);
     private final AtomicLong cacheMisses = new AtomicLong(0L);
 
@@ -67,8 +66,6 @@ public final class WalletService {
         }
         plugin.getLogger().info("RaskolVault: кэш кошельков прогрет, строк: " + cache.size());
     }
-
-    // ---------- чтение ----------
 
     public double getBalance(UUID uuid, String currencyId) {
         if (currencies.globalId().equals(currencyId)) {
@@ -122,8 +119,6 @@ public final class WalletService {
         return total == 0 ? 100.0D : (100.0D * h / total);
     }
 
-    // ---------- async API ----------
-
     public void depositAsync(UUID uuid, String currencyId, double amount,
                              TransactionType type, String reason, Consumer<Boolean> cb) {
         Currency currency = currencies.get(currencyId).orElse(null);
@@ -154,17 +149,17 @@ public final class WalletService {
             });
             return;
         }
-        double old;
-        double neu;
+        final double[] projected = new double[2];
         try (AutoCloseable ignored = spark.time("deposit.projection")) {
             synchronized (projectionLock) {
-                old = raw(uuid, currencyId);
-                neu = round(old + rounded, currency);
-                cachePut(uuid, currencyId, neu);
+                projected[0] = raw(uuid, currencyId);
+                projected[1] = round(projected[0] + rounded, currency);
+                cachePut(uuid, currencyId, projected[1]);
             }
         } catch (Exception ignored) {
-            // spark close never throws by contract
         }
+        final double old = projected[0];
+        final double neu = projected[1];
         List<SQLiteLedger.AbsoluteBalance> writes =
                 List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu));
         writer.submit(() -> ledger.commitAbsolute(writes, List.of(tx)), ok -> {
@@ -209,20 +204,26 @@ public final class WalletService {
             });
             return;
         }
-        double old;
-        double neu;
+        final double[] projected = new double[2];
+        final boolean[] insufficient = new boolean[1];
         try (AutoCloseable ignored = spark.time("withdraw.projection")) {
             synchronized (projectionLock) {
-                old = raw(uuid, currencyId);
-                if (old + EPS < rounded) {
-                    cb.accept(false);
+                projected[0] = raw(uuid, currencyId);
+                if (projected[0] + EPS < rounded) {
+                    insufficient[0] = true;
                     return;
                 }
-                neu = round(old - rounded, currency);
-                cachePut(uuid, currencyId, neu);
+                projected[1] = round(projected[0] - rounded, currency);
+                cachePut(uuid, currencyId, projected[1]);
             }
         } catch (Exception ignored) {
         }
+        if (insufficient[0]) {
+            cb.accept(false);
+            return;
+        }
+        final double old = projected[0];
+        final double neu = projected[1];
         List<SQLiteLedger.AbsoluteBalance> writes =
                 List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu));
         writer.submit(() -> ledger.commitAbsolute(writes, List.of(tx)), ok -> {
@@ -278,28 +279,32 @@ public final class WalletService {
             });
             return;
         }
-        double oldFrom;
-        double oldTo;
-        double neuFrom;
-        double neuTo;
+        final double[] projected = new double[4];
+        final boolean[] insufficient = new boolean[1];
         try (AutoCloseable ignored = spark.time("transfer.projection")) {
             synchronized (projectionLock) {
-                oldFrom = raw(from, currencyId);
-                if (oldFrom + EPS < rounded) {
-                    cb.accept(false);
+                projected[0] = raw(from, currencyId);
+                if (projected[0] + EPS < rounded) {
+                    insufficient[0] = true;
                     return;
                 }
-                oldTo = raw(to, currencyId);
-                neuFrom = round(oldFrom - rounded, currency);
-                neuTo = round(oldTo + rounded, currency);
-                cachePut(from, currencyId, neuFrom);
-                cachePut(to, currencyId, neuTo);
+                projected[1] = raw(to, currencyId);
+                projected[2] = round(projected[0] - rounded, currency);
+                projected[3] = round(projected[1] + rounded, currency);
+                cachePut(from, currencyId, projected[2]);
+                cachePut(to, currencyId, projected[3]);
             }
         } catch (Exception ignored) {
         }
+        if (insufficient[0]) {
+            cb.accept(false);
+            return;
+        }
+        final double oldFrom = projected[0];
+        final double neuFrom = projected[2];
         List<SQLiteLedger.AbsoluteBalance> writes = List.of(
                 new SQLiteLedger.AbsoluteBalance(from, currencyId, neuFrom),
-                new SQLiteLedger.AbsoluteBalance(to, currencyId, neuTo));
+                new SQLiteLedger.AbsoluteBalance(to, currencyId, projected[3]));
         writer.submit(() -> ledger.commitAbsolute(writes, List.of(tx)), ok -> {
             if (!ok) {
                 logWriteLoss("transfer " + from + "→" + to, from, currencyId, rounded, oldFrom, neuFrom, reason);
@@ -402,8 +407,6 @@ public final class WalletService {
         });
     }
 
-    // ---------- sync API ----------
-
     public boolean deposit(UUID uuid, String currencyId, double amount, TransactionType type, String reason) {
         return join(cb -> depositAsync(uuid, currencyId, amount, type, reason, cb));
     }
@@ -433,8 +436,6 @@ public final class WalletService {
             return false;
         }
     }
-
-    // ---------- служебное ----------
 
     private void compensateGlobal(boolean fromGlobal, boolean toGlobal, UUID owner,
                                   double oldFromGlobal, double oldToGlobal,
