@@ -24,16 +24,14 @@ import java.util.Locale;
  *   %raskolvault_symbol_<ID>%       — символ валюты
  *
  * Observability (1.0.4):
- *   %raskolvault_tps%               — TPS за последнюю минуту (Paper)
- *   %raskolvault_tps_5m%            — TPS за 5 минут
- *   %raskolvault_tps_15m%           — TPS за 15 минут
- *   %raskolvault_ledger_queue%      — размер очереди писателя леджера
- *   %raskolvault_cache_hit%         — cache hit rate (%)
- *   %raskolvault_tx_per_min%        — транзакций в минуту
- *   %raskolvault_writer_applied%    — успешно применённых записей всего
- *   %raskolvault_writer_failed%     — проваленных записей всего
- *   %raskolvault_pool_idle%         — свободных соединений в пуле
- *   %raskolvault_pool_wait%         — потоков, ждущих соединения из пула
+ *   %raskolvault_tps% / _tps_5m / _tps_15m, %raskolvault_ledger_queue%,
+ *   %raskolvault_cache_hit%, %raskolvault_tx_per_min%, %raskolvault_writer_applied%,
+ *   %raskolvault_writer_failed%, %raskolvault_pool_idle%, %raskolvault_pool_wait%,
+ *   %raskolvault_currencies_count%, %raskolvault_rates_count%
+ *
+ * Anti-dupe (1.0.5):
+ *   %raskolvault_inflation_anomalies% — счётчик инфляционных аномалий
+ *   %raskolvault_rate_limited%        — счётчик отклонений rate-limit
  */
 public final class PlaceholderApiHook extends PlaceholderExpansion {
 
@@ -67,7 +65,6 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
     public @Nullable String onPlaceholderRequest(Player player, @NotNull String params) {
         String lower = params.toLowerCase(Locale.ROOT);
 
-        // Observability-плейсхолдеры (игрок не обязателен)
         if (lower.equals("tps")) return formatTps(0);
         if (lower.equals("tps_5m")) return formatTps(1);
         if (lower.equals("tps_15m")) return formatTps(2);
@@ -80,8 +77,11 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
         if (lower.equals("pool_wait")) return Integer.toString(plugin.getLedger().poolWaiting());
         if (lower.equals("currencies_count")) return Integer.toString(plugin.getCurrencies().all().size());
         if (lower.equals("rates_count")) return Integer.toString(plugin.getRates().allRates().size());
+        if (lower.equals("inflation_anomalies"))
+            return Long.toString(plugin.getInflationCheckpoint() == null ? 0L : plugin.getInflationCheckpoint().anomalies());
+        if (lower.equals("rate_limited"))
+            return Long.toString(plugin.getRateLimiter() == null ? 0L : plugin.getRateLimiter().rejectedCount());
 
-        // Игрок-зависимые плейсхолдеры (требуют player)
         if (player == null) {
             return "";
         }
@@ -125,19 +125,13 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
         return null;
     }
 
-    /**
-     * Bukkit.getTPS() на Paper возвращает double[] {1m, 5m, 15m}.
-     * Если API недоступен (Spigot-фолбэк), возвращаем "-".
-     */
     private String formatTps(int index) {
         try {
             double[] tps = Bukkit.getTPS();
             if (tps == null || index < 0 || index >= tps.length) {
                 return "-";
             }
-            double v = tps[index];
-            // Ограничиваем сверху 20.0 для отображения (Paper может отдавать >20 при catchup)
-            double display = Math.min(20.0D, v);
+            double display = Math.min(20.0D, tps[index]);
             return String.format(Locale.ROOT, "%.2f", display);
         } catch (Throwable t) {
             return "-";
