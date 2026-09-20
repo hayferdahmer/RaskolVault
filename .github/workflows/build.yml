@@ -13,6 +13,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python (YAML lint)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate YAML resources
+        run: |
+          python -m pip install --quiet pyyaml
+          python - <<'EOF'
+          import sys, pathlib, yaml
+          files = [
+              "src/main/resources/plugin.yml",
+              "src/main/resources/config.yml",
+              "src/main/resources/currencies.yml",
+              "src/main/resources/messages.yml",
+              "src/main/resources/rates.yml",
+          ]
+          bad = False
+          for f in files:
+              p = pathlib.Path(f)
+              if not p.exists():
+                  print(f"SKIP (missing): {f}")
+                  continue
+              try:
+                  yaml.safe_load(p.read_text(encoding="utf-8"))
+                  print(f"OK: {f}")
+              except yaml.YAMLError as e:
+                  print(f"FAIL: {f}")
+                  print(e)
+                  bad = True
+          sys.exit(1 if bad else 0)
+          EOF
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
