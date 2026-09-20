@@ -11,8 +11,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Корневая команда /rv. Этап 0: help / version / debug.
- * Остальные подкоманды (balance, pay, convert, rates, admin) добавляются на этапах 2–4.
+ * Корневая команда /rv. Этапы 0–1: help / version / debug (с состоянием леджера).
+ * Остальные подкоманды (balance, pay, convert, rates, admin) — этапы 2–4.
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -51,7 +51,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("§e/rv help§7 — эта справка");
         sender.sendMessage("§e/rv version§7 — версия плагина");
         if (sender.hasPermission("raskolvault.admin.debug")) {
-            sender.sendMessage("§e/rv debug§7 — состояние хуков и конфигурации");
+            sender.sendMessage("§e/rv debug§7 — состояние хуков, конфигурации и леджера");
         }
     }
 
@@ -66,7 +66,11 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 + " " + plugin.getConfig().getString("global-currency.symbol", "⚜"));
         sender.sendMessage(PREFIX + "Обмен: " + yn(plugin.getConfig().getBoolean("exchange.enabled", true))
                 + " · комиссия по умолчанию: " + plugin.getConfig().getDouble("exchange.default-fee", 0.02));
-        sender.sendMessage(PREFIX + "SQLite: " + plugin.getConfig().getString("storage.sqlite.file", "data/ledger.sqlite"));
+        if (plugin.getLedger() != null) {
+            sender.sendMessage(PREFIX + "Леджер: " + plugin.getLedger().describeStats());
+        } else {
+            sender.sendMessage(PREFIX + "Леджер: §cне инициализирован§r");
+        }
     }
 
     private String yn(boolean value) {
