@@ -1,5 +1,5 @@
 name: RaskolVault
-version: '1.0.5'
+version: '1.0.6'
 main: dev.raskol.vault.RaskolVault
 api-version: '1.21'
 author: hayferdahmer
