@@ -25,6 +25,8 @@ import java.util.UUID;
  * Одно соединение + synchronized: пре-лаунч объёмы не требуют пула.
  * WAL + synchronous=NORMAL: скорость без риска потерять коммит при краше.
  * Миграции через PRAGMA user_version (текущая схема v1).
+ *
+ * 1.0.1: migrateLegacyCurrencyIds логируется только при фактическом переносе строк.
  */
 public final class SQLiteLedger {
 
@@ -164,9 +166,8 @@ public final class SQLiteLedger {
     }
 
     /**
-     * Этап 6: миграция старых строчных ID (gold/denarius/crown)
-     * в новые 3-буквенные капсом (GLD/RAS/VLR).
-     * Запускается один раз при старте, логирует количество перенесённых строк.
+     * Миграция старых строчных ID (gold/denarius/crown) в 3-буквенные капсом (GLD/RAS/VLR).
+     * Идемпотентна: повторный вызов ничего не переносит и молчит.
      */
     public synchronized void migrateLegacyCurrencyIds(Map<String, String> mapping) {
         if (mapping.isEmpty()) {
@@ -193,7 +194,10 @@ public final class SQLiteLedger {
                     ps.setString(2, from);
                     txUpdates = ps.executeUpdate();
                 }
-                // Старую строку currencies удаляем: новая уже вставлена syncToLedger()
+                if (balanceUpdates == 0 && txUpdates == 0) {
+                    // Нечего переносить: не шумим в лог на каждом старте
+                    continue;
+                }
                 try (PreparedStatement ps = connection.prepareStatement(
                         "DELETE FROM currencies WHERE id=?")) {
                     ps.setString(1, from);
