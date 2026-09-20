@@ -1,11 +1,11 @@
 name: RaskolVault
-version: '1.0.3'
+version: '1.0.4'
 main: dev.raskol.vault.RaskolVault
 api-version: '1.21'
 author: hayferdahmer
 description: 'Многовалютный экономический слой поверх EssentialsX: национальные и мировые валюты, курсы, комиссии, SQLite-аудит'
 
-softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI]
+softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI, spark]
 
 commands:
   rv:
@@ -35,3 +35,5 @@ permissions:
       raskolvault.admin.audit: true
       raskolvault.admin.reload: true
       raskolvault.admin.debug: true
+      raskolvault.admin.backup: true
+      raskolvault.admin.health: true
