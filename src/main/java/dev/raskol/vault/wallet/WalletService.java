@@ -7,27 +7,35 @@ import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.api.wallet.Wallet;
 import dev.raskol.vault.hook.EssentialsHook;
-import dev.raskol.vault.storage.LedgerException;
+import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.plugin.Plugin;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
- * Кошельки игроков (1.0.2).
+ * Кошельки игроков (1.0.3): проекция кэша на потоке вызова + асинхронный коммит.
  *
- * Двойная природа балансов:
- * - GLOBAL (⚜): источник правды — Essentials; в леджер пишется ТОЛЬКО аудит.
- *   Если аудит-коммит провален — компенсационный откат Essentials (деньги не движутся без записи).
- * - NATIONAL/WORLD: источник правды — леджер; баланс+аудит одной SQL-транзакцией.
+ * Поток вызова (main для команд) НЕ касается SQLite: под projectionLock делается
+ * мгновенная математика кэша, затем атомарный коммит уходит в LedgerWriter.
+ * Синхронный контракт (Core-хук, админки, казна) = тот же путь + join с таймаутом.
  *
- * Кэш неблобальных балансов обновляется ТОЛЬКО после успешного коммита.
- * Все мутации под монитором сервиса: атомарность бизнес-операции важнее параллельности.
+ * GLOBAL (⚜): мутация Essentials на потоке вызова (in-memory, быстро),
+ * в очередь уходит только аудиторская запись; при провале записи — компенсация Essentials.
+ * NATIONAL/WORLD: абсолютное значение баланса уходит в коммит; кэш обновляется в проекции.
+ *
+ * Отказ записи: SEVERE с полными данными для ручного восстановления; кэш не откатывается
+ * (откат затёр бы более поздние проекции). Счётчик failed — материал алертов 1.0.4.
  */
 public final class WalletService {
 
@@ -35,16 +43,22 @@ public final class WalletService {
 
     private final Plugin plugin;
     private final SQLiteLedger ledger;
+    private final LedgerWriter writer;
     private final CurrencyRegistry currencies;
     private final EssentialsHook essentials;
     private final Map<UUID, Map<String, Double>> cache = new ConcurrentHashMap<>();
+    private final Object projectionLock = new Object();
+    private final long joinTimeoutMillis;
 
-    public WalletService(Plugin plugin, SQLiteLedger ledger,
-                         CurrencyRegistry currencies, EssentialsHook essentials) {
+    public WalletService(Plugin plugin, SQLiteLedger ledger, LedgerWriter writer,
+                         CurrencyRegistry currencies, EssentialsHook essentials,
+                         long joinTimeoutMillis) {
         this.plugin = plugin;
         this.ledger = ledger;
+        this.writer = writer;
         this.currencies = currencies;
         this.essentials = essentials;
+        this.joinTimeoutMillis = Math.max(1000L, joinTimeoutMillis);
     }
 
     public void init() {
@@ -53,6 +67,8 @@ public final class WalletService {
         }
         plugin.getLogger().info("RaskolVault: кэш кошельков прогрет, строк: " + cache.size());
     }
+
+    // ---------- чтение (всегда быстрое: кэш или Essentials) ----------
 
     public double getBalance(UUID uuid, String currencyId) {
         if (currencies.globalId().equals(currencyId)) {
@@ -64,147 +80,6 @@ public final class WalletService {
 
     public boolean has(UUID uuid, String currencyId, double amount) {
         return getBalance(uuid, currencyId) + EPS >= amount;
-    }
-
-    public boolean deposit(UUID uuid, String currencyId, double amount, TransactionType type, String reason) {
-        Currency currency = currencies.get(currencyId).orElse(null);
-        if (currency == null || !(amount > 0.0D)) {
-            return false;
-        }
-        double rounded = round(amount, currency);
-        synchronized (this) {
-            if (currency.isGlobal()) {
-                if (!essentials.isAvailable()) {
-                    return false;
-                }
-                double old = essentials.getBalance(uuid);
-                if (!essentials.setBalance(uuid, round(old + rounded, currency))) {
-                    return false;
-                }
-                try {
-                    ledger.commitTransaction(Transaction.fresh(System.currentTimeMillis(),
-                            null, uuid, currencyId, rounded, type, reason, null));
-                } catch (LedgerException e) {
-                    plugin.getLogger().severe("RaskolVault: аудит не записан — компенсационный откат Essentials для "
-                            + uuid + ": " + e.getMessage());
-                    essentials.setBalance(uuid, old);
-                    return false;
-                }
-            } else {
-                double neu = round(raw(uuid, currencyId) + rounded, currency);
-                try {
-                    ledger.commitBalanceAndTransaction(uuid, currencyId, neu,
-                            Transaction.fresh(System.currentTimeMillis(),
-                                    null, uuid, currencyId, rounded, type, reason, null));
-                } catch (LedgerException e) {
-                    plugin.getLogger().severe("RaskolVault: депозит отклонён (коммит провален) для "
-                            + uuid + "/" + currencyId + ": " + e.getMessage());
-                    return false;
-                }
-                cachePut(uuid, currencyId, neu);
-            }
-        }
-        return true;
-    }
-
-    public boolean withdraw(UUID uuid, String currencyId, double amount, TransactionType type, String reason) {
-        Currency currency = currencies.get(currencyId).orElse(null);
-        if (currency == null || !(amount > 0.0D)) {
-            return false;
-        }
-        double rounded = round(amount, currency);
-        synchronized (this) {
-            double old = getBalance(uuid, currencyId);
-            if (old + EPS < rounded) {
-                return false;
-            }
-            if (currency.isGlobal()) {
-                if (!essentials.isAvailable()) {
-                    return false;
-                }
-                if (!essentials.setBalance(uuid, round(old - rounded, currency))) {
-                    return false;
-                }
-                try {
-                    ledger.commitTransaction(Transaction.fresh(System.currentTimeMillis(),
-                            uuid, null, currencyId, rounded, type, reason, null));
-                } catch (LedgerException e) {
-                    plugin.getLogger().severe("RaskolVault: аудит не записан — компенсационный откат Essentials для "
-                            + uuid + ": " + e.getMessage());
-                    essentials.setBalance(uuid, old);
-                    return false;
-                }
-            } else {
-                double neu = round(old - rounded, currency);
-                try {
-                    ledger.commitBalanceAndTransaction(uuid, currencyId, neu,
-                            Transaction.fresh(System.currentTimeMillis(),
-                                    uuid, null, currencyId, rounded, type, reason, null));
-                } catch (LedgerException e) {
-                    plugin.getLogger().severe("RaskolVault: снятие отклонено (коммит провален) для "
-                            + uuid + "/" + currencyId + ": " + e.getMessage());
-                    return false;
-                }
-                cachePut(uuid, currencyId, neu);
-            }
-        }
-        return true;
-    }
-
-    public boolean transfer(UUID from, UUID to, String currencyId, double amount, String reason) {
-        if (from.equals(to)) {
-            return false;
-        }
-        Currency currency = currencies.get(currencyId).orElse(null);
-        if (currency == null || !(amount > 0.0D)) {
-            return false;
-        }
-        double rounded = round(amount, currency);
-        synchronized (this) {
-            double oldFrom = getBalance(from, currencyId);
-            if (oldFrom + EPS < rounded) {
-                return false;
-            }
-            double oldTo = getBalance(to, currencyId);
-            if (currency.isGlobal()) {
-                if (!essentials.isAvailable()) {
-                    return false;
-                }
-                if (!essentials.setBalance(from, round(oldFrom - rounded, currency))) {
-                    return false;
-                }
-                if (!essentials.setBalance(to, round(oldTo + rounded, currency))) {
-                    plugin.getLogger().severe("RaskolVault: перевод оборван на зачислении — откат списания для " + from);
-                    essentials.setBalance(from, oldFrom);
-                    return false;
-                }
-                try {
-                    ledger.commitTransaction(Transaction.fresh(System.currentTimeMillis(),
-                            from, to, currencyId, rounded, TransactionType.PAY, reason, null));
-                } catch (LedgerException e) {
-                    plugin.getLogger().severe("RaskolVault: аудит не записан — полный откат перевода "
-                            + from + "→" + to + ": " + e.getMessage());
-                    essentials.setBalance(from, oldFrom);
-                    essentials.setBalance(to, oldTo);
-                    return false;
-                }
-            } else {
-                double neuFrom = round(oldFrom - rounded, currency);
-                double neuTo = round(oldTo + rounded, currency);
-                try {
-                    ledger.commitTransferAndTransaction(from, to, currencyId, neuFrom, neuTo,
-                            Transaction.fresh(System.currentTimeMillis(),
-                                    from, to, currencyId, rounded, TransactionType.PAY, reason, null));
-                } catch (LedgerException e) {
-                    plugin.getLogger().severe("RaskolVault: перевод отклонён (коммит провален) "
-                            + from + "→" + to + "/" + currencyId + ": " + e.getMessage());
-                    return false;
-                }
-                cachePut(from, currencyId, neuFrom);
-                cachePut(to, currencyId, neuTo);
-            }
-        }
-        return true;
     }
 
     public Wallet snapshot(UUID uuid) {
@@ -225,6 +100,320 @@ public final class WalletService {
 
     public int cachedRows() {
         return cache.size();
+    }
+
+    // ---------- async API ----------
+
+    public void depositAsync(UUID uuid, String currencyId, double amount,
+                             TransactionType type, String reason, Consumer<Boolean> cb) {
+        Currency currency = currencies.get(currencyId).orElse(null);
+        if (currency == null || !(amount > 0.0D)) {
+            cb.accept(false);
+            return;
+        }
+        double rounded = round(amount, currency);
+        Transaction tx = Transaction.fresh(System.currentTimeMillis(),
+                null, uuid, currencyId, rounded, type, reason, null);
+        if (currency.isGlobal()) {
+            if (!essentials.isAvailable()) {
+                cb.accept(false);
+                return;
+            }
+            double old = essentials.getBalance(uuid);
+            if (!essentials.setBalance(uuid, round(old + rounded, currency))) {
+                cb.accept(false);
+                return;
+            }
+            writer.submit(() -> ledger.commitAbsolute(List.of(), List.of(tx)), ok -> {
+                if (!ok) {
+                    essentials.setBalance(uuid, old);
+                    plugin.getLogger().severe("RaskolVault: аудит не записан — откат Essentials для "
+                            + uuid + " (" + reason + ", " + rounded + " " + currencyId + ")");
+                }
+                cb.accept(ok);
+            });
+            return;
+        }
+        double old;
+        double neu;
+        synchronized (projectionLock) {
+            old = raw(uuid, currencyId);
+            neu = round(old + rounded, currency);
+            cachePut(uuid, currencyId, neu);
+        }
+        List<SQLiteLedger.AbsoluteBalance> writes =
+                List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu));
+        writer.submit(() -> ledger.commitAbsolute(writes, List.of(tx)), ok -> {
+            if (!ok) {
+                logWriteLoss("deposit", uuid, currencyId, rounded, old, neu, reason);
+            }
+            cb.accept(ok);
+        });
+    }
+
+    public void withdrawAsync(UUID uuid, String currencyId, double amount,
+                              TransactionType type, String reason, Consumer<Boolean> cb) {
+        Currency currency = currencies.get(currencyId).orElse(null);
+        if (currency == null || !(amount > 0.0D)) {
+            cb.accept(false);
+            return;
+        }
+        double rounded = round(amount, currency);
+        Transaction tx = Transaction.fresh(System.currentTimeMillis(),
+                uuid, null, currencyId, rounded, type, reason, null);
+        if (currency.isGlobal()) {
+            if (!essentials.isAvailable()) {
+                cb.accept(false);
+                return;
+            }
+            double old = essentials.getBalance(uuid);
+            if (old + EPS < rounded) {
+                cb.accept(false);
+                return;
+            }
+            if (!essentials.setBalance(uuid, round(old - rounded, currency))) {
+                cb.accept(false);
+                return;
+            }
+            writer.submit(() -> ledger.commitAbsolute(List.of(), List.of(tx)), ok -> {
+                if (!ok) {
+                    essentials.setBalance(uuid, old);
+                    plugin.getLogger().severe("RaskolVault: аудит не записан — откат Essentials для "
+                            + uuid + " (" + reason + ", " + rounded + " " + currencyId + ")");
+                }
+                cb.accept(ok);
+            });
+            return;
+        }
+        double old;
+        double neu;
+        synchronized (projectionLock) {
+            old = raw(uuid, currencyId);
+            if (old + EPS < rounded) {
+                cb.accept(false);
+                return;
+            }
+            neu = round(old - rounded, currency);
+            cachePut(uuid, currencyId, neu);
+        }
+        List<SQLiteLedger.AbsoluteBalance> writes =
+                List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu));
+        writer.submit(() -> ledger.commitAbsolute(writes, List.of(tx)), ok -> {
+            if (!ok) {
+                logWriteLoss("withdraw", uuid, currencyId, rounded, old, neu, reason);
+            }
+            cb.accept(ok);
+        });
+    }
+
+    public void transferAsync(UUID from, UUID to, String currencyId, double amount,
+                              String reason, Consumer<Boolean> cb) {
+        if (from.equals(to)) {
+            cb.accept(false);
+            return;
+        }
+        Currency currency = currencies.get(currencyId).orElse(null);
+        if (currency == null || !(amount > 0.0D)) {
+            cb.accept(false);
+            return;
+        }
+        double rounded = round(amount, currency);
+        Transaction tx = Transaction.fresh(System.currentTimeMillis(),
+                from, to, currencyId, rounded, TransactionType.PAY, reason, null);
+        if (currency.isGlobal()) {
+            if (!essentials.isAvailable()) {
+                cb.accept(false);
+                return;
+            }
+            double oldFrom = essentials.getBalance(from);
+            if (oldFrom + EPS < rounded) {
+                cb.accept(false);
+                return;
+            }
+            double oldTo = essentials.getBalance(to);
+            if (!essentials.setBalance(from, round(oldFrom - rounded, currency))) {
+                cb.accept(false);
+                return;
+            }
+            if (!essentials.setBalance(to, round(oldTo + rounded, currency))) {
+                essentials.setBalance(from, oldFrom);
+                cb.accept(false);
+                return;
+            }
+            writer.submit(() -> ledger.commitAbsolute(List.of(), List.of(tx)), ok -> {
+                if (!ok) {
+                    essentials.setBalance(from, oldFrom);
+                    essentials.setBalance(to, oldTo);
+                    plugin.getLogger().severe("RaskolVault: аудит не записан — полный откат перевода "
+                            + from + "→" + to + " (" + rounded + " " + currencyId + ")");
+                }
+                cb.accept(ok);
+            });
+            return;
+        }
+        double oldFrom;
+        double oldTo;
+        double neuFrom;
+        double neuTo;
+        synchronized (projectionLock) {
+            oldFrom = raw(from, currencyId);
+            if (oldFrom + EPS < rounded) {
+                cb.accept(false);
+                return;
+            }
+            oldTo = raw(to, currencyId);
+            neuFrom = round(oldFrom - rounded, currency);
+            neuTo = round(oldTo + rounded, currency);
+            cachePut(from, currencyId, neuFrom);
+            cachePut(to, currencyId, neuTo);
+        }
+        List<SQLiteLedger.AbsoluteBalance> writes = List.of(
+                new SQLiteLedger.AbsoluteBalance(from, currencyId, neuFrom),
+                new SQLiteLedger.AbsoluteBalance(to, currencyId, neuTo));
+        writer.submit(() -> ledger.commitAbsolute(writes, List.of(tx)), ok -> {
+            if (!ok) {
+                logWriteLoss("transfer " + from + "→" + to, from, currencyId, rounded, oldFrom, neuFrom, reason);
+            }
+            cb.accept(ok);
+        });
+    }
+
+    /** Обмен: две аудиторские записи + абсолютные балансы по неблобальным сторонам. */
+    public void exchangeAsync(UUID owner, String fromId, String toId,
+                              double fromAmount, double toAmount, String reason,
+                              Consumer<Boolean> cb) {
+        Currency from = currencies.get(fromId).orElse(null);
+        Currency to = currencies.get(toId).orElse(null);
+        if (from == null || to == null || from.id().equals(to.id())
+                || !(fromAmount > 0.0D) || !(toAmount > 0.0D)) {
+            cb.accept(false);
+            return;
+        }
+        Transaction txWithdraw = Transaction.fresh(System.currentTimeMillis(),
+                owner, null, fromId, fromAmount, TransactionType.CONVERT, reason + ":withdraw", null);
+        Transaction txDeposit = Transaction.fresh(System.currentTimeMillis(),
+                null, owner, toId, toAmount, TransactionType.CONVERT, reason + ":deposit", null);
+        List<Transaction> txs = List.of(txWithdraw, txDeposit);
+
+        boolean fromGlobal = from.isGlobal();
+        boolean toGlobal = to.isGlobal();
+        double oldFromGlobal = 0.0D;
+        double oldToGlobal = 0.0D;
+
+        if (fromGlobal) {
+            if (!essentials.isAvailable()) {
+                cb.accept(false);
+                return;
+            }
+            oldFromGlobal = essentials.getBalance(owner);
+            if (oldFromGlobal + EPS < fromAmount) {
+                cb.accept(false);
+                return;
+            }
+            if (!essentials.setBalance(owner, round(oldFromGlobal - fromAmount, from))) {
+                cb.accept(false);
+                return;
+            }
+        }
+        if (toGlobal) {
+            if (!essentials.isAvailable()) {
+                if (fromGlobal) {
+                    essentials.setBalance(owner, oldFromGlobal);
+                }
+                cb.accept(false);
+                return;
+            }
+            oldToGlobal = essentials.getBalance(owner);
+            if (!essentials.setBalance(owner, round(oldToGlobal + toAmount, to))) {
+                if (fromGlobal) {
+                    essentials.setBalance(owner, oldFromGlobal);
+                }
+                cb.accept(false);
+                return;
+            }
+        }
+
+        List<SQLiteLedger.AbsoluteBalance> writes = new ArrayList<>(2);
+        double oldFromCache = 0.0D;
+        double neuFromCache = 0.0D;
+        synchronized (projectionLock) {
+            if (!fromGlobal) {
+                oldFromCache = raw(owner, fromId);
+                if (oldFromCache + EPS < fromAmount) {
+                    compensateGlobal(fromGlobal, toGlobal, owner, oldFromGlobal, oldToGlobal, from, to, fromAmount, toAmount);
+                    cb.accept(false);
+                    return;
+                }
+                neuFromCache = round(oldFromCache - fromAmount, from);
+                cachePut(owner, fromId, neuFromCache);
+                writes.add(new SQLiteLedger.AbsoluteBalance(owner, fromId, neuFromCache));
+            }
+            if (!toGlobal) {
+                double oldToCache = raw(owner, toId);
+                double neuToCache = round(oldToCache + toAmount, to);
+                cachePut(owner, toId, neuToCache);
+                writes.add(new SQLiteLedger.AbsoluteBalance(owner, toId, neuToCache));
+            }
+        }
+        writer.submit(() -> ledger.commitAbsolute(writes, txs), ok -> {
+            if (!ok) {
+                compensateGlobal(fromGlobal, toGlobal, owner, oldFromGlobal, oldToGlobal, from, to, fromAmount, toAmount);
+                logWriteLoss("convert", owner, fromId, fromAmount, oldFromCache, neuFromCache, reason);
+            }
+            cb.accept(ok);
+        });
+    }
+
+    // ---------- sync API (Core-хук, админки, казна нации) ----------
+
+    public boolean deposit(UUID uuid, String currencyId, double amount, TransactionType type, String reason) {
+        return join(cb -> depositAsync(uuid, currencyId, amount, type, reason, cb));
+    }
+
+    public boolean withdraw(UUID uuid, String currencyId, double amount, TransactionType type, String reason) {
+        return join(cb -> withdrawAsync(uuid, currencyId, amount, type, reason, cb));
+    }
+
+    public boolean transfer(UUID from, UUID to, String currencyId, double amount, String reason) {
+        return join(cb -> transferAsync(from, to, currencyId, amount, reason, cb));
+    }
+
+    public boolean exchange(UUID owner, String fromId, String toId,
+                            double fromAmount, double toAmount, String reason) {
+        return join(cb -> exchangeAsync(owner, fromId, toId, fromAmount, toAmount, reason, cb));
+    }
+
+    private boolean join(Consumer<Consumer<Boolean>> launcher) {
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+        launcher.accept(future::complete);
+        try {
+            return future.get(joinTimeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ---------- служебное ----------
+
+    private void compensateGlobal(boolean fromGlobal, boolean toGlobal, UUID owner,
+                                  double oldFromGlobal, double oldToGlobal,
+                                  Currency from, Currency to, double fromAmount, double toAmount) {
+        if (toGlobal) {
+            essentials.setBalance(owner, oldToGlobal);
+        }
+        if (fromGlobal) {
+            essentials.setBalance(owner, oldFromGlobal);
+        }
+    }
+
+    private void logWriteLoss(String op, UUID uuid, String currencyId, double amount,
+                              double oldBalance, double newBalance, String reason) {
+        plugin.getLogger().severe("RaskolVault: ПОТЕРЯ ЗАПИСИ (восстановить вручную): op=" + op
+                + ", uuid=" + uuid + ", currency=" + currencyId + ", amount=" + amount
+                + ", old=" + oldBalance + ", new=" + newBalance + ", reason=" + reason);
     }
 
     private double raw(UUID uuid, String currencyId) {
