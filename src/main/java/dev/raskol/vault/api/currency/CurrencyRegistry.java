@@ -8,8 +8,6 @@ import org.bukkit.plugin.Plugin;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -17,130 +15,141 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Реестр валют: currencies.yml → immutable-модели → синхронизация в леджер.
- * Инвариант: ровно одна GLOBAL-валюта. Дубли и битые записи не роняют старт,
- * а пропускаются с warning — деньги не должны блокировать сервер из-за опечатки.
- *
- * Этап 5: добавлены addCurrency/removeCurrency для авто-создания национальных
- * валют (NationAutoCurrencyListener) и админ-команды /rv admin currency.
+ * Реестр валют (1.0 + 1.0.6 rename/updateNationId/countByNation).
  */
 public final class CurrencyRegistry {
 
     private final Plugin plugin;
-    private final Map<String, Currency> byId = new LinkedHashMap<>();
     private String globalId;
+    private final Map<String, Currency> byId = new LinkedHashMap<>();
 
     public CurrencyRegistry(Plugin plugin) {
         this.plugin = plugin;
     }
 
-    public void load(File currenciesFile, String fallbackId, String fallbackName,
-                     String fallbackSymbol, int fallbackDecimals) {
+    public void load(File file, String globalId, String globalName, String globalSymbol, int globalDecimals) {
+        this.globalId = globalId.toUpperCase(Locale.ROOT);
         byId.clear();
-        globalId = null;
-        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(currenciesFile);
-        ConfigurationSection section = yaml.getConfigurationSection("currencies");
-        if (section != null) {
-            for (String id : section.getKeys(false)) {
-                ConfigurationSection cs = section.getConfigurationSection(id);
-                if (cs == null) {
-                    plugin.getLogger().warning("RaskolVault: валюта '" + id + "' пропущена: нет секции");
-                    continue;
-                }
-                String typeRaw = cs.getString("type", "WORLD").toUpperCase(Locale.ROOT);
-                CurrencyType type;
-                try {
-                    type = CurrencyType.valueOf(typeRaw);
-                } catch (IllegalArgumentException e) {
-                    plugin.getLogger().warning("RaskolVault: валюта '" + id + "' пропущена: неизвестный type " + typeRaw);
-                    continue;
-                }
-                try {
-                    Currency currency = new Currency(
-                            id,
-                            cs.getString("display-name", id),
-                            cs.getString("symbol", "¤"),
-                            type,
-                            cs.getString("nation-id"),
-                            cs.getInt("decimals", 2),
-                            cs.getBoolean("tradeable", true));
-                    if (type == CurrencyType.GLOBAL) {
-                        if (globalId != null) {
-                            plugin.getLogger().warning("RaskolVault: вторая GLOBAL-валюта '" + id
-                                    + "' пропущена (global уже " + globalId + ")");
-                            continue;
-                        }
-                        globalId = id;
+
+        Currency global = new Currency(this.globalId, globalName, globalSymbol,
+                CurrencyType.GLOBAL, null, globalDecimals, true);
+        byId.put(global.id(), global);
+
+        if (file.exists()) {
+            YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            ConfigurationSection section = yaml.getConfigurationSection("currencies");
+            if (section != null) {
+                for (String key : section.getKeys(false)) {
+                    ConfigurationSection entry = section.getConfigurationSection(key);
+                    if (entry == null) {
+                        continue;
                     }
-                    byId.put(id, currency);
-                } catch (IllegalArgumentException e) {
-                    plugin.getLogger().warning("RaskolVault: валюта '" + id + "' пропущена: " + e.getMessage());
+                    String id = entry.getString("id", key).toUpperCase(Locale.ROOT);
+                    if (id.equals(this.globalId)) {
+                        continue;
+                    }
+                    String type = entry.getString("type", "NATIONAL");
+                    CurrencyType ctype;
+                    try {
+                        ctype = CurrencyType.valueOf(type.toUpperCase(Locale.ROOT));
+                    } catch (IllegalArgumentException e) {
+                        plugin.getLogger().warning("RaskolVault: неверный тип валюты " + id + ": " + type);
+                        continue;
+                    }
+                    Currency c = new Currency(
+                            id,
+                            entry.getString("display-name", id),
+                            entry.getString("symbol", "?"),
+                            ctype,
+                            entry.getString("nation-id"),
+                            entry.getInt("decimals", 2),
+                            entry.getBoolean("tradeable", true)
+                    );
+                    byId.put(c.id(), c);
                 }
             }
         }
-        if (globalId == null) {
-            Currency fallback = new Currency(fallbackId, fallbackName, fallbackSymbol,
-                    CurrencyType.GLOBAL, null, fallbackDecimals, true);
-            byId.put(fallback.id(), fallback);
-            globalId = fallback.id();
-            plugin.getLogger().warning("RaskolVault: в currencies.yml нет GLOBAL-валюты — "
-                    + "создана дефолтная " + fallback.id());
-        }
-        plugin.getLogger().info("RaskolVault: загружено валют: " + byId.size() + " (global: " + globalId + ")");
+        plugin.getLogger().info("RaskolVault: валют в реестре: " + byId.size() + " (global=" + this.globalId + ")");
     }
 
     public void syncToLedger(SQLiteLedger ledger) {
-        for (Currency currency : byId.values()) {
-            ledger.upsertCurrency(currency);
+        for (Currency c : byId.values()) {
+            ledger.upsertCurrency(c);
         }
     }
 
-    /** Добавить валюту динамически (из NationAutoCurrencyListener или команды). */
-    public void addCurrency(Currency currency) {
-        if (currency.type() == CurrencyType.GLOBAL && globalId != null && !globalId.equals(currency.id())) {
-            throw new IllegalStateException("Нельзя добавить вторую GLOBAL-валюту");
-        }
-        byId.put(currency.id(), currency);
-        if (currency.type() == CurrencyType.GLOBAL) {
-            globalId = currency.id();
-        }
-    }
-
-    /** Удалить валюту (кроме global). Каскад балансов через FK в леджере. */
-    public void removeCurrency(String id) {
-        Currency currency = byId.get(id);
-        if (currency == null) {
-            return;
-        }
-        if (currency.isGlobal()) {
-            throw new IllegalStateException("Нельзя удалить глобальную валюту");
-        }
-        byId.remove(id);
+    public List<Currency> all() {
+        return new ArrayList<>(byId.values());
     }
 
     public Optional<Currency> get(String id) {
-        return Optional.ofNullable(byId.get(id));
-    }
-
-    public Collection<Currency> all() {
-        return Collections.unmodifiableCollection(byId.values());
-    }
-
-    public List<Currency> nationalOf(String nationId) {
-        List<Currency> out = new ArrayList<>();
-        for (Currency currency : byId.values()) {
-            if (currency.type() == CurrencyType.NATIONAL && nationId.equalsIgnoreCase(currency.nationId())) {
-                out.add(currency);
-            }
-        }
-        return out;
+        return id == null ? Optional.empty() : Optional.ofNullable(byId.get(id.toUpperCase(Locale.ROOT)));
     }
 
     public String globalId() {
         return globalId;
     }
 
-    public Currency global() {
-        return byId.get(globalId);
+    public int size() {
+        return byId.size();
+    }
+
+    /** 1.0.6: количество валют, привязанных к указанной нации (для Towny-delete warning). */
+    public int countByNation(String nationId) {
+        if (nationId == null) {
+            return 0;
+        }
+        int count = 0;
+        for (Currency c : byId.values()) {
+            if (nationId.equals(c.nationId())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 1.0.6: обновить nation_id у всех валют с старым именем (Towny rename). */
+    public int updateNationId(String oldName, String newName) {
+        if (oldName == null || oldName.equals(newName)) {
+            return 0;
+        }
+        List<String> keysToReplace = new ArrayList<>();
+        List<Currency> replaced = new ArrayList<>();
+        for (Map.Entry<String, Currency> e : byId.entrySet()) {
+            Currency c = e.getValue();
+            if (oldName.equals(c.nationId())) {
+                keysToReplace.add(e.getKey());
+                replaced.add(new Currency(c.id(), c.displayName(), c.symbol(), c.type(),
+                        newName, c.decimals(), c.tradeable()));
+            }
+        }
+        for (int i = 0; i < keysToReplace.size(); i++) {
+            byId.put(keysToReplace.get(i), replaced.get(i));
+        }
+        return replaced.size();
+    }
+
+    /** 1.0.6: переименовать валюту (в памяти). Возвращает false, если не найдена. */
+    public boolean rename(String oldId, String newId) {
+        String upperOld = oldId.toUpperCase(Locale.ROOT);
+        String upperNew = newId.toUpperCase(Locale.ROOT);
+        if (upperOld.equals(upperNew)) {
+            return false;
+        }
+        Currency c = byId.remove(upperOld);
+        if (c == null) {
+            return false;
+        }
+        if (byId.containsKey(upperNew)) {
+            byId.put(upperOld, c);
+            return false;
+        }
+        Currency renamed = new Currency(upperNew, c.displayName(), c.symbol(), c.type(),
+                c.nationId(), c.decimals(), c.tradeable());
+        byId.put(upperNew, renamed);
+        if (upperOld.equals(globalId)) {
+            globalId = upperNew;
+        }
+        return true;
     }
 }
