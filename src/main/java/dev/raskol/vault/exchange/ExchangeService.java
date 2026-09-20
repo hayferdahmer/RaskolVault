@@ -3,12 +3,16 @@ package dev.raskol.vault.exchange;
 
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
-import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.wallet.WalletService;
 import org.bukkit.plugin.Plugin;
 
 import java.util.UUID;
+import java.util.function.Consumer;
 
+/**
+ * Обмен валют (1.0.3): preview из кэша (мгновенно), исполнение — асинхронно
+ * через WalletService.exchangeAsync (один атомарный коммит на обе стороны).
+ */
 public final class ExchangeService {
 
     private final Plugin plugin;
@@ -53,27 +57,34 @@ public final class ExchangeService {
         return new ExchangeResult(false, from.id(), to.id(), amount, feeAmount, net, rate, "preview");
     }
 
+    /** Асинхронное исполнение: callback получает финальный ExchangeResult. */
+    public void executeAsync(UUID owner, String fromId, String toId, double amount,
+                             Consumer<ExchangeResult> cb) {
+        ExchangeResult preview = preview(owner, fromId, toId, amount);
+        if (!"preview".equals(preview.reason())) {
+            cb.accept(preview);
+            return;
+        }
+        String reason = "convert:" + preview.fromId() + "->" + preview.toId();
+        wallets.exchangeAsync(owner, preview.fromId(), preview.toId(),
+                preview.gross(), preview.net(), reason, ok -> cb.accept(ok
+                        ? new ExchangeResult(true, preview.fromId(), preview.toId(),
+                        preview.gross(), preview.feeAmount(), preview.net(), preview.rate(), reason)
+                        : ExchangeResult.failure(preview.fromId(), preview.toId(), "write-failed")));
+    }
+
+    /** Синхронное исполнение (админ-пути, тесты). */
     public ExchangeResult execute(UUID owner, String fromId, String toId, double amount) {
         ExchangeResult preview = preview(owner, fromId, toId, amount);
-        if (!preview.reason().equals("preview")) {
+        if (!"preview".equals(preview.reason())) {
             return preview;
         }
         String reason = "convert:" + preview.fromId() + "->" + preview.toId();
-        boolean withdrawn = wallets.withdraw(owner, preview.fromId(), preview.gross(),
-                TransactionType.CONVERT, reason + ":withdraw");
-        if (!withdrawn) {
-            return ExchangeResult.failure(preview.fromId(), preview.toId(), "withdraw-failed");
-        }
-        boolean deposited = wallets.deposit(owner, preview.toId(), preview.net(),
-                TransactionType.CONVERT, reason + ":deposit");
-        if (!deposited) {
-            wallets.deposit(owner, preview.fromId(), preview.gross(),
-                    TransactionType.CONVERT, reason + ":rollback");
-            plugin.getLogger().severe("RaskolVault: обмен " + preview.gross() + " " + preview.fromId()
-                    + " → " + preview.toId() + " откатан: deposit не прошёл, средства возвращены");
-            return ExchangeResult.failure(preview.fromId(), preview.toId(), "deposit-failed-rollback");
-        }
-        return new ExchangeResult(true, preview.fromId(), preview.toId(),
-                preview.gross(), preview.feeAmount(), preview.net(), preview.rate(), reason);
+        boolean ok = wallets.exchange(owner, preview.fromId(), preview.toId(),
+                preview.gross(), preview.net(), reason);
+        return ok
+                ? new ExchangeResult(true, preview.fromId(), preview.toId(),
+                preview.gross(), preview.feeAmount(), preview.net(), preview.rate(), reason)
+                : ExchangeResult.failure(preview.fromId(), preview.toId(), "write-failed");
     }
 }
