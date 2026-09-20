@@ -16,7 +16,6 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -28,7 +27,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             "balance", "pay", "convert", "confirm", "debug", "admin", "help", "version");
     private static final List<String> ADMIN_SUB = List.of(
             "health", "give", "take", "set", "mint", "burn",
-            "currency", "simulate", "simulate-load", "audit", "reload", "backup", "restore", "stress");
+            "currency", "simulate", "simulate-load", "stress", "audit", "reload", "backup", "restore");
     private static final List<String> CURRENCY_OPS = List.of("list", "rename", "create", "remove");
 
     private final RaskolVault plugin;
@@ -80,10 +79,6 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     }
 
     private void balance(CommandSender sender, String[] args) {
-        if (!(sender instanceof Player player) && args.length < 2) {
-            sender.sendMessage(plugin.getMessages().prefix() + "§e/rv balance <ник>");
-            return;
-        }
         Player target;
         if (args.length >= 2) {
             if (!sender.hasPermission("raskolvault.admin.view")) {
@@ -98,6 +93,10 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 return;
             }
         } else {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage(plugin.getMessages().prefix() + "§e/rv balance <ник>");
+                return;
+            }
             target = player;
         }
         sender.sendMessage(plugin.getMessages().prefix()
@@ -213,7 +212,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             if ("admin".equals(op0)) {
                 String sub = args[1].toLowerCase(Locale.ROOT);
                 if ("currency".equals(sub) && "rename".equalsIgnoreCase(args[2])) {
-                    return Collections.emptyList(); // new id — пользователь вводит сам
+                    return Collections.emptyList();
                 }
             }
             return Collections.emptyList();
