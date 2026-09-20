@@ -14,9 +14,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
-/**
- * Реестр валют (1.0 + 1.0.6 rename/updateNationId/countByNation).
- */
 public final class CurrencyRegistry {
 
     private final Plugin plugin;
@@ -94,7 +91,6 @@ public final class CurrencyRegistry {
         return byId.size();
     }
 
-    /** 1.0.6: количество валют, привязанных к указанной нации (для Towny-delete warning). */
     public int countByNation(String nationId) {
         if (nationId == null) {
             return 0;
@@ -108,7 +104,6 @@ public final class CurrencyRegistry {
         return count;
     }
 
-    /** 1.0.6: обновить nation_id у всех валют с старым именем (Towny rename). */
     public int updateNationId(String oldName, String newName) {
         if (oldName == null || oldName.equals(newName)) {
             return 0;
@@ -129,7 +124,6 @@ public final class CurrencyRegistry {
         return replaced.size();
     }
 
-    /** 1.0.6: переименовать валюту (в памяти). Возвращает false, если не найдена. */
     public boolean rename(String oldId, String newId) {
         String upperOld = oldId.toUpperCase(Locale.ROOT);
         String upperNew = newId.toUpperCase(Locale.ROOT);
@@ -151,5 +145,15 @@ public final class CurrencyRegistry {
             globalId = upperNew;
         }
         return true;
+    }
+
+    /** 1.0.6: добавить валюту в реестр (используется NationAutoCurrencyListener). */
+    public void addCurrency(Currency currency) {
+        byId.put(currency.id(), currency);
+    }
+
+    /** 1.0.6: удалить валюту из реестра. */
+    public void removeCurrency(String id) {
+        byId.remove(id.toUpperCase(Locale.ROOT));
     }
 }
