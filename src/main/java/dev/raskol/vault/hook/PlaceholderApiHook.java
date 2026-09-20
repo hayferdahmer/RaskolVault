@@ -14,24 +14,12 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Locale;
 
 /**
- * PlaceholderAPI-экспаншн RaskolVault.
- *
- * Балансы и нация (1.0):
- *   %raskolvault_balance_<ID>%      — баланс игрока (с символом)
- *   %raskolvault_balance_raw_<ID>%  — баланс без символа (для вычислений)
- *   %raskolvault_nation%            — ID текущей нации игрока или ""
- *   %raskolvault_treasury_<ID>%     — баланс казны национальной валюты
- *   %raskolvault_symbol_<ID>%       — символ валюты
- *
- * Observability (1.0.4):
- *   %raskolvault_tps% / _tps_5m / _tps_15m, %raskolvault_ledger_queue%,
- *   %raskolvault_cache_hit%, %raskolvault_tx_per_min%, %raskolvault_writer_applied%,
- *   %raskolvault_writer_failed%, %raskolvault_pool_idle%, %raskolvault_pool_wait%,
- *   %raskolvault_currencies_count%, %raskolvault_rates_count%
- *
- * Anti-dupe (1.0.5):
- *   %raskolvault_inflation_anomalies% — счётчик инфляционных аномалий
- *   %raskolvault_rate_limited%        — счётчик отклонений rate-limit
+ * PAPI-экспаншн RaskolVault.
+ * Используются ТОЛЬКО геттеры, которые реально есть в RaskolVault:
+ * getWriter(), getLedger(), getWallets(), getCurrencies(), getRates(),
+ * getTreasury(), getTownyHook().
+ * Плейсхолдеры tx_per_min / inflation_anomalies / rate_limited вернутся в 1.1.0-b
+ * вместе с системами TxCounter / InflationCheckpoint / RateLimiter.
  */
 public final class PlaceholderApiHook extends PlaceholderExpansion {
 
@@ -65,22 +53,32 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
     public @Nullable String onPlaceholderRequest(Player player, @NotNull String params) {
         String lower = params.toLowerCase(Locale.ROOT);
 
-        if (lower.equals("tps")) return formatTps(0);
-        if (lower.equals("tps_5m")) return formatTps(1);
-        if (lower.equals("tps_15m")) return formatTps(2);
-        if (lower.equals("ledger_queue")) return Integer.toString(plugin.getWriter().queueSize());
-        if (lower.equals("cache_hit")) return String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate());
-        if (lower.equals("tx_per_min")) return Integer.toString(plugin.getTxCounter().count());
-        if (lower.equals("writer_applied")) return Long.toString(plugin.getWriter().applied());
-        if (lower.equals("writer_failed")) return Long.toString(plugin.getWriter().failed());
-        if (lower.equals("pool_idle")) return Integer.toString(plugin.getLedger().poolIdle());
-        if (lower.equals("pool_wait")) return Integer.toString(plugin.getLedger().poolWaiting());
-        if (lower.equals("currencies_count")) return Integer.toString(plugin.getCurrencies().all().size());
-        if (lower.equals("rates_count")) return Integer.toString(plugin.getRates().allRates().size());
-        if (lower.equals("inflation_anomalies"))
-            return Long.toString(plugin.getInflationCheckpoint() == null ? 0L : plugin.getInflationCheckpoint().anomalies());
-        if (lower.equals("rate_limited"))
-            return Long.toString(plugin.getRateLimiter() == null ? 0L : plugin.getRateLimiter().rejectedCount());
+        switch (lower) {
+            case "tps":
+                return tps(0);
+            case "tps_5m":
+                return tps(1);
+            case "tps_15m":
+                return tps(2);
+            case "ledger_queue":
+                return Integer.toString(plugin.getWriter().queueSize());
+            case "writer_applied":
+                return Long.toString(plugin.getWriter().applied());
+            case "writer_failed":
+                return Long.toString(plugin.getWriter().failed());
+            case "pool_idle":
+                return Integer.toString(plugin.getLedger().poolIdle());
+            case "pool_wait":
+                return Integer.toString(plugin.getLedger().poolWaiting());
+            case "cache_hit":
+                return String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate());
+            case "currencies_count":
+                return Integer.toString(plugin.getCurrencies().all().size());
+            case "rates_count":
+                return Integer.toString(plugin.getRates().allRates().size());
+            default:
+                break;
+        }
 
         if (player == null) {
             return "";
@@ -88,51 +86,54 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
 
         if (lower.equals("nation")) {
             String nation = plugin.getTownyHook().isAvailable()
-                    ? plugin.getTownyHook().nationOf(player.getUniqueId()) : null;
+                    ? plugin.getTownyHook().nationOf(player.getUniqueId())
+                    : null;
             return nation == null ? "" : nation;
         }
-
-        if (lower.startsWith("balance_")) {
-            String rest = lower.substring("balance_".length());
-            boolean raw = rest.startsWith("raw_");
-            String currencyId = (raw ? rest.substring(4) : rest).toUpperCase(Locale.ROOT);
-            Currency currency = plugin.getCurrencies().get(currencyId).orElse(null);
+        if (lower.startsWith("balance_raw_")) {
+            String id = lower.substring("balance_raw_".length()).toUpperCase(Locale.ROOT);
+            Currency currency = plugin.getCurrencies().get(id).orElse(null);
             if (currency == null) {
                 return "?";
             }
-            double amount = plugin.getWallets().getBalance(player.getUniqueId(), currency.id());
-            return raw
-                    ? Formatter.amount(amount, currency.decimals())
-                    : Formatter.withSymbol(amount, currency.decimals(), currency.symbol());
+            return Formatter.amount(
+                    plugin.getWallets().getBalance(player.getUniqueId(), currency.id()),
+                    currency.decimals());
         }
-
+        if (lower.startsWith("balance_")) {
+            String id = lower.substring("balance_".length()).toUpperCase(Locale.ROOT);
+            Currency currency = plugin.getCurrencies().get(id).orElse(null);
+            if (currency == null) {
+                return "?";
+            }
+            return Formatter.withSymbol(
+                    plugin.getWallets().getBalance(player.getUniqueId(), currency.id()),
+                    currency.decimals(), currency.symbol());
+        }
         if (lower.startsWith("treasury_")) {
-            String currencyId = lower.substring("treasury_".length()).toUpperCase(Locale.ROOT);
-            Currency currency = plugin.getCurrencies().get(currencyId).orElse(null);
+            String id = lower.substring("treasury_".length()).toUpperCase(Locale.ROOT);
+            Currency currency = plugin.getCurrencies().get(id).orElse(null);
             if (currency == null || currency.type() != CurrencyType.NATIONAL) {
                 return "?";
             }
-            double amount = plugin.getTreasury().balance(currency.nationId(), currency.id());
-            return Formatter.withSymbol(amount, currency.decimals(), currency.symbol());
+            return Formatter.withSymbol(
+                    plugin.getTreasury().balance(currency.nationId(), currency.id()),
+                    currency.decimals(), currency.symbol());
         }
-
         if (lower.startsWith("symbol_")) {
-            String currencyId = lower.substring("symbol_".length()).toUpperCase(Locale.ROOT);
-            return plugin.getCurrencies().get(currencyId)
-                    .map(Currency::symbol).orElse("?");
+            String id = lower.substring("symbol_".length()).toUpperCase(Locale.ROOT);
+            return plugin.getCurrencies().get(id).map(Currency::symbol).orElse("?");
         }
-
         return null;
     }
 
-    private String formatTps(int index) {
+    private String tps(int index) {
         try {
             double[] tps = Bukkit.getTPS();
             if (tps == null || index < 0 || index >= tps.length) {
                 return "-";
             }
-            double display = Math.min(20.0D, tps[index]);
-            return String.format(Locale.ROOT, "%.2f", display);
+            return String.format(Locale.ROOT, "%.2f", Math.min(20.0D, tps[index]));
         } catch (Throwable t) {
             return "-";
         }
