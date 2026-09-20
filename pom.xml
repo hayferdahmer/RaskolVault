@@ -6,7 +6,7 @@
 
     <groupId>dev.raskol</groupId>
     <artifactId>raskol-vault</artifactId>
-    <version>1.0.3</version>
+    <version>1.0.4</version>
     <packaging>jar</packaging>
 
     <name>RaskolVault</name>
@@ -41,9 +41,8 @@
             <version>2.11.6</version>
             <scope>provided</scope>
         </dependency>
-        <!-- SQLite-леджер; шейдится без релокации. Пул и писатель собственные —
-             новых зависимостей в 1.0.3 нет (guava EventBus не понадобился:
-             кэш актуален в момент проекции, инвалидация не требуется). -->
+        <!-- SQLite-леджер; шейдится без релокации.
+             Spark и другие хуки — через рефлексию (soft-dependency). -->
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
