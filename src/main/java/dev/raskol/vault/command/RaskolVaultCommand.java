@@ -2,6 +2,11 @@
 package dev.raskol.vault.command;
 
 import dev.raskol.vault.RaskolVault;
+import dev.raskol.vault.command.sub.AdminSubcommand;
+import dev.raskol.vault.command.sub.ConvertSubcommand;
+import dev.raskol.vault.command.sub.PaySubcommand;
+import dev.raskol.vault.command.sub.RatesSubcommand;
+import dev.raskol.vault.exchange.ExchangeResult;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.storage.LedgerException;
@@ -13,21 +18,29 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * Корневая команда /rv. Этапы 0–3: help / version / debug / balance.
- * debug расширен: показывает статус регистрации EconomyProvider в RaskolCore.
+ * Роутер /rv. Этапы 0–4: help, version, balance, pay, convert, confirm, rates, admin, debug.
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
     private final RaskolVault plugin;
+    private final PaySubcommand pay;
+    private final ConvertSubcommand convert;
+    private final RatesSubcommand rates;
+    private final AdminSubcommand admin;
 
     public RaskolVaultCommand(RaskolVault plugin) {
         this.plugin = plugin;
+        this.pay = new PaySubcommand(plugin);
+        this.convert = new ConvertSubcommand(plugin);
+        this.rates = new RatesSubcommand(plugin);
+        this.admin = new AdminSubcommand(plugin);
     }
 
     private String prefix() {
@@ -45,6 +58,11 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "help" -> sendHelp(sender);
             case "version" -> sender.sendMessage(prefix() + "Версия: " + plugin.getPluginMeta().getVersion());
             case "balance" -> handleBalance(sender, args);
+            case "pay" -> pay.execute(sender, args);
+            case "convert" -> convert.execute(sender, args);
+            case "confirm" -> handleConfirm(sender);
+            case "rates" -> rates.execute(sender);
+            case "admin" -> admin.execute(sender, args);
             case "debug" -> {
                 if (!sender.hasPermission("raskolvault.admin.debug")) {
                     sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
@@ -55,6 +73,31 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             default -> sendHelp(sender);
         }
         return true;
+    }
+
+    private void handleConfirm(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.console-cannot-convert", null));
+            return;
+        }
+        var pending = plugin.getConfirms().consume(player.getUniqueId());
+        if (pending.isEmpty()) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("confirm.none", null));
+            return;
+        }
+        ExchangeResult preview = pending.get().preview();
+        ExchangeResult result = plugin.getExchange().execute(player.getUniqueId(),
+                preview.fromId(), preview.toId(), preview.gross());
+        if (result.applied()) {
+            Currency to = plugin.getCurrencies().get(result.toId()).orElse(null);
+            sender.sendMessage(prefix() + plugin.getMessages().get("convert.done",
+                    Map.of("amount", to == null
+                            ? Formatter.amount(result.net(), 2)
+                            : Formatter.withSymbol(result.net(), to.decimals(), to.symbol()))));
+        } else {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.convert.generic",
+                    Map.of("reason", result.reason(), "from", result.fromId(), "to", result.toId())));
+        }
     }
 
     private void handleBalance(CommandSender sender, String[] args) {
@@ -107,9 +150,20 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(prefix() + "Команды:");
         sender.sendMessage("§e/rv help§7 — эта справка");
         sender.sendMessage("§e/rv version§7 — версия плагина");
-        sender.sendMessage("§e/rv balance [ник]§7 — кошелёк (свой или чужой с правом просмотра)");
+        sender.sendMessage("§e/rv balance [ник]§7 — кошелёк");
+        if (sender.hasPermission("raskolvault.convert")) {
+            sender.sendMessage("§e/rv rates§7 — курсы обмена");
+            sender.sendMessage("§e/rv convert <из> <в> <сумма>§7 — обмен валют");
+            sender.sendMessage("§e/rv confirm§7 — подтвердить обмен");
+        }
+        if (sender.hasPermission("raskolvault.use")) {
+            sender.sendMessage("§e/rv pay <ник> <валюта> <сумма> [причина]§7 — перевод игроку");
+        }
+        if (sender.hasPermission("raskolvault.admin")) {
+            sender.sendMessage("§e/rv admin <give|take|set|audit|reload>§7 — админ-команды");
+        }
         if (sender.hasPermission("raskolvault.admin.debug")) {
-            sender.sendMessage("§e/rv debug§7 — состояние хуков, конфигурации, леджера и Core-провайдера");
+            sender.sendMessage("§e/rv debug§7 — состояние хуков, леджера и кэшей");
         }
     }
 
@@ -126,11 +180,9 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 + (coreHook != null && coreHook.isRegistered() ? "§aregistered§r" : "§coff§r"));
         sender.sendMessage(prefix() + "Валют в реестре: " + plugin.getCurrencies().all().size()
                 + " (global: " + plugin.getCurrencies().globalId() + ")");
-        sender.sendMessage(prefix() + "Глобальная валюта: "
-                + plugin.getConfig().getString("global-currency.id", "gold")
-                + " " + plugin.getConfig().getString("global-currency.symbol", "⚜"));
-        sender.sendMessage(prefix() + "Обмен: " + yn(plugin.getConfig().getBoolean("exchange.enabled", true))
-                + " · комиссия по умолчанию: " + plugin.getConfig().getDouble("exchange.default-fee", 0.02));
+        sender.sendMessage(prefix() + "Курсов: " + plugin.getRates().allRates().size()
+                + " · default-fee: " + String.format("%.1f%%", plugin.getRates().defaultFee() * 100.0));
+        sender.sendMessage(prefix() + "Pending-обменов: " + plugin.getConfirms().size());
         if (plugin.getLedger() != null) {
             sender.sendMessage(prefix() + "Леджер: " + plugin.getLedger().describeStats()
                     + " · кэш кошельков: " + plugin.getWallets().cachedRows());
@@ -146,15 +198,66 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            List<String> subs = sender.hasPermission("raskolvault.admin.debug")
-                    ? List.of("help", "version", "balance", "debug")
-                    : List.of("help", "version", "balance");
+            List<String> subs = new ArrayList<>();
+            subs.add("help");
+            subs.add("version");
+            subs.add("balance");
+            if (sender.hasPermission("raskolvault.use")) subs.add("pay");
+            if (sender.hasPermission("raskolvault.convert")) {
+                subs.add("convert");
+                subs.add("confirm");
+                subs.add("rates");
+            }
+            if (sender.hasPermission("raskolvault.admin")) subs.add("admin");
+            if (sender.hasPermission("raskolvault.admin.debug")) subs.add("debug");
             String prefix = args[0].toLowerCase(Locale.ROOT);
             return subs.stream().filter(s -> s.startsWith(prefix)).toList();
         }
-        if (args.length == 2 && "balance".equals(args[0].toLowerCase(Locale.ROOT))
-                && sender.hasPermission("raskolvault.admin.view")) {
-            return null; // дефолт: ники онлайна
+        String sub = args[0].toLowerCase(Locale.ROOT);
+        if ("balance".equals(sub) && args.length == 2 && sender.hasPermission("raskolvault.admin.view")) {
+            return null; // ники онлайна
+        }
+        if ("pay".equals(sub)) {
+            if (args.length == 2 && sender.hasPermission("raskolvault.use")) return null;
+            if (args.length == 3 && sender.hasPermission("raskolvault.use")) {
+                String prefix = args[2].toLowerCase(Locale.ROOT);
+                return plugin.getCurrencies().all().stream()
+                        .map(Currency::id)
+                        .filter(id -> id.toLowerCase(Locale.ROOT).startsWith(prefix))
+                        .toList();
+            }
+        }
+        if ("convert".equals(sub)) {
+            if ((args.length == 2 || args.length == 3) && sender.hasPermission("raskolvault.convert")) {
+                String prefix = args[args.length - 1].toLowerCase(Locale.ROOT);
+                return plugin.getCurrencies().all().stream()
+                        .map(Currency::id)
+                        .filter(id -> id.toLowerCase(Locale.ROOT).startsWith(prefix))
+                        .toList();
+            }
+        }
+        if ("admin".equals(sub)) {
+            if (args.length == 2 && sender.hasPermission("raskolvault.admin")) {
+                String prefix = args[1].toLowerCase(Locale.ROOT);
+                return List.of("give", "take", "set", "mint", "burn", "audit", "reload")
+                        .stream().filter(s -> s.startsWith(prefix)).toList();
+            }
+            String op = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "";
+            if ((op.equals("give") || op.equals("take") || op.equals("set")) && args.length == 3
+                    && sender.hasPermission("raskolvault.admin")) {
+                return null; // ники
+            }
+            if ((op.equals("give") || op.equals("take") || op.equals("set")) && args.length == 4
+                    && sender.hasPermission("raskolvault.admin")) {
+                String prefix = args[3].toLowerCase(Locale.ROOT);
+                return plugin.getCurrencies().all().stream()
+                        .map(Currency::id)
+                        .filter(id -> id.toLowerCase(Locale.ROOT).startsWith(prefix))
+                        .toList();
+            }
+            if (op.equals("audit") && args.length == 3 && sender.hasPermission("raskolvault.admin.audit")) {
+                return null; // ники
+            }
         }
         return List.of();
     }
