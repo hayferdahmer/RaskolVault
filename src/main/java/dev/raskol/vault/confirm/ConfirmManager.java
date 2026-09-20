@@ -9,41 +9,46 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * In-memory pending-обменов. TTL = 30 сек (по умолчанию).
- * /rv convert кладёт сюда ExchangeResult, /rv confirm читает и исполняет.
- * Без persistence: рестарт сервера сбрасывает pending — это норма, обмен не критичен.
+ * Менеджер pending-обменов с TTL.
+ *
+ * Игрок делает /rv convert → preview сохраняется здесь с дедлайном.
+ * Игрок делает /rv confirm → take() возвращает preview, если не истёк.
  */
 public final class ConfirmManager {
 
-    public record Pending(ExchangeResult preview, long expiresAtMillis) {
-    }
-
+    private final Map<UUID, PendingConfirm> pending = new ConcurrentHashMap<>();
     private final long ttlMillis;
-    private final Map<UUID, Pending> pending = new ConcurrentHashMap<>();
 
     public ConfirmManager(long ttlSeconds) {
         this.ttlMillis = Math.max(5L, ttlSeconds) * 1000L;
     }
 
-    public void put(UUID owner, ExchangeResult preview) {
-        pending.put(owner, new Pending(preview, System.currentTimeMillis() + ttlMillis));
+    /** Сохранить preview с TTL от момента вызова. */
+    public void put(UUID uuid, ExchangeResult preview) {
+        pending.put(uuid, new PendingConfirm(System.currentTimeMillis() + ttlMillis, preview));
     }
 
-    public Optional<Pending> consume(UUID owner) {
-        Pending value = pending.remove(owner);
-        if (value == null) {
+    /**
+     * Взять pending-preview, если не истёк.
+     * Возвращает Optional.empty() если:
+     * - нет записи для uuid
+     * - запись истекла
+     * После take() запись удаляется (одноразовое использование).
+     */
+    public Optional<PendingConfirm> take(UUID uuid) {
+        PendingConfirm p = pending.remove(uuid);
+        if (p == null || p.isExpired(System.currentTimeMillis())) {
             return Optional.empty();
         }
-        if (System.currentTimeMillis() > value.expiresAtMillis()) {
-            return Optional.empty();
-        }
-        return Optional.of(value);
+        return Optional.of(p);
     }
 
+    /** Очистить все pending (используется в onDisable). */
     public void clear() {
         pending.clear();
     }
 
+    /** Количество активных pending-записей (для /rv debug). */
     public int size() {
         return pending.size();
     }
