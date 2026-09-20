@@ -1,5 +1,4 @@
-# RaskolVault 1.1.0 — строгий стиль сообщений.
-# Префикс: тёмная рамка + золото, без глифов валют.
+# RaskolVault 1.1.0 — локализация (RU), строгий стиль, буквенные коды валют.
 ru:
   prefix: '&8▌&6RaskolVault&8▌&7 '
   balance:
@@ -16,9 +15,18 @@ ru:
   confirm:
     none: '&7Нет ожидающего обмена'
   rates:
-    header: '&6Курсы валют'
-    line: '&7 {pair}: &f{rate}'
-    empty: '&7 Курсы не заданы (rates.yml)'
+    header: '&6Цены валют (золотой эквивалент, база-комиссия {fee})'
+  bank:
+    info: '&6Банк нации {nation}'
+    not-in-nation: '&7Ты не состоишь в нации'
+    not-king: '&cТолько король нации управляет резервом'
+    deposited: '&aВ резерв внесено: {amount}'
+    withdrawn: '&aИз резерва выведено: {amount}'
+    limit: '&cПревышен суточный лимит вывода резерва (осталось {limit} GLD)'
+    parity-set: '&aПаритет установлен: {value}'
+    tax-set: '&aНалог конвертации в валюту нации: {value}'
+  crisis:
+    devalued: '&c⚠ Валюта нации {nation} обесценена: покрытие {coverage}. Цена снижена автоматически.'
   nation:
     header: '&6Нация {nation}'
     not-in-nation: '&7 Ты не состоишь в нации'
@@ -36,9 +44,9 @@ ru:
     towny-unavailable: '&cTowny не установлен или не загружен'
     balance-admin-only: '&cБаланс смотрят админы: /rv admin balance <ник>'
     rate-limited: '&7Слишком часто. Подожди пару секунд.'
-    currency:
-      exists: '&cВалюта {id} уже существует'
     convert:
-      same-currency: '&cНельзя обменять валюту на саму себя'
+      same-currency: '&cНельзя менять валюту на саму себя'
       no-rate: '&cКурс {from} → {to} не задан'
+      insufficient: '&cНедостаточно средств для обмена'
+      invalid-amount: '&cНекорректная сумма'
       generic: '&cОбмен не выполнен: {reason}'
