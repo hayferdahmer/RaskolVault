@@ -1,0 +1,15 @@
+# RaskolVault 1.0.0 — локализация (RU)
+ru:
+  prefix: "&8[&6RaskolVault&8]&r "
+  balance:
+    header: "&6=== Кошелёк {player} ==="
+    line: "&e{symbol} {display}: &f{amount}"
+    empty: "&7Кошелёк пуст"
+  error:
+    no-permission: "&cНедостаточно прав"
+    unknown-currency: "&cВалюта {id} не найдена"
+    player-not-found: "&cИгрок {name} не найден"
+    console-needs-nick: "&cИз консоли укажи ник: /rv balance <ник>"
+    insufficient: "&cНедостаточно {symbol}: нужно {needed}, есть {balance}"
+    storage: "&cОшибка хранилища, операция отменена (см. лог)"
+  debug-note: "&7Хук Essentials: {state}"
