@@ -4,6 +4,7 @@ package dev.raskol.vault;
 import dev.raskol.vault.arbitrage.ArbitrageSimulator;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.command.RaskolVaultCommand;
+import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.config.MessagesConfig;
 import dev.raskol.vault.confirm.ConfirmManager;
 import dev.raskol.vault.exchange.ExchangeService;
@@ -15,6 +16,7 @@ import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.nation.NationTreasury;
 import dev.raskol.vault.storage.BackupService;
+import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.test.LoadSimulator;
@@ -35,8 +37,7 @@ import java.util.UUID;
  * RaskolVault — многовалютный экономический слой поверх EssentialsX
  * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
  *
- * 1.0.2: пул SQLite-соединений, атомарные коммиты «баланс+аудит»,
- * WAL-checkpoint по расписанию и на выключении, метрика очереди пула в describeStats.
+ * 1.0.3: LedgerWriter (single-writer) + проекция кэша; main-thread не пишет в SQLite.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -47,6 +48,7 @@ public final class RaskolVault extends JavaPlugin {
     private boolean placeholderPresent;
 
     private SQLiteLedger ledger;
+    private LedgerWriter writer;
     private MessagesConfig messages;
     private CurrencyRegistry currencies;
     private EssentialsHook essentialsHook;
@@ -62,6 +64,7 @@ public final class RaskolVault extends JavaPlugin {
     private BackupService backups;
     private LoadSimulator loadSimulator;
     private BukkitTask checkpointTask;
+    private ConvertSubcommand convertSubcommand;
 
     @Override
     public void onEnable() {
@@ -89,6 +92,10 @@ public final class RaskolVault extends JavaPlugin {
             return;
         }
 
+        writer = new LedgerWriter(this, getConfig().getInt("storage.sqlite.writer-queue-cap", 10000));
+        ledger.attachWriterStats(() -> " · writer queue " + writer.queueSize()
+                + " · applied " + writer.applied() + " · failed " + writer.failed());
+
         currencies = new CurrencyRegistry(this);
         currencies.load(new File(getDataFolder(), "currencies.yml"),
                 getConfig().getString("global-currency.id", "GLD"),
@@ -106,7 +113,8 @@ public final class RaskolVault extends JavaPlugin {
         essentialsHook = new EssentialsHook(this);
         essentialsHook.init();
 
-        wallets = new WalletService(this, ledger, currencies, essentialsHook);
+        wallets = new WalletService(this, ledger, writer, currencies, essentialsHook,
+                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000));
         wallets.init();
 
         rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
@@ -166,7 +174,8 @@ public final class RaskolVault extends JavaPlugin {
 
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
 
-        RaskolVaultCommand executor = new RaskolVaultCommand(this);
+        convertSubcommand = new ConvertSubcommand(this);
+        RaskolVaultCommand executor = new RaskolVaultCommand(this, convertSubcommand);
         PluginCommand command = getCommand("rv");
         if (command != null) {
             command.setExecutor(executor);
@@ -208,8 +217,12 @@ public final class RaskolVault extends JavaPlugin {
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) {
             saveBalancesBackup();
         }
+        if (writer != null) {
+            // Drain очереди ДО закрытия пула: ни одна принятая запись не теряется при graceful-stop
+            writer.close(10000L);
+        }
         if (ledger != null) {
-            ledger.close(); // внутри: финальный checkpoint + закрытие пула
+            ledger.close();
         }
         getLogger().info("RaskolVault выключен");
     }
@@ -247,6 +260,7 @@ public final class RaskolVault extends JavaPlugin {
     }
 
     public SQLiteLedger getLedger() { return ledger; }
+    public LedgerWriter getWriter() { return writer; }
     public MessagesConfig getMessages() { return messages; }
     public CurrencyRegistry getCurrencies() { return currencies; }
     public EssentialsHook getEssentialsHook() { return essentialsHook; }
@@ -260,6 +274,7 @@ public final class RaskolVault extends JavaPlugin {
     public ArbitrageSimulator getArbitrage() { return arbitrage; }
     public BackupService getBackups() { return backups; }
     public LoadSimulator getLoadSimulator() { return loadSimulator; }
+    public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
