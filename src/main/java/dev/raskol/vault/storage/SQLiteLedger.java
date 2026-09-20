@@ -1,6 +1,8 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.storage;
 
+import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import org.bukkit.plugin.Plugin;
@@ -19,18 +21,10 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * SQLite-леджер: балансы + журнал транзакций (аудит, анти-дюп, откаты).
- *
- * Решения:
- * - Одно соединение, все методы synchronized: объёмы до 10k игроков не требуют пула,
- *   а вызовы идут из async-тасков WalletService (этап 2), не из мейн-треда.
- * - WAL + synchronous=NORMAL: скорость записи без риска потерять коммит при краше.
- * - Миграции через PRAGMA user_version: схема v1 создаётся с нуля, чужие версии
- *   детектируются и Loudly предупреждаются (деньги не терпит тихих апгрейдов).
- * - UUID хранится TEXT'ом в нижнем регистре, суммы REAL, метаданные JSON-строкой.
- *
- * ВАЖНО (этап 2): balances ссылается FK на currencies с ON DELETE CASCADE,
- * поэтому CurrencyRegistry обязан создать строки валют ДО первых балансов.
+ * SQLite-леджер: валюты, балансы, журнал транзакций (аудит, анти-дюп, откаты).
+ * Одно соединение + synchronized: пре-лаунч объёмы не требуют пула.
+ * WAL + synchronous=NORMAL: скорость без риска потерять коммит при краше.
+ * Миграции через PRAGMA user_version (текущая схема v1).
  */
 public final class SQLiteLedger {
 
@@ -45,7 +39,6 @@ public final class SQLiteLedger {
         this.dbFile = dbFile;
     }
 
-    /** Открывает соединение, выставляет PRAGMA, прогоняет миграции. */
     public synchronized void init() throws SQLException {
         File parent = dbFile.getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
@@ -123,7 +116,55 @@ public final class SQLiteLedger {
         }
     }
 
-    /** Полный снимок балансов для прогрева кэша WalletService (этап 2). */
+    // ---------- currencies ----------
+
+    public synchronized void upsertCurrency(Currency currency) {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "INSERT INTO currencies(id, display_name, symbol, type, nation_id, decimals, tradeable, created_at) "
+                        + "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                        + "display_name=excluded.display_name, symbol=excluded.symbol, type=excluded.type, "
+                        + "nation_id=excluded.nation_id, decimals=excluded.decimals, tradeable=excluded.tradeable")) {
+            ps.setString(1, currency.id());
+            ps.setString(2, currency.displayName());
+            ps.setString(3, currency.symbol());
+            ps.setString(4, currency.type().name());
+            ps.setString(5, currency.nationId());
+            ps.setInt(6, currency.decimals());
+            ps.setInt(7, currency.tradeable() ? 1 : 0);
+            ps.setLong(8, System.currentTimeMillis());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу записать валюту " + currency.id() + ": " + e.getMessage(), e);
+        }
+    }
+
+    public synchronized List<Currency> loadCurrencies() {
+        List<Currency> out = new ArrayList<>();
+        try (Statement st = connection.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT id, display_name, symbol, type, nation_id, decimals, tradeable FROM currencies")) {
+            while (rs.next()) {
+                out.add(new Currency(rs.getString(1), rs.getString(2), rs.getString(3),
+                        CurrencyType.valueOf(rs.getString(4)), rs.getString(5),
+                        rs.getInt(6), rs.getInt(7) == 1));
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу прочитать валюты: " + e.getMessage(), e);
+        }
+        return out;
+    }
+
+    public synchronized void deleteCurrency(String id) {
+        try (PreparedStatement ps = connection.prepareStatement("DELETE FROM currencies WHERE id=?")) {
+            ps.setString(1, id);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу удалить валюту " + id + ": " + e.getMessage(), e);
+        }
+    }
+
+    // ---------- balances ----------
+
     public synchronized Map<UUID, Map<String, Double>> loadAllBalances() {
         Map<UUID, Map<String, Double>> out = new HashMap<>();
         try (Statement st = connection.createStatement();
@@ -151,7 +192,6 @@ public final class SQLiteLedger {
         }
     }
 
-    /** Upsert баланса; updated_at = сейчас. */
     public synchronized void setBalance(UUID owner, String currencyId, double amount) {
         try (PreparedStatement ps = connection.prepareStatement(
                 "INSERT INTO balances(uuid, currency_id, amount, updated_at) VALUES(?,?,?,?) "
@@ -167,7 +207,8 @@ public final class SQLiteLedger {
         }
     }
 
-    /** Пишет транзакцию, возвращает назначенный id (или -1, если драйвер не отдал ключи). */
+    // ---------- transactions ----------
+
     public synchronized long recordTransaction(Transaction tx) {
         try (PreparedStatement ps = connection.prepareStatement(
                 "INSERT INTO transactions(timestamp, from_uuid, to_uuid, currency_id, amount, type, reason, metadata) "
@@ -189,7 +230,6 @@ public final class SQLiteLedger {
         }
     }
 
-    /** История игрока (исходящие + входящие), свежие первыми. */
     public synchronized List<Transaction> queryTransactions(UUID owner, int limit) {
         List<Transaction> out = new ArrayList<>();
         try (PreparedStatement ps = connection.prepareStatement(
@@ -237,7 +277,6 @@ public final class SQLiteLedger {
         }
     }
 
-    /** Человекочитаемая строка для /rv debug и стартового лога. */
     public synchronized String describeStats() {
         return "балансов " + countBalances() + " · транзакций " + countTransactions();
     }
