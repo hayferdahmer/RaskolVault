@@ -3,7 +3,10 @@ package dev.raskol.vault;
 
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.config.MessagesConfig;
+import dev.raskol.vault.confirm.ConfirmManager;
 import dev.raskol.vault.currency.CurrencyRegistry;
+import dev.raskol.vault.exchange.ExchangeService;
+import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.storage.SafeStorage;
@@ -21,13 +24,10 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault — многовалютный экономический слой поверх EssentialsX
+ * RaskolVault v1.0.0 — многовалютный экономический слой поверх EssentialsX
  * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
  *
- * Этап 3: добавлен RaskolCoreHook — рефлексия-регистрация EconomyProvider
- * в EconomyRegistry RaskolCore через Proxy. Раскол-плагины (RaskolBusiness,
- * RaskolMarket, RaskolCaravans и будущие) теперь ходят в наш леджер через Core,
- * а не через Vault/Essentials напрямую — единая точка аудита.
+ * Этап 4: обмен валют, P2P-переводы, админ-команды, подтверждение транзакций.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -42,6 +42,9 @@ public final class RaskolVault extends JavaPlugin {
     private CurrencyRegistry currencies;
     private EssentialsHook essentialsHook;
     private WalletService wallets;
+    private RatesService rates;
+    private ExchangeService exchange;
+    private ConfirmManager confirms;
     private RaskolCoreHook coreHook;
 
     @Override
@@ -49,6 +52,7 @@ public final class RaskolVault extends JavaPlugin {
         saveDefaultConfig();
         saveResource("currencies.yml", false);
         saveResource("messages.yml", false);
+        saveResource("rates.yml", false);
 
         messages = new MessagesConfig(this);
         messages.load(new File(getDataFolder(), getConfig().getString("messages.file", "messages.yml")));
@@ -79,6 +83,13 @@ public final class RaskolVault extends JavaPlugin {
 
         wallets = new WalletService(this, ledger, currencies, essentialsHook);
         wallets.init();
+
+        rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
+        rates.load(new File(getDataFolder(), getConfig().getString("exchange.rates-file", "rates.yml")));
+
+        exchange = new ExchangeService(this, wallets, currencies, rates);
+
+        confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
 
         if (corePresent && getConfig().getBoolean("hooks.raskolcore.register-as-provider", true)) {
             coreHook = new RaskolCoreHook(this, wallets, currencies);
@@ -118,6 +129,9 @@ public final class RaskolVault extends JavaPlugin {
         if (coreHook != null) {
             coreHook.shutdown();
         }
+        if (confirms != null) {
+            confirms.clear();
+        }
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) {
             saveBalancesBackup();
         }
@@ -127,7 +141,6 @@ public final class RaskolVault extends JavaPlugin {
         getLogger().info("RaskolVault выключен");
     }
 
-    /** Атомарный yaml-бекап неблобальных балансов: temp → .bak → rename. */
     private void saveBalancesBackup() {
         File file = new File(getDataFolder(), getConfig().getString("storage.yaml-backup.file", "data/balances.yml"));
         YamlConfiguration yaml = new YamlConfiguration();
@@ -154,47 +167,19 @@ public final class RaskolVault extends JavaPlugin {
         return plugin != null && plugin.isEnabled();
     }
 
-    public SQLiteLedger getLedger() {
-        return ledger;
-    }
+    public SQLiteLedger getLedger() { return ledger; }
+    public MessagesConfig getMessages() { return messages; }
+    public CurrencyRegistry getCurrencies() { return currencies; }
+    public EssentialsHook getEssentialsHook() { return essentialsHook; }
+    public WalletService getWallets() { return wallets; }
+    public RatesService getRates() { return rates; }
+    public ExchangeService getExchange() { return exchange; }
+    public ConfirmManager getConfirms() { return confirms; }
+    public RaskolCoreHook getCoreHook() { return coreHook; }
 
-    public MessagesConfig getMessages() {
-        return messages;
-    }
-
-    public CurrencyRegistry getCurrencies() {
-        return currencies;
-    }
-
-    public EssentialsHook getEssentialsHook() {
-        return essentialsHook;
-    }
-
-    public WalletService getWallets() {
-        return wallets;
-    }
-
-    public RaskolCoreHook getCoreHook() {
-        return coreHook;
-    }
-
-    public boolean isCorePresent() {
-        return corePresent;
-    }
-
-    public boolean isEssentialsPresent() {
-        return essentialsPresent;
-    }
-
-    public boolean isTownyPresent() {
-        return townyPresent;
-    }
-
-    public boolean isLuckPermsPresent() {
-        return luckPermsPresent;
-    }
-
-    public boolean isPlaceholderPresent() {
-        return placeholderPresent;
-    }
+    public boolean isCorePresent() { return corePresent; }
+    public boolean isEssentialsPresent() { return essentialsPresent; }
+    public boolean isTownyPresent() { return townyPresent; }
+    public boolean isLuckPermsPresent() { return luckPermsPresent; }
+    public boolean isPlaceholderPresent() { return placeholderPresent; }
 }
