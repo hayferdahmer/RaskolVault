@@ -2,17 +2,21 @@
 package dev.raskol.vault;
 
 import dev.raskol.vault.command.RaskolVaultCommand;
+import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
+
+import java.io.File;
+import java.sql.SQLException;
 
 /**
  * RaskolVault — многовалютный экономический слой поверх EssentialsX
  * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
  *
- * Этап 0 (скелет): загрузка конфигов, детект хуков, команда /rv.
- * Хуки (Essentials/RaskolCore/Towny/LP/PAPI) — softdepend + рефлексию,
- * без compile-зависимостей, по образцу RaskolClasses.
+ * Этап 1: модели (api.*), SQLite-леджер (storage.SQLiteLedger), атомарный сейв
+ * (storage.SafeStorage), команда /rv (help/version/debug).
+ * Хуки (Essentials/RaskolCore/Towny/LP/PAPI) — softdepend + рефлексию, этап 3.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -22,11 +26,24 @@ public final class RaskolVault extends JavaPlugin {
     private boolean luckPermsPresent;
     private boolean placeholderPresent;
 
+    private SQLiteLedger ledger;
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
         saveResource("currencies.yml", false);
         detectHooks();
+
+        File dbFile = new File(getDataFolder(), getConfig().getString("storage.sqlite.file", "data/ledger.sqlite"));
+        try {
+            ledger = new SQLiteLedger(this, dbFile);
+            ledger.init();
+            getLogger().info(() -> "RaskolVault: SQLite-леджер открыт (" + dbFile.getPath() + ") · " + ledger.describeStats());
+        } catch (SQLException e) {
+            getLogger().severe("RaskolVault: не могу открыть SQLite-леджер, плагин отключён: " + e.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
 
         RaskolVaultCommand executor = new RaskolVaultCommand(this);
         PluginCommand command = getCommand("rv");
@@ -57,6 +74,9 @@ public final class RaskolVault extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (ledger != null) {
+            ledger.close();
+        }
         getLogger().info("RaskolVault выключен");
     }
 
@@ -72,6 +92,10 @@ public final class RaskolVault extends JavaPlugin {
     private boolean isPluginEnabled(String name) {
         Plugin plugin = getServer().getPluginManager().getPlugin(name);
         return plugin != null && plugin.isEnabled();
+    }
+
+    public SQLiteLedger getLedger() {
+        return ledger;
     }
 
     public boolean isCorePresent() {
