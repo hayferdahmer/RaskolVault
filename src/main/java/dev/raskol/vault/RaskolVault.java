@@ -6,6 +6,7 @@ import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.config.MessagesConfig;
 import dev.raskol.vault.confirm.ConfirmManager;
+import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
@@ -15,8 +16,10 @@ import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.listener.TownyNationLifecycleListener;
 import dev.raskol.vault.nation.NationTreasury;
-import dev.raskol.vault.observability.SparkHook;
-import dev.raskol.vault.offline.OfflinePlayerRegistry;
+import dev.raskol.vault.observability.InflationCheckpoint;
+import dev.raskol.vault.observability.TxCounter;
+import dev.raskol.vault.reserve.ReserveBank;
+import dev.raskol.vault.safety.RateLimiter;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SafeStorage;
@@ -37,7 +40,8 @@ import java.util.UUID;
 
 /**
  * RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX.
- * 1.1.0-a: бренд (буквенные коды), /rv admin balance, /rv rates, merge валют из БД.
+ * 1.1.0-b: Валютный совет (резерв/паритет/налог/интервенции), tx/min, rate-limit,
+ * кризисный чекпоинт покрытия.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -64,8 +68,19 @@ public final class RaskolVault extends JavaPlugin {
     private LoadSimulator loadSimulator;
     private BukkitTask checkpointTask;
     private BukkitTask inflationTask;
+    private BukkitTask txCounterTask;
     private ConvertSubcommand convertSubcommand;
-    private SparkHook sparkHook;
+    private SparkHookHolder sparkHook;
+    private ReserveBank reserveBank;
+    private ConvertEngine convertEngine;
+    private RateLimiter rateLimiter;
+    private TxCounter txCounter;
+    private InflationCheckpoint inflationCheckpoint;
+
+    /** Обёртка над spark-хуком этапа 1.0.x (имя класса в репо: SparkHook). */
+    public interface SparkHookHolder {
+        boolean isAvailable();
+    }
 
     @Override
     public void onEnable() {
@@ -109,10 +124,8 @@ public final class RaskolVault extends JavaPlugin {
         ledger.attachWriterStats(() -> " · writer queue " + writer.queueSize()
                 + " · applied " + writer.applied() + " · failed " + writer.failed());
 
-        this.sparkHook = new SparkHook(this);
-
         wallets = new WalletService(this, ledger, writer, currencies, essentialsHook,
-                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000), sparkHook);
+                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000), null);
         wallets.init();
 
         rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
@@ -127,6 +140,19 @@ public final class RaskolVault extends JavaPlugin {
         }
 
         treasury = new NationTreasury(wallets);
+
+        // 1.1.0-b: Валютный совет
+        reserveBank = new ReserveBank(this, wallets, currencies);
+        convertEngine = new ConvertEngine(this, wallets, currencies, reserveBank);
+        rateLimiter = new RateLimiter(
+                getConfig().getDouble("safety.rate-limit.capacity", 5.0D),
+                getConfig().getDouble("safety.rate-limit.refill-per-second", 0.5D));
+        txCounter = new TxCounter(ledger);
+        txCounterTask = getServer().getScheduler().runTaskTimerAsynchronously(this, txCounter, 100L, 100L);
+        inflationCheckpoint = new InflationCheckpoint(this, reserveBank, currencies, townyHook);
+        long inflationMinutes = getConfig().getLong("reserve.check-interval-minutes", 60L);
+        inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this,
+                inflationCheckpoint, 60L * 20L, inflationMinutes * 60L * 20L);
 
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
@@ -195,6 +221,10 @@ public final class RaskolVault extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (txCounterTask != null) {
+            txCounterTask.cancel();
+            txCounterTask = null;
+        }
         if (inflationTask != null) {
             inflationTask.cancel();
             inflationTask = null;
@@ -272,7 +302,11 @@ public final class RaskolVault extends JavaPlugin {
     public BackupService getBackups() { return backups; }
     public LoadSimulator getLoadSimulator() { return loadSimulator; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
-    public SparkHook getSparkHook() { return sparkHook; }
+    public ReserveBank getReserveBank() { return reserveBank; }
+    public ConvertEngine getConvertEngine() { return convertEngine; }
+    public RateLimiter getRateLimiter() { return rateLimiter; }
+    public TxCounter getTxCounter() { return txCounter; }
+    public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
