@@ -31,6 +31,8 @@
 - **`SQLiteLedger`**: добавил `renameNationId(old, new)` и `renameCurrency(oldId, newId)`
   (атомарно в трёх таблицах).
 - **`CurrencyRegistry`**: добавил `countByNation`, `updateNationId`, `rename`.
+- **`pom.xml`**: добавил GlareMasters repo + `com.palmergames.bukkit.towny:towny:0.103.1.0`
+  в scope `provided` (compile-time зависимость для Towny-слушателя; runtime — softdepend).
 - **Сводка старта**: добавил `· OfflineRegistry on` и `· Towny hook`-статус.
 
 ### Совместимость
