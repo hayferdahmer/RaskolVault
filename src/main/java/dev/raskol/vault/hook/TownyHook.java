@@ -8,12 +8,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.lang.reflect.Method;
 import java.util.UUID;
 
-/**
- * Рефлексия-хук для Towny (1.0.6: убрана compile-зависимость).
- *
- * Работает без Towny API в classpath: все вызовы через рефлексию.
- * Если Towny не установлен — isAvailable()=false, nationOf()=null.
- */
 public final class TownyHook {
 
     private final JavaPlugin plugin;
@@ -23,6 +17,7 @@ public final class TownyHook {
     private Method getTownMethod;
     private Method getNationMethod;
     private Method getNameMethod;
+    private Method isKingMethod;
 
     public TownyHook(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -47,6 +42,7 @@ public final class TownyHook {
             
             Class<?> townClass = Class.forName("com.palmergames.bukkit.towny.object.Town");
             getNationMethod = townClass.getMethod("getNationOrNull");
+            isKingMethod = townClass.getMethod("isKing");
             
             Class<?> nationClass = Class.forName("com.palmergames.bukkit.towny.object.Nation");
             getNameMethod = nationClass.getMethod("getName");
@@ -83,6 +79,35 @@ public final class TownyHook {
             return (String) getNameMethod.invoke(nation);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /** 1.0.6: проверить, является ли игрок королём указанной нации. */
+    public boolean isKing(UUID uuid, String nationName) {
+        if (!available || uuid == null || nationName == null) {
+            return false;
+        }
+        try {
+            Object resident = getResidentMethod.invoke(townyUniverse, uuid);
+            if (resident == null) {
+                return false;
+            }
+            Object town = getTownMethod.invoke(resident);
+            if (town == null) {
+                return false;
+            }
+            Boolean isKing = (Boolean) isKingMethod.invoke(town);
+            if (!isKing) {
+                return false;
+            }
+            Object nation = getNationMethod.invoke(town);
+            if (nation == null) {
+                return false;
+            }
+            String actualNation = (String) getNameMethod.invoke(nation);
+            return nationName.equals(actualNation);
+        } catch (Exception e) {
+            return false;
         }
     }
 }
