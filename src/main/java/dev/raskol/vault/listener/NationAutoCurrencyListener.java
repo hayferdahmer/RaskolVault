@@ -2,10 +2,11 @@
 package dev.raskol.vault.listener;
 
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.currency.CurrencyType;
-import dev.raskol.vault.currency.CurrencyRegistry;
 import dev.raskol.vault.storage.LedgerException;
 import dev.raskol.vault.storage.SQLiteLedger;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -13,45 +14,49 @@ import org.bukkit.plugin.EventExecutor;
 import org.bukkit.plugin.Plugin;
 
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 
 /**
- * Слушатель NewNationEvent Towny через рефлексию.
- * Регистрируется через PluginManager.registerEvent() с EventExecutor-лямбдой,
- * что позволяет ловить событие без compile-time класса события.
- *
+ * Слушатель NewNationEvent Towny через рефлексию (без compile-зависимости).
  * При создании нации автоматически создаёт национальную валюту:
- * - id = lowercase(nationId)
- * - display = "Валюта " + nationName
- * - symbol = ☀ для светлых (Svet*, Ozar*), иначе ☾
- * - decimals = 2
- * - tradeable = true
+ * id = lowercase(имя нации), decimals = 2, tradeable = true.
  *
- * Конфиг-флаг hooks.towny.auto-create-national позволяет выключить.
+ * Символ берётся из ТОЧНОЙ карты hooks.towny.nation-symbols (rassvet → ☀,
+ * valradis → ☾), для прочих наций — hooks.towny.default-symbol.
+ * Семантики «свет/тьма» нет: только фракции Рассвет (Лайтрис) и Вальрадис (Драгос).
  */
 public final class NationAutoCurrencyListener implements Listener {
 
     private final Plugin plugin;
     private final CurrencyRegistry currencies;
     private final SQLiteLedger ledger;
-    private final String defaultLightPrefix;
-    private final String defaultDarkPrefix;
+    private final Map<String, String> symbols;
+    private final String defaultSymbol;
 
-    public NationAutoCurrencyListener(Plugin plugin, CurrencyRegistry currencies,
-                                      SQLiteLedger ledger,
-                                      String defaultLightPrefix, String defaultDarkPrefix) {
+    public NationAutoCurrencyListener(Plugin plugin, CurrencyRegistry currencies, SQLiteLedger ledger) {
         this.plugin = plugin;
         this.currencies = currencies;
         this.ledger = ledger;
-        this.defaultLightPrefix = defaultLightPrefix;
-        this.defaultDarkPrefix = defaultDarkPrefix;
+        this.symbols = loadSymbols();
+        this.defaultSymbol = plugin.getConfig().getString("hooks.towny.default-symbol", "¤");
     }
 
-    /**
-     * Регистрирует слушатель NewNationEvent через рефлексию.
-     * Возвращает true при успехе, false если Towny недоступен.
-     */
+    private Map<String, String> loadSymbols() {
+        Map<String, String> out = new HashMap<>();
+        ConfigurationSection section =
+                plugin.getConfig().getConfigurationSection("hooks.towny.nation-symbols");
+        if (section != null) {
+            for (String key : section.getKeys(false)) {
+                out.put(key.toLowerCase(Locale.ROOT), section.getString(key, "¤"));
+            }
+        }
+        return out;
+    }
+
+    /** Регистрирует слушатель NewNationEvent через рефлексию. */
     public boolean register() {
         Plugin towny = plugin.getServer().getPluginManager().getPlugin("Towny");
         if (towny == null) {
@@ -76,8 +81,7 @@ public final class NationAutoCurrencyListener implements Listener {
             return true;
         } catch (ReflectiveOperationException e) {
             plugin.getLogger().warning("RaskolVault: не удалось подписаться на NewNationEvent: "
-                    + e.getMessage() + " — валюты наций придётся создавать вручную "
-                    + "(/rv admin currency create)");
+                    + e.getMessage() + " — валюты наций создаются вручную (/rv admin currency create)");
             return false;
         }
     }
@@ -97,13 +101,10 @@ public final class NationAutoCurrencyListener implements Listener {
             Optional<Currency> existing = currencies.get(id);
             if (existing.isPresent()) {
                 plugin.getLogger().info("RaskolVault: национальная валюта '" + id
-                        + "' уже существует, пропускаю авто-создание");
+                        + "' уже существует, авто-создание пропущено");
                 return;
             }
-            String symbol = id.startsWith(defaultLightPrefix) ? "☀" : "☾";
-            if (id.startsWith(defaultDarkPrefix)) {
-                symbol = "☾";
-            }
+            String symbol = symbols.getOrDefault(id, defaultSymbol);
             Currency currency = new Currency(
                     id,
                     "Валюта " + name,
@@ -112,7 +113,6 @@ public final class NationAutoCurrencyListener implements Listener {
                     id,
                     2,
                     true);
-            // Registry.addCurrency добавляет в память + леджер (см. обновление CurrencyRegistry)
             currencies.addCurrency(currency);
             ledger.upsertCurrency(currency);
             plugin.getLogger().info("RaskolVault: создана национальная валюта '" + id
