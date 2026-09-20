@@ -60,7 +60,6 @@ public final class AdminSubcommand {
         }
     }
 
-    /** ["admin", X, ...] → ["X", ...] для CurrencySubcommand, который ждёт args[0]=подкоманду. */
     private String[] prependAdmin(String[] args) {
         return Arrays.copyOfRange(args, 1, args.length);
     }
@@ -72,7 +71,68 @@ public final class AdminSubcommand {
         sender.sendMessage("&f audit <ник> [лимит] · health · reload · backup · restore <файл>");
     }
 
-    /** 1.1.0-a: админская смотрелка балансов (онлайн и оффлайн). */
+    /** 1.1.0-a: живая сводка сервера (восстановлен из 1.0.7). */
+    private void health(CommandSender sender) {
+        if (!sender.hasPermission("raskolvault.admin.health")) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        sender.sendMessage(prefix() + "&6╔══ RaskolVault Health ══╗");
+
+        String tps1 = "-", tps5 = "-", tps15 = "-";
+        try {
+            double[] tps = Bukkit.getTPS();
+            if (tps != null && tps.length >= 3) {
+                tps1 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[0]));
+                tps5 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[1]));
+                tps15 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[2]));
+            }
+        } catch (Throwable ignored) {
+        }
+        sender.sendMessage("&7 TPS (1/5/15m): &f" + tps1 + " / " + tps5 + " / " + tps15);
+        sender.sendMessage("&7 Online: &f" + Bukkit.getOnlinePlayers().size() + "/" + Bukkit.getMaxPlayers());
+
+        Runtime rt = Runtime.getRuntime();
+        long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L);
+        long maxMb = rt.maxMemory() / (1024L * 1024L);
+        sender.sendMessage("&7 JVM memory: &f" + usedMb + " / " + maxMb + " MB");
+
+        sender.sendMessage("&7 SQLite pool: &f" + plugin.getLedger().poolIdle()
+                + " idle / " + plugin.getLedger().poolSize() + " total"
+                + " · wait " + plugin.getLedger().poolWaiting());
+
+        sender.sendMessage("&7 Writer: &fqueue " + plugin.getWriter().queueSize()
+                + " · applied " + plugin.getWriter().applied()
+                + " · failed " + (plugin.getWriter().failed() == 0 ? "&a0&r" : "&c" + plugin.getWriter().failed()));
+
+        sender.sendMessage("&7 Cache: &frows " + plugin.getWallets().cachedRows()
+                + " · hit-rate &e" + String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate()) + "%&r"
+                + " · H/M " + plugin.getWallets().cacheHits() + "/" + plugin.getWallets().cacheMisses());
+
+        sender.sendMessage("&7 Tx/min (60s window): &f" + plugin.getTxCounter().count());
+
+        File wal = new File(plugin.getLedger().dbFile().getAbsolutePath() + "-wal");
+        long walMb = wal.exists() ? wal.length() / (1024L * 1024L) : -1L;
+        sender.sendMessage("&7 WAL size: &f" + (walMb < 0 ? "—" : walMb + " MB"));
+
+        long lastTs = plugin.getLedger().lastTransactionTimestamp();
+        if (lastTs > 0) {
+            String formatted = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date(lastTs));
+            long agoSec = (System.currentTimeMillis() - lastTs) / 1000L;
+            sender.sendMessage("&7 Last tx: &f" + formatted + " &7(" + agoSec + "s ago)");
+        } else {
+            sender.sendMessage("&7 Last tx: &8(none)");
+        }
+
+        int loops = plugin.getArbitrage().scan().size();
+        sender.sendMessage("&7 Arbitrage loops: " + (loops == 0 ? "&a0 ✓&r" : "&c" + loops + " ⚠"));
+
+        sender.sendMessage("&7 Offline-registry: &f"
+                + (plugin.getOfflinePlayerRegistry() == null ? "null" : plugin.getOfflinePlayerRegistry().size()));
+
+        sender.sendMessage(prefix() + "&6╚═════════════════════════╝");
+    }
+
     private void adminBalance(CommandSender sender, String[] args) {
         if (!sender.hasPermission("raskolvault.admin.view")) {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
