@@ -1,8 +1,6 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
-package dev.raskol.vault.currency;
+package dev.raskol.vault.api.currency;
 
-import dev.raskol.vault.api.currency.Currency;
-import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -22,6 +20,9 @@ import java.util.Optional;
  * Реестр валют: currencies.yml → immutable-модели → синхронизация в леджер.
  * Инвариант: ровно одна GLOBAL-валюта. Дубли и битые записи не роняют старт,
  * а пропускаются с warning — деньги не должны блокировать сервер из-за опечатки.
+ *
+ * Этап 5: добавлены addCurrency/removeCurrency для авто-создания национальных
+ * валют (NationAutoCurrencyListener) и админ-команды /rv admin currency.
  */
 public final class CurrencyRegistry {
 
@@ -88,11 +89,33 @@ public final class CurrencyRegistry {
         plugin.getLogger().info("RaskolVault: загружено валют: " + byId.size() + " (global: " + globalId + ")");
     }
 
-    /** Строки валют в леджер (FK для balances должен существовать до первых балансов). */
     public void syncToLedger(SQLiteLedger ledger) {
         for (Currency currency : byId.values()) {
             ledger.upsertCurrency(currency);
         }
+    }
+
+    /** Добавить валюту динамически (из NationAutoCurrencyListener или команды). */
+    public void addCurrency(Currency currency) {
+        if (currency.type() == CurrencyType.GLOBAL && globalId != null && !globalId.equals(currency.id())) {
+            throw new IllegalStateException("Нельзя добавить вторую GLOBAL-валюту");
+        }
+        byId.put(currency.id(), currency);
+        if (currency.type() == CurrencyType.GLOBAL) {
+            globalId = currency.id();
+        }
+    }
+
+    /** Удалить валюту (кроме global). Каскад балансов через FK в леджере. */
+    public void removeCurrency(String id) {
+        Currency currency = byId.get(id);
+        if (currency == null) {
+            return;
+        }
+        if (currency.isGlobal()) {
+            throw new IllegalStateException("Нельзя удалить глобальную валюту");
+        }
+        byId.remove(id);
     }
 
     public Optional<Currency> get(String id) {
