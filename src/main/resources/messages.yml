@@ -1,15 +1,36 @@
-# RaskolVault 1.0.0 — локализация (RU)
 ru:
   prefix: "&8[&6RaskolVault&8]&r "
   balance:
     header: "&6=== Кошелёк {player} ==="
     line: "&e{symbol} {display}: &f{amount}"
     empty: "&7Кошелёк пуст"
+  pay:
+    sent: "&aТы перевёл &e{amount}&a игроку &e{player}"
+    received: "&aТебе поступило &e{amount}&a от &e{player}"
+  convert:
+    preview: "&6Обмен: &f{from} &7→ &f{to} &7(курс {rate}, комиссия {fee})"
+    confirm-hint: "&eПодтверди командой &6/rv confirm&e в течение 30 секунд"
+    done: "&aОбмен выполнен: получено &e{amount}"
+  rates:
+    header: "&6=== Курсы обмена (комиссия {fee}) ==="
+    empty: "&7Курсы не настроены (rates.yml)"
+  confirm:
+    none: "&cНет ожидающего обмена — сначала /rv convert"
   error:
     no-permission: "&cНедостаточно прав"
     unknown-currency: "&cВалюта {id} не найдена"
     player-not-found: "&cИгрок {name} не найден"
-    console-needs-nick: "&cИз консоли укажи ник: /rv balance <ник>"
+    console-needs-nick: "&cИз консоли укажи ник"
+    console-cannot-pay: "&cИз консоли нельзя платить"
+    console-cannot-convert: "&cИз консоли нельзя менять"
     insufficient: "&cНедостаточно {symbol}: нужно {needed}, есть {balance}"
     storage: "&cОшибка хранилища, операция отменена (см. лог)"
-  debug-note: "&7Хук Essentials: {state}"
+    self-pay: "&cНельзя платить самому себе"
+    invalid-amount: "&cНекорректная сумма: {value}"
+    convert:
+      same-currency: "&cНельзя менять валюту на саму себя"
+      unknown-currency: "&cНеизвестная валюта в паре {from}/{to}"
+      no-rate: "&cКурс для пары {from}→{to} не задан (rates.yml)"
+      insufficient: "&cНедостаточно средств для обмена"
+      invalid-amount: "&cНекорректная сумма"
+      generic: "&cОбмен не выполнен: {reason}"
