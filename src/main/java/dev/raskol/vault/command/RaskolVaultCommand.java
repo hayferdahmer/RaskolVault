@@ -16,6 +16,7 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -27,7 +28,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             "balance", "pay", "convert", "confirm", "debug", "admin", "help", "version");
     private static final List<String> ADMIN_SUB = List.of(
             "health", "give", "take", "set", "mint", "burn",
-            "currency", "simulate", "simulate-load", "audit", "reload", "backup");
+            "currency", "simulate", "simulate-load", "audit", "reload", "backup", "restore", "stress");
     private static final List<String> CURRENCY_OPS = List.of("list", "rename", "create", "remove");
 
     private final RaskolVault plugin;
@@ -73,11 +74,16 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("§f/rv convert <из> <в> <сумма> §7— preview обмена");
         sender.sendMessage("§f/rv confirm §7— подтвердить ожидающий обмен");
         sender.sendMessage("§f/rv admin health §7— живая сводка");
-        sender.sendMessage("§f/rv admin <give|take|set|mint|burn|currency|audit|reload|backup|simulate|simulate-load>");
+        sender.sendMessage("§f/rv admin stress <players> <txs> §7— нагрузочный тест");
+        sender.sendMessage("§f/rv admin <give|take|set|mint|burn|currency|audit|reload|backup|restore|simulate>");
         sender.sendMessage(plugin.getMessages().prefix() + "§e╚════════════════════════╝");
     }
 
     private void balance(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player) && args.length < 2) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§e/rv balance <ник>");
+            return;
+        }
         Player target;
         if (args.length >= 2) {
             if (!sender.hasPermission("raskolvault.admin.view")) {
@@ -92,10 +98,6 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 return;
             }
         } else {
-            if (!(sender instanceof Player player)) {
-                sender.sendMessage(plugin.getMessages().prefix() + "§e/rv balance <ник>");
-                return;
-            }
             target = player;
         }
         sender.sendMessage(plugin.getMessages().prefix()
@@ -202,6 +204,16 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 String sub = args[1].toLowerCase(Locale.ROOT);
                 if ("currency".equals(sub) && "rename".equalsIgnoreCase(args[2])) {
                     return filter(currencyIds(), args[3]);
+                }
+            }
+            return Collections.emptyList();
+        }
+        if (args.length == 5) {
+            String op0 = args[0].toLowerCase(Locale.ROOT);
+            if ("admin".equals(op0)) {
+                String sub = args[1].toLowerCase(Locale.ROOT);
+                if ("currency".equals(sub) && "rename".equalsIgnoreCase(args[2])) {
+                    return Collections.emptyList(); // new id — пользователь вводит сам
                 }
             }
             return Collections.emptyList();
