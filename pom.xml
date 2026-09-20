@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>RaskolVault</name>
-    <description>Многовалютный экономический слой поверх EssentialsX для сервера «РАСКОЛ | ДВЕ КОРОНЫ»: национальные и мировые валюты, курсы, комиссии, SQLite-аудит</description>
+    <description>Многовалютный экономический слой поверх EssentialsX для сервера «РАСКОЛ | ДВЕ КОРОНЫ»</description>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
@@ -26,10 +26,6 @@
             <id>placeholderapi</id>
             <url>https://repo.extendedclip.com/content/repositories/placeholderapi/</url>
         </repository>
-        <repository>
-            <id>jitpack.io</id>
-            <url>https://jitpack.io</url>
-        </repository>
     </repositories>
 
     <dependencies>
@@ -43,12 +39,6 @@
             <groupId>me.clip</groupId>
             <artifactId>placeholderapi</artifactId>
             <version>2.11.6</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.github.TownyAdvanced</groupId>
-            <artifactId>Towny</artifactId>
-            <version>0.103.2.0</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
