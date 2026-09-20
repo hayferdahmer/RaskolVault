@@ -82,7 +82,7 @@ public final class TownyHook {
         }
     }
 
-    /** 1.0.6: проверить, является ли игрок королём указанной нации. */
+    /** 1.0.7: проверить, является ли игрок королём указанной нации. */
     public boolean isKing(UUID uuid, String nationName) {
         if (!available || uuid == null || nationName == null) {
             return false;
