@@ -12,11 +12,10 @@ general:
 
 # Глобальная валюта: проксируется в EssentialsX (⚜)
 global-currency:
-  id: gold
+  id: GLD
   display-name: "Золото"
   symbol: "⚜"
   decimals: 2
-  # Синхронизировать баланс gold с Essentials при старте и операциях
   essentials-sync: true
 
 exchange:
