@@ -21,10 +21,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * /rv admin … — админ-блок. 1.1.0-a: добавлен `balance <ник>` (смотрелка балансов),
- * `nation` проброшен из корневого роутера.
- */
 public final class AdminSubcommand {
 
     private final RaskolVault plugin;
@@ -71,7 +67,6 @@ public final class AdminSubcommand {
         sender.sendMessage("&f audit <ник> [лимит] · health · reload · backup · restore <файл>");
     }
 
-    /** 1.1.0-a: живая сводка сервера (восстановлен из 1.0.7). */
     private void health(CommandSender sender) {
         if (!sender.hasPermission("raskolvault.admin.health")) {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
@@ -109,8 +104,6 @@ public final class AdminSubcommand {
                 + " · hit-rate &e" + String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate()) + "%&r"
                 + " · H/M " + plugin.getWallets().cacheHits() + "/" + plugin.getWallets().cacheMisses());
 
-        sender.sendMessage("&7 Tx/min (60s window): &f" + plugin.getTxCounter().count());
-
         File wal = new File(plugin.getLedger().dbFile().getAbsolutePath() + "-wal");
         long walMb = wal.exists() ? wal.length() / (1024L * 1024L) : -1L;
         sender.sendMessage("&7 WAL size: &f" + (walMb < 0 ? "—" : walMb + " MB"));
@@ -123,9 +116,6 @@ public final class AdminSubcommand {
         } else {
             sender.sendMessage("&7 Last tx: &8(none)");
         }
-
-        int loops = plugin.getArbitrage().scan().size();
-        sender.sendMessage("&7 Arbitrage loops: " + (loops == 0 ? "&a0 ✓&r" : "&c" + loops + " ⚠"));
 
         sender.sendMessage("&7 Offline-registry: &f"
                 + (plugin.getOfflinePlayerRegistry() == null ? "null" : plugin.getOfflinePlayerRegistry().size()));
@@ -279,9 +269,7 @@ public final class AdminSubcommand {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
             return;
         }
-        int loops = plugin.getArbitrage().scan().size();
-        sender.sendMessage(prefix() + "&7Арбитражных петель: &f" + loops);
-        plugin.getArbitrage().logReport();
+        sender.sendMessage(prefix() + "&7Арбитражный сканер отключён в 1.1.0-a");
     }
 
     private void simulateLoad(CommandSender sender, String[] args) {
@@ -362,7 +350,6 @@ public final class AdminSubcommand {
                 plugin.getConfig().getString("messages.file", "messages.yml")));
         plugin.getRates().load(new File(plugin.getDataFolder(),
                 plugin.getConfig().getString("exchange.rates-file", "rates.yml")));
-        plugin.getArbitrage().logReport();
         sender.sendMessage(prefix() + "&aКонфиги перезагружены");
     }
 
