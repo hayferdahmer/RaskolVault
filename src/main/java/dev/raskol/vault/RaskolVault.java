@@ -5,6 +5,7 @@ import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.config.MessagesConfig;
 import dev.raskol.vault.currency.CurrencyRegistry;
 import dev.raskol.vault.hook.EssentialsHook;
+import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
@@ -23,8 +24,10 @@ import java.util.UUID;
  * RaskolVault — многовалютный экономический слой поверх EssentialsX
  * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
  *
- * Этап 2: реестр валют, кошельки (global = Essentials, остальные = леджер),
- * команда /rv balance, messages.yml, yaml-бекап балансов на выключении.
+ * Этап 3: добавлен RaskolCoreHook — рефлексия-регистрация EconomyProvider
+ * в EconomyRegistry RaskolCore через Proxy. Раскол-плагины (RaskolBusiness,
+ * RaskolMarket, RaskolCaravans и будущие) теперь ходят в наш леджер через Core,
+ * а не через Vault/Essentials напрямую — единая точка аудита.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -39,6 +42,7 @@ public final class RaskolVault extends JavaPlugin {
     private CurrencyRegistry currencies;
     private EssentialsHook essentialsHook;
     private WalletService wallets;
+    private RaskolCoreHook coreHook;
 
     @Override
     public void onEnable() {
@@ -76,6 +80,11 @@ public final class RaskolVault extends JavaPlugin {
         wallets = new WalletService(this, ledger, currencies, essentialsHook);
         wallets.init();
 
+        if (corePresent && getConfig().getBoolean("hooks.raskolcore.register-as-provider", true)) {
+            coreHook = new RaskolCoreHook(this, wallets, currencies);
+            coreHook.init();
+        }
+
         RaskolVaultCommand executor = new RaskolVaultCommand(this);
         PluginCommand command = getCommand("rv");
         if (command != null) {
@@ -89,6 +98,7 @@ public final class RaskolVault extends JavaPlugin {
                 + " · Paper/MC " + getServer().getVersion()
                 + " · Java " + System.getProperty("java.version")
                 + " · Core " + (corePresent ? "on" : "off")
+                + " · CoreProvider " + (coreHook != null && coreHook.isRegistered() ? "§aregistered§r" : "§coff§r")
                 + " · Essentials " + (essentialsPresent ? "on" : "off")
                 + " · Towny " + (townyPresent ? "on" : "off")
                 + " · LP " + (luckPermsPresent ? "on" : "off")
@@ -97,14 +107,17 @@ public final class RaskolVault extends JavaPlugin {
             getLogger().warning("Essentials не найден: глобальная валюта ⚜ недоступна для операций, "
                     + "национальные валюты работают автономно");
         }
-        if (!corePresent) {
-            getLogger().warning("RaskolCore не найден: регистрация провайдера в EconomyRegistry "
-                    + "отключена, раскол-плагины продолжат ходить в Vault/Essentials");
+        if (corePresent && (coreHook == null || !coreHook.isRegistered())) {
+            getLogger().warning("RaskolCore на месте, но регистрация EconomyProvider не прошла — "
+                    + "раскол-плагины продолжат ходить в Vault/Essentials напрямую");
         }
     }
 
     @Override
     public void onDisable() {
+        if (coreHook != null) {
+            coreHook.shutdown();
+        }
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) {
             saveBalancesBackup();
         }
@@ -159,6 +172,10 @@ public final class RaskolVault extends JavaPlugin {
 
     public WalletService getWallets() {
         return wallets;
+    }
+
+    public RaskolCoreHook getCoreHook() {
+        return coreHook;
     }
 
     public boolean isCorePresent() {
