@@ -6,6 +6,7 @@ import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.util.Formatter;
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -15,12 +16,24 @@ import java.util.Locale;
 /**
  * PlaceholderAPI-экспаншн RaskolVault.
  *
- * Плейсхолдеры:
+ * Балансы и нация (1.0):
  *   %raskolvault_balance_<ID>%      — баланс игрока (с символом)
  *   %raskolvault_balance_raw_<ID>%  — баланс без символа (для вычислений)
  *   %raskolvault_nation%            — ID текущей нации игрока или ""
  *   %raskolvault_treasury_<ID>%     — баланс казны национальной валюты
  *   %raskolvault_symbol_<ID>%       — символ валюты
+ *
+ * Observability (1.0.4):
+ *   %raskolvault_tps%               — TPS за последнюю минуту (Paper)
+ *   %raskolvault_tps_5m%            — TPS за 5 минут
+ *   %raskolvault_tps_15m%           — TPS за 15 минут
+ *   %raskolvault_ledger_queue%      — размер очереди писателя леджера
+ *   %raskolvault_cache_hit%         — cache hit rate (%)
+ *   %raskolvault_tx_per_min%        — транзакций в минуту
+ *   %raskolvault_writer_applied%    — успешно применённых записей всего
+ *   %raskolvault_writer_failed%     — проваленных записей всего
+ *   %raskolvault_pool_idle%         — свободных соединений в пуле
+ *   %raskolvault_pool_wait%         — потоков, ждущих соединения из пула
  */
 public final class PlaceholderApiHook extends PlaceholderExpansion {
 
@@ -52,10 +65,26 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
 
     @Override
     public @Nullable String onPlaceholderRequest(Player player, @NotNull String params) {
+        String lower = params.toLowerCase(Locale.ROOT);
+
+        // Observability-плейсхолдеры (игрок не обязателен)
+        if (lower.equals("tps")) return formatTps(0);
+        if (lower.equals("tps_5m")) return formatTps(1);
+        if (lower.equals("tps_15m")) return formatTps(2);
+        if (lower.equals("ledger_queue")) return Integer.toString(plugin.getWriter().queueSize());
+        if (lower.equals("cache_hit")) return String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate());
+        if (lower.equals("tx_per_min")) return Integer.toString(plugin.getTxCounter().count());
+        if (lower.equals("writer_applied")) return Long.toString(plugin.getWriter().applied());
+        if (lower.equals("writer_failed")) return Long.toString(plugin.getWriter().failed());
+        if (lower.equals("pool_idle")) return Integer.toString(plugin.getLedger().poolIdle());
+        if (lower.equals("pool_wait")) return Integer.toString(plugin.getLedger().poolWaiting());
+        if (lower.equals("currencies_count")) return Integer.toString(plugin.getCurrencies().all().size());
+        if (lower.equals("rates_count")) return Integer.toString(plugin.getRates().allRates().size());
+
+        // Игрок-зависимые плейсхолдеры (требуют player)
         if (player == null) {
             return "";
         }
-        String lower = params.toLowerCase(Locale.ROOT);
 
         if (lower.equals("nation")) {
             String nation = plugin.getTownyHook().isAvailable()
@@ -94,5 +123,24 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
         }
 
         return null;
+    }
+
+    /**
+     * Bukkit.getTPS() на Paper возвращает double[] {1m, 5m, 15m}.
+     * Если API недоступен (Spigot-фолбэк), возвращаем "-".
+     */
+    private String formatTps(int index) {
+        try {
+            double[] tps = Bukkit.getTPS();
+            if (tps == null || index < 0 || index >= tps.length) {
+                return "-";
+            }
+            double v = tps[index];
+            // Ограничиваем сверху 20.0 для отображения (Paper может отдавать >20 при catchup)
+            double display = Math.min(20.0D, v);
+            return String.format(Locale.ROOT, "%.2f", display);
+        } catch (Throwable t) {
+            return "-";
+        }
     }
 }
