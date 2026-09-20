@@ -4,8 +4,12 @@ package dev.raskol.vault.command.sub;
 import dev.raskol.vault.RaskolVault;
 import org.bukkit.command.CommandSender;
 
+import java.util.Locale;
 import java.util.Map;
 
+/**
+ * /rv rates — таблица курсов. 1.1.0-a: команда возвращена в корневой роутер.
+ */
 public final class RatesSubcommand {
 
     private final RaskolVault plugin;
@@ -15,22 +19,20 @@ public final class RatesSubcommand {
     }
 
     public void execute(CommandSender sender) {
-        if (!sender.hasPermission("raskolvault.convert")) {
-            sender.sendMessage(plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.no-permission", null));
+        String prefix = plugin.getMessages().prefix();
+        sender.sendMessage(prefix + plugin.getMessages().get("rates.header", null));
+        Map<String, Double> rates = plugin.getRates().allRates();
+        if (rates.isEmpty()) {
+            sender.sendMessage(plugin.getMessages().get("rates.empty", null));
             return;
         }
-        sender.sendMessage(plugin.getMessages().prefix()
-                + plugin.getMessages().get("rates.header",
-                Map.of("fee", String.format("%.1f%%", plugin.getRates().defaultFee() * 100.0))));
-        Map<String, Double> all = plugin.getRates().allRates();
-        if (all.isEmpty()) {
-            sender.sendMessage(plugin.getMessages().prefix()
-                    + plugin.getMessages().get("rates.empty", null));
-            return;
+        for (Map.Entry<String, Double> e : rates.entrySet()) {
+            String pair = e.getKey().replace("_", " → ").toUpperCase(Locale.ROOT);
+            sender.sendMessage(plugin.getMessages().get("rates.line", Map.of(
+                    "pair", pair,
+                    "rate", String.format(Locale.ROOT, "%.4f", e.getValue()))));
         }
-        for (Map.Entry<String, Double> entry : all.entrySet()) {
-            sender.sendMessage("  §e" + entry.getKey() + " §7= §f" + String.format("%.4f", entry.getValue()));
-        }
+        sender.sendMessage(prefix + "&7Комиссия по умолчанию: &f"
+                + String.format(Locale.ROOT, "%.1f%%", plugin.getRates().defaultFee() * 100.0));
     }
 }
