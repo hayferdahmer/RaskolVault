@@ -11,7 +11,11 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -20,7 +24,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * /rv admin (1.0.4: добавлена подкоманда `health`).
+ * /rv admin (1.0.4: подкоманда `health`; treasury-операции через wallets+UUID нации).
  */
 public final class AdminSubcommand {
 
@@ -61,7 +65,6 @@ public final class AdminSubcommand {
         }
         sender.sendMessage(plugin.getMessages().prefix() + "§e╔══ §fRaskolVault Health §e══╗");
 
-        // TPS
         String tps1 = "-";
         String tps5 = "-";
         String tps15 = "-";
@@ -77,36 +80,29 @@ public final class AdminSubcommand {
         sender.sendMessage("§7TPS (1/5/15m): §f" + tps1 + " / " + tps5 + " / " + tps15);
         sender.sendMessage("§7Online: §f" + Bukkit.getOnlinePlayers().size() + "/" + Bukkit.getMaxPlayers());
 
-        // JVM
         Runtime rt = Runtime.getRuntime();
         long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L);
         long maxMb = rt.maxMemory() / (1024L * 1024L);
         sender.sendMessage("§7JVM memory: §f" + usedMb + " / " + maxMb + " MB");
 
-        // Pool
         sender.sendMessage("§7SQLite pool: §f" + plugin.getLedger().poolIdle()
                 + " idle / " + plugin.getLedger().poolSize() + " total"
                 + " · wait " + plugin.getLedger().poolWaiting());
 
-        // Writer
         sender.sendMessage("§7Writer: §fqueue " + plugin.getWriter().queueSize()
                 + " · applied " + plugin.getWriter().applied()
                 + " · failed " + (plugin.getWriter().failed() == 0 ? "§a0§r" : "§c" + plugin.getWriter().failed()));
 
-        // Cache
         sender.sendMessage("§7Cache: §frows " + plugin.getWallets().cachedRows()
                 + " · hit-rate §e" + String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate()) + "%§r"
                 + " · H/M " + plugin.getWallets().cacheHits() + "/" + plugin.getWallets().cacheMisses());
 
-        // Throughput
         sender.sendMessage("§7Tx/min (60s window): §f" + plugin.getTxCounter().count());
 
-        // WAL
         File wal = new File(plugin.getLedger().dbFile().getAbsolutePath() + "-wal");
         long walMb = wal.exists() ? wal.length() / (1024L * 1024L) : -1L;
         sender.sendMessage("§7WAL size: §f" + (walMb < 0 ? "—" : walMb + " MB"));
 
-        // Последняя транзакция
         long lastTs = plugin.getLedger().lastTransactionTimestamp();
         if (lastTs > 0) {
             String formatted = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date(lastTs));
@@ -116,7 +112,6 @@ public final class AdminSubcommand {
             sender.sendMessage("§7Last tx: §8(none)");
         }
 
-        // Arbitrage
         int loops = plugin.getArbitrage().scan().size();
         sender.sendMessage("§7Arbitrage loops: " + (loops == 0 ? "§a0 ✓§r" : "§c" + loops + " ⚠"));
 
@@ -216,7 +211,7 @@ public final class AdminSubcommand {
             return;
         }
         String reason = args.length > 5
-                ? String.join(" ", java.util.Arrays.copyOfRange(args, 5, args.length))
+                ? String.join(" ", Arrays.copyOfRange(args, 5, args.length))
                 : "admin";
         UUID uuid = target.getUniqueId();
         double old = plugin.getWallets().getBalance(uuid, currency.id());
@@ -279,11 +274,15 @@ public final class AdminSubcommand {
             return;
         }
         String reason = args.length > 4
-                ? String.join(" ", java.util.Arrays.copyOfRange(args, 4, args.length))
+                ? String.join(" ", Arrays.copyOfRange(args, 4, args.length))
                 : "admin";
+        UUID treasuryUuid = UUID.nameUUIDFromBytes(
+                ("nation:" + currency.nationId()).getBytes(StandardCharsets.UTF_8));
         boolean ok = mint
-                ? plugin.getTreasury().mint(currency, amount, reason)
-                : plugin.getTreasury().burn(currency, amount, reason);
+                ? plugin.getWallets().deposit(treasuryUuid, currency.id(), amount,
+                dev.raskol.vault.api.transaction.TransactionType.MINT, reason)
+                : plugin.getWallets().withdraw(treasuryUuid, currency.id(), amount,
+                dev.raskol.vault.api.transaction.TransactionType.BURN, reason);
         if (!ok) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.storage", null));
@@ -337,11 +336,6 @@ public final class AdminSubcommand {
                     + plugin.getMessages().get("error.no-permission", null));
             return;
         }
-        if (args.length >= 3 && "cleanup".equalsIgnoreCase(args[2])) {
-            plugin.getLoadSimulator().cleanup();
-            sender.sendMessage(plugin.getMessages().prefix() + "§aНагрузочный кэш очищен.");
-            return;
-        }
         int players = 50;
         int txs = 5000;
         try {
@@ -353,7 +347,7 @@ public final class AdminSubcommand {
         }
         sender.sendMessage(plugin.getMessages().prefix() + "§eЗапуск нагрузочного теста: "
                 + players + " игроков × " + txs + " tx...");
-        plugin.getLoadSimulator().run(players, txs, sender);
+        plugin.getLoadSimulator().run(sender, players, txs);
     }
 
     private void audit(CommandSender sender, String[] args) {
@@ -427,12 +421,23 @@ public final class AdminSubcommand {
             sender.sendMessage(plugin.getMessages().prefix() + "§cБекап-сервис не активен.");
             return;
         }
-        File backup = plugin.getBackups().runManualBackup();
-        if (backup == null) {
-            sender.sendMessage(plugin.getMessages().prefix() + "§cБекап не удался.");
-            return;
+        try {
+            long pages = plugin.getLedger().checkpoint();
+            File src = plugin.getLedger().dbFile();
+            File dst = new File(plugin.getDataFolder(),
+                    "backups/manual-" + System.currentTimeMillis() + ".sqlite");
+            File parent = dst.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                sender.sendMessage(plugin.getMessages().prefix() + "§cНе могу создать папку backups/");
+                return;
+            }
+            Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + "§aWAL checkpoint (" + pages + " стр.) + копия БД: §f"
+                    + dst.getPath());
+        } catch (Exception e) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§cБекап не удался: " + e.getMessage());
         }
-        sender.sendMessage(plugin.getMessages().prefix() + "§aБекап: §f" + backup.getPath());
     }
 
     private String shortUuid(UUID uuid) {
