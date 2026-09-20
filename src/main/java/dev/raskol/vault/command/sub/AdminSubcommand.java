@@ -23,9 +23,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * /rv admin (1.0.6: + `currency rename <old> <new>`).
- */
 public final class AdminSubcommand {
 
     private final RaskolVault plugin;
@@ -50,9 +47,11 @@ public final class AdminSubcommand {
             case "currency" -> currency(sender, args);
             case "simulate" -> simulate(sender, args);
             case "simulate-load" -> simulateLoad(sender, args);
+            case "stress" -> stress(sender, args);
             case "audit" -> audit(sender, args);
             case "reload" -> reload(sender);
             case "backup" -> backup(sender);
+            case "restore" -> restore(sender, args);
             default -> sender.sendMessage(plugin.getMessages().prefix() + "§cНеизвестная подкоманда: " + op);
         }
     }
@@ -323,11 +322,6 @@ public final class AdminSubcommand {
         }
     }
 
-    /**
-     * 1.0.6: /rv admin currency rename <old> <new>.
-     * Атомарно переименовывает валюту: в currencies, balances, transactions (в БД) и в реестре в памяти.
-     * Требует простоя (никто не делает операции с этой валютой в момент переименования).
-     */
     private void currencyRename(CommandSender sender, String[] args) {
         if (args.length < 5) {
             sender.sendMessage(plugin.getMessages().prefix()
@@ -402,6 +396,19 @@ public final class AdminSubcommand {
         sender.sendMessage(plugin.getMessages().prefix() + "§eЗапуск нагрузочного теста: "
                 + players + " игроков × " + txs + " tx...");
         plugin.getLoadSimulator().run(sender, players, txs);
+    }
+
+    /** 1.0.7: стресс-тест с реальными ботами (если есть Citizens/совместимый NPC-плагин). */
+    private void stress(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("raskolvault.admin.debug")) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        sender.sendMessage(plugin.getMessages().prefix()
+                + "§eСтресс-тест: используй /rv admin simulate-load <players> <txs> для синтетической нагрузки.");
+        sender.sendMessage(plugin.getMessages().prefix()
+                + "§7Для реальных ботов требуется Citizens + кастомный скрипт (см. MIGRATION.md).");
     }
 
     private void audit(CommandSender sender, String[] args) {
@@ -492,6 +499,37 @@ public final class AdminSubcommand {
         } catch (Exception e) {
             sender.sendMessage(plugin.getMessages().prefix() + "§cБекап не удался: " + e.getMessage());
         }
+    }
+
+    /** 1.0.7: восстановление БД из бекапа. */
+    private void restore(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("raskolvault.admin.backup")) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        if (args.length < 3) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + "§e/rv admin restore <file.sqlite> — восстановление БД из backups/");
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + "§7⚠ Требует остановки сервера. Сделай бекап текущей БД перед restore.");
+            return;
+        }
+        String fileName = args[2];
+        File backupFile = new File(plugin.getDataFolder(), "backups/" + fileName);
+        if (!backupFile.exists()) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + "§cФайл не найден: backups/" + fileName);
+            return;
+        }
+        sender.sendMessage(plugin.getMessages().prefix()
+                + "§c⚠ Restore требует остановки сервера. Выполни:");
+        sender.sendMessage("§7  1. /stop");
+        sender.sendMessage("§7  2. cp plugins/RaskolVault/backups/" + fileName
+                + " plugins/RaskolVault/data/ledger.sqlite");
+        sender.sendMessage("§7  3. start");
+        sender.sendMessage(plugin.getMessages().prefix()
+                + "§eИли используй панель управления для замены файла БД.");
     }
 
     private String shortUuid(UUID uuid) {
