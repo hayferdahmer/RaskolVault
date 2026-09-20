@@ -14,6 +14,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * Реестр валют. Источники: currencies.yml (приоритет) + БД (merge).
+ * 1.1.0-a: merge из БД закрывает дыру 1.0.x — валюты, созданные в рантайме
+ * (авто-лушнер наций), теперь переживают рестарт сервера.
+ */
 public final class CurrencyRegistry {
 
     private final Plugin plugin;
@@ -50,23 +55,47 @@ public final class CurrencyRegistry {
                     try {
                         ctype = CurrencyType.valueOf(type.toUpperCase(Locale.ROOT));
                     } catch (IllegalArgumentException e) {
-                        plugin.getLogger().warning("RaskolVault: неверный тип валюты " + id + ": " + type);
+                        plugin.getLogger().warning("RaskolVault: валюта '" + id + "' пропущена: неизвестный type " + type);
                         continue;
                     }
-                    Currency c = new Currency(
-                            id,
-                            entry.getString("display-name", id),
-                            entry.getString("symbol", "?"),
-                            ctype,
-                            entry.getString("nation-id"),
-                            entry.getInt("decimals", 2),
-                            entry.getBoolean("tradeable", true)
-                    );
-                    byId.put(c.id(), c);
+                    try {
+                        Currency c = new Currency(
+                                id,
+                                entry.getString("display-name", id),
+                                entry.getString("symbol", id),
+                                ctype,
+                                entry.getString("nation-id"),
+                                entry.getInt("decimals", 2),
+                                entry.getBoolean("tradeable", true));
+                        byId.put(c.id(), c);
+                    } catch (IllegalArgumentException e) {
+                        plugin.getLogger().warning("RaskolVault: валюта '" + id + "' пропущена: " + e.getMessage());
+                    }
                 }
             }
         }
         plugin.getLogger().info("RaskolVault: валют в реестре: " + byId.size() + " (global=" + this.globalId + ")");
+    }
+
+    /**
+     * 1.1.0-a: подтянуть валюты из БД, которых нет в currencies.yml
+     * (созданные в рантайме). YML остаётся приоритетным источником.
+     */
+    public int mergeFromLedger(SQLiteLedger ledger) {
+        int added = 0;
+        for (Currency db : ledger.loadCurrencies()) {
+            if (!byId.containsKey(db.id())) {
+                byId.put(db.id(), db);
+                if (db.type() == CurrencyType.GLOBAL && globalId == null) {
+                    globalId = db.id();
+                }
+                added++;
+            }
+        }
+        if (added > 0) {
+            plugin.getLogger().info("RaskolVault: из БД подтянуто валют: " + added);
+        }
+        return added;
     }
 
     public void syncToLedger(SQLiteLedger ledger) {
@@ -97,7 +126,7 @@ public final class CurrencyRegistry {
         }
         int count = 0;
         for (Currency c : byId.values()) {
-            if (nationId.equals(c.nationId())) {
+            if (nationId.equalsIgnoreCase(c.nationId())) {
                 count++;
             }
         }
@@ -108,18 +137,18 @@ public final class CurrencyRegistry {
         if (oldName == null || oldName.equals(newName)) {
             return 0;
         }
-        List<String> keysToReplace = new ArrayList<>();
+        List<String> keys = new ArrayList<>();
         List<Currency> replaced = new ArrayList<>();
         for (Map.Entry<String, Currency> e : byId.entrySet()) {
             Currency c = e.getValue();
-            if (oldName.equals(c.nationId())) {
-                keysToReplace.add(e.getKey());
+            if (oldName.equalsIgnoreCase(c.nationId())) {
+                keys.add(e.getKey());
                 replaced.add(new Currency(c.id(), c.displayName(), c.symbol(), c.type(),
                         newName, c.decimals(), c.tradeable()));
             }
         }
-        for (int i = 0; i < keysToReplace.size(); i++) {
-            byId.put(keysToReplace.get(i), replaced.get(i));
+        for (int i = 0; i < keys.size(); i++) {
+            byId.put(keys.get(i), replaced.get(i));
         }
         return replaced.size();
     }
@@ -138,21 +167,18 @@ public final class CurrencyRegistry {
             byId.put(upperOld, c);
             return false;
         }
-        Currency renamed = new Currency(upperNew, c.displayName(), c.symbol(), c.type(),
-                c.nationId(), c.decimals(), c.tradeable());
-        byId.put(upperNew, renamed);
+        byId.put(upperNew, new Currency(upperNew, c.displayName(), c.symbol(), c.type(),
+                c.nationId(), c.decimals(), c.tradeable()));
         if (upperOld.equals(globalId)) {
             globalId = upperNew;
         }
         return true;
     }
 
-    /** 1.0.7: добавить валюту в реестр (используется NationAutoCurrencyListener). */
     public void addCurrency(Currency currency) {
         byId.put(currency.id(), currency);
     }
 
-    /** 1.0.7: удалить валюту из реестра. */
     public void removeCurrency(String id) {
         byId.remove(id.toUpperCase(Locale.ROOT));
     }
