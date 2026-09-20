@@ -3,6 +3,7 @@ package dev.raskol.vault.command;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.storage.LedgerException;
 import dev.raskol.vault.util.Formatter;
 import org.bukkit.Bukkit;
@@ -18,8 +19,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Корневая команда /rv. Этапы 0–2: help / version / debug / balance.
- * pay, convert, rates, admin — этапы 4–5.
+ * Корневая команда /rv. Этапы 0–3: help / version / debug / balance.
+ * debug расширен: показывает статус регистрации EconomyProvider в RaskolCore.
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -108,7 +109,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("§e/rv version§7 — версия плагина");
         sender.sendMessage("§e/rv balance [ник]§7 — кошелёк (свой или чужой с правом просмотра)");
         if (sender.hasPermission("raskolvault.admin.debug")) {
-            sender.sendMessage("§e/rv debug§7 — состояние хуков, конфигурации и леджера");
+            sender.sendMessage("§e/rv debug§7 — состояние хуков, конфигурации, леджера и Core-провайдера");
         }
     }
 
@@ -120,6 +121,9 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 + " PAPI=" + yn(plugin.isPlaceholderPresent()));
         sender.sendMessage(prefix() + "Essentials-хук кошелька: "
                 + yn(plugin.getEssentialsHook().isAvailable()));
+        RaskolCoreHook coreHook = plugin.getCoreHook();
+        sender.sendMessage(prefix() + "RaskolCore-провайдер: "
+                + (coreHook != null && coreHook.isRegistered() ? "§aregistered§r" : "§coff§r"));
         sender.sendMessage(prefix() + "Валют в реестре: " + plugin.getCurrencies().all().size()
                 + " (global: " + plugin.getCurrencies().globalId() + ")");
         sender.sendMessage(prefix() + "Глобальная валюта: "
