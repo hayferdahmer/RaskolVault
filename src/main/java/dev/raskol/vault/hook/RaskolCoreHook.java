@@ -1,8 +1,8 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.hook;
 
+import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.transaction.TransactionType;
-import dev.raskol.vault.currency.CurrencyRegistry;
 import dev.raskol.vault.wallet.WalletService;
 import org.bukkit.plugin.Plugin;
 
@@ -11,19 +11,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.UUID;
 
-/**
- * Рефлексия-хук в RaskolCore: регистрирует RaskolVault как EconomyProvider
- * в EconomyRegistry через java.lang.reflect.Proxy (без compile-зависимости).
- *
- * Контракт Core (из первоисточника):
- * - EconomyProvider: currencyOf / balance / withdraw / deposit / transfer / isAvailable
- * - EconomyRegistry: register(provider) / unregister(provider) / get / shutdown
- * - RaskolCoreAPI.economy() — статический доступ к реестру.
- *
- * Proxy создаётся с ClassLoader'ом плагина Core — это требование JVM для
- * совместимости типов интерфейса и реализации. Делегация в WalletService
- * по глобальной валюте (id из CurrencyRegistry).
- */
 public final class RaskolCoreHook {
 
     private final Plugin plugin;
@@ -99,10 +86,6 @@ public final class RaskolCoreHook {
         return registered;
     }
 
-    /**
-     * InvocationHandler для Proxy: диспетчеризация по именам методов EconomyProvider.
-     * Контракт Core null-safe: null uuid = 0/пусто/false без исключений.
-     */
     private static final class EconomyProviderHandler implements InvocationHandler {
 
         private final WalletService wallets;
