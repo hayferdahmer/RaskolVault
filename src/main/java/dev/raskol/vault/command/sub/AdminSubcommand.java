@@ -92,7 +92,7 @@ public final class AdminSubcommand {
             double bal = plugin.getWallets().getBalance(uuid, c.id());
             sender.sendMessage(plugin.getMessages().get("balance.line", Map.of(
                     "display", c.displayName(),
-                    "amount", Formatter.withSymbol(bal, c.decimals(), c.symbol())));
+                    "amount", Formatter.withSymbol(bal, c.decimals(), c.symbol()))));
         }
     }
 
@@ -232,8 +232,12 @@ public final class AdminSubcommand {
         int players = 50;
         int txs = 5000;
         try {
-            if (args.length >= 2) players = Integer.parseInt(args[1]);
-            if (args.length >= 3) txs = Integer.parseInt(args[2]);
+            if (args.length >= 2) {
+                players = Integer.parseInt(args[1]);
+            }
+            if (args.length >= 3) {
+                txs = Integer.parseInt(args[2]);
+            }
         } catch (NumberFormatException e) {
             sender.sendMessage(prefix() + "&cНеверный формат числа");
             return;
@@ -266,7 +270,9 @@ public final class AdminSubcommand {
         }
         int limit = 10;
         try {
-            if (args.length >= 3) limit = Integer.parseInt(args[2]);
+            if (args.length >= 3) {
+                limit = Integer.parseInt(args[2]);
+            }
         } catch (NumberFormatException ignored) {
         }
         List<Transaction> history;
@@ -282,7 +288,7 @@ public final class AdminSubcommand {
             Currency c = plugin.getCurrencies().get(tx.currencyId()).orElse(null);
             sender.sendMessage("&7 " + fmt.format(new Date(tx.timestampMillis()))
                     + " &f" + tx.type() + " " + Formatter.amount(tx.amount(), c == null ? 2 : c.decimals())
-                    + " " + tx.currencyId() + " &7· " + tx.reason());
+                    + " " + tx.currencyId() + " §7· " + tx.reason());
         }
     }
 
