@@ -7,6 +7,7 @@ import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.api.wallet.Wallet;
 import dev.raskol.vault.hook.EssentialsHook;
+import dev.raskol.vault.observability.SparkHook;
 import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.plugin.Plugin;
@@ -21,21 +22,14 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
- * Кошельки игроков (1.0.3): проекция кэша на потоке вызова + асинхронный коммит.
+ * Кошельки игроков (1.0.3 async + 1.0.4 observability).
  *
- * Поток вызова (main для команд) НЕ касается SQLite: под projectionLock делается
- * мгновенная математика кэша, затем атомарный коммит уходит в LedgerWriter.
- * Синхронный контракт (Core-хук, админки, казна) = тот же путь + join с таймаутом.
- *
- * GLOBAL (⚜): мутация Essentials на потоке вызова (in-memory, быстро),
- * в очередь уходит только аудиторская запись; при провале записи — компенсация Essentials.
- * NATIONAL/WORLD: абсолютное значение баланса уходит в коммит; кэш обновляется в проекции.
- *
- * Отказ записи: SEVERE с полными данными для ручного восстановления; кэш не откатывается
- * (откат затёр бы более поздние проекции). Счётчик failed — материал алертов 1.0.4.
+ * 1.0.4: добавлены счётчики cache hit/miss (для coverage-метрики валют)
+ * и Spark-тайминги проекций (rv.deposit.projection и т.п.).
  */
 public final class WalletService {
 
@@ -46,19 +40,25 @@ public final class WalletService {
     private final LedgerWriter writer;
     private final CurrencyRegistry currencies;
     private final EssentialsHook essentials;
+    private final SparkHook spark;
     private final Map<UUID, Map<String, Double>> cache = new ConcurrentHashMap<>();
     private final Object projectionLock = new Object();
     private final long joinTimeoutMillis;
 
+    // Observability (1.0.4)
+    private final AtomicLong cacheHits = new AtomicLong(0L);
+    private final AtomicLong cacheMisses = new AtomicLong(0L);
+
     public WalletService(Plugin plugin, SQLiteLedger ledger, LedgerWriter writer,
                          CurrencyRegistry currencies, EssentialsHook essentials,
-                         long joinTimeoutMillis) {
+                         long joinTimeoutMillis, SparkHook spark) {
         this.plugin = plugin;
         this.ledger = ledger;
         this.writer = writer;
         this.currencies = currencies;
         this.essentials = essentials;
         this.joinTimeoutMillis = Math.max(1000L, joinTimeoutMillis);
+        this.spark = spark;
     }
 
     public void init() {
@@ -68,14 +68,19 @@ public final class WalletService {
         plugin.getLogger().info("RaskolVault: кэш кошельков прогрет, строк: " + cache.size());
     }
 
-    // ---------- чтение (всегда быстрое: кэш или Essentials) ----------
+    // ---------- чтение ----------
 
     public double getBalance(UUID uuid, String currencyId) {
         if (currencies.globalId().equals(currencyId)) {
             return essentials.isAvailable() ? essentials.getBalance(uuid) : 0.0D;
         }
         Map<String, Double> row = cache.get(uuid);
-        return row == null ? 0.0D : row.getOrDefault(currencyId, 0.0D);
+        if (row == null || !row.containsKey(currencyId)) {
+            cacheMisses.incrementAndGet();
+            return 0.0D;
+        }
+        cacheHits.incrementAndGet();
+        return row.get(currencyId);
     }
 
     public boolean has(UUID uuid, String currencyId, double amount) {
@@ -100,6 +105,21 @@ public final class WalletService {
 
     public int cachedRows() {
         return cache.size();
+    }
+
+    public long cacheHits() {
+        return cacheHits.get();
+    }
+
+    public long cacheMisses() {
+        return cacheMisses.get();
+    }
+
+    public double cacheHitRate() {
+        long h = cacheHits.get();
+        long m = cacheMisses.get();
+        long total = h + m;
+        return total == 0 ? 100.0D : (100.0D * h / total);
     }
 
     // ---------- async API ----------
@@ -136,10 +156,14 @@ public final class WalletService {
         }
         double old;
         double neu;
-        synchronized (projectionLock) {
-            old = raw(uuid, currencyId);
-            neu = round(old + rounded, currency);
-            cachePut(uuid, currencyId, neu);
+        try (AutoCloseable ignored = spark.time("deposit.projection")) {
+            synchronized (projectionLock) {
+                old = raw(uuid, currencyId);
+                neu = round(old + rounded, currency);
+                cachePut(uuid, currencyId, neu);
+            }
+        } catch (Exception ignored) {
+            // spark close never throws by contract
         }
         List<SQLiteLedger.AbsoluteBalance> writes =
                 List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu));
@@ -187,14 +211,17 @@ public final class WalletService {
         }
         double old;
         double neu;
-        synchronized (projectionLock) {
-            old = raw(uuid, currencyId);
-            if (old + EPS < rounded) {
-                cb.accept(false);
-                return;
+        try (AutoCloseable ignored = spark.time("withdraw.projection")) {
+            synchronized (projectionLock) {
+                old = raw(uuid, currencyId);
+                if (old + EPS < rounded) {
+                    cb.accept(false);
+                    return;
+                }
+                neu = round(old - rounded, currency);
+                cachePut(uuid, currencyId, neu);
             }
-            neu = round(old - rounded, currency);
-            cachePut(uuid, currencyId, neu);
+        } catch (Exception ignored) {
         }
         List<SQLiteLedger.AbsoluteBalance> writes =
                 List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu));
@@ -255,17 +282,20 @@ public final class WalletService {
         double oldTo;
         double neuFrom;
         double neuTo;
-        synchronized (projectionLock) {
-            oldFrom = raw(from, currencyId);
-            if (oldFrom + EPS < rounded) {
-                cb.accept(false);
-                return;
+        try (AutoCloseable ignored = spark.time("transfer.projection")) {
+            synchronized (projectionLock) {
+                oldFrom = raw(from, currencyId);
+                if (oldFrom + EPS < rounded) {
+                    cb.accept(false);
+                    return;
+                }
+                oldTo = raw(to, currencyId);
+                neuFrom = round(oldFrom - rounded, currency);
+                neuTo = round(oldTo + rounded, currency);
+                cachePut(from, currencyId, neuFrom);
+                cachePut(to, currencyId, neuTo);
             }
-            oldTo = raw(to, currencyId);
-            neuFrom = round(oldFrom - rounded, currency);
-            neuTo = round(oldTo + rounded, currency);
-            cachePut(from, currencyId, neuFrom);
-            cachePut(to, currencyId, neuTo);
+        } catch (Exception ignored) {
         }
         List<SQLiteLedger.AbsoluteBalance> writes = List.of(
                 new SQLiteLedger.AbsoluteBalance(from, currencyId, neuFrom),
@@ -278,7 +308,6 @@ public final class WalletService {
         });
     }
 
-    /** Обмен: две аудиторские записи + абсолютные балансы по неблобальным сторонам. */
     public void exchangeAsync(UUID owner, String fromId, String toId,
                               double fromAmount, double toAmount, String reason,
                               Consumer<Boolean> cb) {
@@ -336,32 +365,34 @@ public final class WalletService {
         List<SQLiteLedger.AbsoluteBalance> writes = new ArrayList<>(2);
         double oldFromCache = 0.0D;
         double neuFromCache = 0.0D;
-        synchronized (projectionLock) {
-            if (!fromGlobal) {
-                oldFromCache = raw(owner, fromId);
-                if (oldFromCache + EPS < fromAmount) {
-                    compensateGlobal(fromGlobal, toGlobal, owner, oldFromGlobal, oldToGlobal, from, to, fromAmount, toAmount);
-                    cb.accept(false);
-                    return;
+        try (AutoCloseable ignored = spark.time("convert.projection")) {
+            synchronized (projectionLock) {
+                if (!fromGlobal) {
+                    oldFromCache = raw(owner, fromId);
+                    if (oldFromCache + EPS < fromAmount) {
+                        compensateGlobal(fromGlobal, toGlobal, owner, oldFromGlobal, oldToGlobal, from, to, fromAmount, toAmount);
+                        cb.accept(false);
+                        return;
+                    }
+                    neuFromCache = round(oldFromCache - fromAmount, from);
+                    cachePut(owner, fromId, neuFromCache);
+                    writes.add(new SQLiteLedger.AbsoluteBalance(owner, fromId, neuFromCache));
                 }
-                neuFromCache = round(oldFromCache - fromAmount, from);
-                cachePut(owner, fromId, neuFromCache);
-                writes.add(new SQLiteLedger.AbsoluteBalance(owner, fromId, neuFromCache));
+                if (!toGlobal) {
+                    double oldToCache = raw(owner, toId);
+                    double neuToCache = round(oldToCache + toAmount, to);
+                    cachePut(owner, toId, neuToCache);
+                    writes.add(new SQLiteLedger.AbsoluteBalance(owner, toId, neuToCache));
+                }
             }
-            if (!toGlobal) {
-                double oldToCache = raw(owner, toId);
-                double neuToCache = round(oldToCache + toAmount, to);
-                cachePut(owner, toId, neuToCache);
-                writes.add(new SQLiteLedger.AbsoluteBalance(owner, toId, neuToCache));
-            }
+        } catch (Exception ignored) {
         }
-        
-        // ФИКС: создаём final-копии для использования в лямбде
+
         final double finalOldFromGlobal = oldFromGlobal;
         final double finalOldToGlobal = oldToGlobal;
         final double finalOldFromCache = oldFromCache;
         final double finalNeuFromCache = neuFromCache;
-        
+
         writer.submit(() -> ledger.commitAbsolute(writes, txs), ok -> {
             if (!ok) {
                 compensateGlobal(fromGlobal, toGlobal, owner, finalOldFromGlobal, finalOldToGlobal, from, to, fromAmount, toAmount);
@@ -371,7 +402,7 @@ public final class WalletService {
         });
     }
 
-    // ---------- sync API (Core-хук, админки, казна нации) ----------
+    // ---------- sync API ----------
 
     public boolean deposit(UUID uuid, String currencyId, double amount, TransactionType type, String reason) {
         return join(cb -> depositAsync(uuid, currencyId, amount, type, reason, cb));
