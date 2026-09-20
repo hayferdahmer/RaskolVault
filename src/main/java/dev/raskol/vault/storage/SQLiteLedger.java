@@ -9,7 +9,6 @@ import org.bukkit.plugin.Plugin;
 
 import java.io.File;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -21,27 +20,36 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * SQLite-леджер: валюты, балансы, журнал транзакций (аудит, анти-дюп, откаты).
- * Одно соединение + synchronized: пре-лаунч объёмы не требуют пула.
- * WAL + synchronous=NORMAL: скорость без риска потерять коммит при краше.
- * Миграции через PRAGMA user_version (текущая схема v1).
+ * SQLite-леджер на пуле соединений (1.0.2).
  *
- * 1.0.1: migrateLegacyCurrencyIds логируется только при фактическом переносе строк.
+ * Гарантия аудита: каждая бизнес-операция пишется ОДНОЙ SQL-транзакцией
+ * (BEGIN IMMEDIATE → upsert баланса + insert транзакции → COMMIT).
+ * Баланс и аудит не могут разойтись даже при краше процесса между записями.
+ *
+ * Durability: WAL + synchronous из конфига (NORMAL — быстро, защита от краша
+ * процесса; FULL — медленнее, защита от обрыва питания).
+ * WAL-гигиена: PRAGMA wal_checkpoint(TRUNCATE) по расписанию и на выключении.
  */
 public final class SQLiteLedger {
 
     public static final int SCHEMA_VERSION = 1;
 
+    private static final String INSERT_TX =
+            "INSERT INTO transactions(timestamp, from_uuid, to_uuid, currency_id, amount, type, reason, metadata) "
+                    + "VALUES(?,?,?,?,?,?,?,?)";
+    private static final String UPSERT_BALANCE =
+            "INSERT INTO balances(uuid, currency_id, amount, updated_at) VALUES(?,?,?,?) "
+                    + "ON CONFLICT(uuid, currency_id) DO UPDATE SET "
+                    + "amount=excluded.amount, updated_at=excluded.updated_at";
+
     private final Plugin plugin;
     private final File dbFile;
-    private Connection connection;
+    private final ConnectionPool pool;
 
-    public SQLiteLedger(Plugin plugin, File dbFile) {
+    public SQLiteLedger(Plugin plugin, File dbFile, int poolSize,
+                        String synchronous, long borrowTimeoutMillis) throws SQLException {
         this.plugin = plugin;
         this.dbFile = dbFile;
-    }
-
-    public synchronized void init() throws SQLException {
         File parent = dbFile.getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
             throw new SQLException("Не могу создать папку леджера: " + parent.getAbsolutePath());
@@ -51,77 +59,93 @@ public final class SQLiteLedger {
         } catch (ClassNotFoundException e) {
             throw new SQLException("Драйвер org.sqlite.JDBC не найден в jar (проверь shade в pom): " + e.getMessage(), e);
         }
-        connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
-        try (Statement st = connection.createStatement()) {
-            st.execute("PRAGMA journal_mode=WAL");
-            st.execute("PRAGMA synchronous=NORMAL");
-            st.execute("PRAGMA foreign_keys=ON");
-            st.execute("PRAGMA busy_timeout=5000");
+        this.pool = new ConnectionPool(plugin, dbFile, poolSize, synchronous, borrowTimeoutMillis);
+    }
+
+    public synchronized void init() throws SQLException {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            try (Statement st = c.createStatement()) {
+                st.execute("PRAGMA journal_mode=WAL");
+            }
+            ok = true;
+        } finally {
+            finish(c, ok);
         }
         migrate();
     }
 
     private void migrate() throws SQLException {
-        int version;
-        try (Statement st = connection.createStatement();
-             ResultSet rs = st.executeQuery("PRAGMA user_version")) {
-            version = rs.getInt(1);
-        }
-        if (version < SCHEMA_VERSION) {
-            try (Statement st = connection.createStatement()) {
-                st.execute("CREATE TABLE IF NOT EXISTS currencies ("
-                        + "id TEXT PRIMARY KEY,"
-                        + "display_name TEXT NOT NULL,"
-                        + "symbol TEXT NOT NULL,"
-                        + "type TEXT NOT NULL CHECK (type IN ('GLOBAL','NATIONAL','WORLD')),"
-                        + "nation_id TEXT,"
-                        + "decimals INTEGER NOT NULL DEFAULT 2,"
-                        + "tradeable INTEGER NOT NULL DEFAULT 1,"
-                        + "created_at INTEGER NOT NULL)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_type ON currencies(type)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_nation ON currencies(nation_id)");
-                st.execute("CREATE TABLE IF NOT EXISTS balances ("
-                        + "uuid TEXT NOT NULL,"
-                        + "currency_id TEXT NOT NULL,"
-                        + "amount REAL NOT NULL DEFAULT 0,"
-                        + "updated_at INTEGER NOT NULL,"
-                        + "PRIMARY KEY (uuid, currency_id),"
-                        + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_balances_uuid ON balances(uuid)");
-                st.execute("CREATE TABLE IF NOT EXISTS transactions ("
-                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                        + "timestamp INTEGER NOT NULL,"
-                        + "from_uuid TEXT,"
-                        + "to_uuid TEXT,"
-                        + "currency_id TEXT NOT NULL,"
-                        + "amount REAL NOT NULL,"
-                        + "type TEXT NOT NULL CHECK (type IN "
-                        + "('PAY','CONVERT','MINT','BURN','ADMIN_SET','ADMIN_GIVE','ADMIN_TAKE','SYNC')),"
-                        + "reason TEXT NOT NULL,"
-                        + "metadata TEXT,"
-                        + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_uuid)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_uuid)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_currency ON transactions(currency_id)");
-                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)");
-                st.execute("CREATE TABLE IF NOT EXISTS nations ("
-                        + "id TEXT PRIMARY KEY,"
-                        + "name TEXT NOT NULL,"
-                        + "updated_at INTEGER NOT NULL)");
-                st.execute("PRAGMA user_version=" + SCHEMA_VERSION);
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            int version;
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("PRAGMA user_version")) {
+                version = rs.getInt(1);
             }
-            plugin.getLogger().info("SQLiteLedger: схема создана с нуля (v" + SCHEMA_VERSION + ")");
-        } else if (version > SCHEMA_VERSION) {
-            plugin.getLogger().warning("SQLiteLedger: схема v" + version + " новее поддерживаемой v"
-                    + SCHEMA_VERSION + " — откати jar или восстанови БД из бекапа, данные не трогаю");
+            if (version < SCHEMA_VERSION) {
+                try (Statement st = c.createStatement()) {
+                    st.execute("CREATE TABLE IF NOT EXISTS currencies ("
+                            + "id TEXT PRIMARY KEY,"
+                            + "display_name TEXT NOT NULL,"
+                            + "symbol TEXT NOT NULL,"
+                            + "type TEXT NOT NULL CHECK (type IN ('GLOBAL','NATIONAL','WORLD')),"
+                            + "nation_id TEXT,"
+                            + "decimals INTEGER NOT NULL DEFAULT 2,"
+                            + "tradeable INTEGER NOT NULL DEFAULT 1,"
+                            + "created_at INTEGER NOT NULL)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_type ON currencies(type)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_nation ON currencies(nation_id)");
+                    st.execute("CREATE TABLE IF NOT EXISTS balances ("
+                            + "uuid TEXT NOT NULL,"
+                            + "currency_id TEXT NOT NULL,"
+                            + "amount REAL NOT NULL DEFAULT 0,"
+                            + "updated_at INTEGER NOT NULL,"
+                            + "PRIMARY KEY (uuid, currency_id),"
+                            + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_balances_uuid ON balances(uuid)");
+                    st.execute("CREATE TABLE IF NOT EXISTS transactions ("
+                            + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                            + "timestamp INTEGER NOT NULL,"
+                            + "from_uuid TEXT,"
+                            + "to_uuid TEXT,"
+                            + "currency_id TEXT NOT NULL,"
+                            + "amount REAL NOT NULL,"
+                            + "type TEXT NOT NULL CHECK (type IN "
+                            + "('PAY','CONVERT','MINT','BURN','ADMIN_SET','ADMIN_GIVE','ADMIN_TAKE','SYNC')),"
+                            + "reason TEXT NOT NULL,"
+                            + "metadata TEXT,"
+                            + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_uuid)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_uuid)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_currency ON transactions(currency_id)");
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)");
+                    st.execute("CREATE TABLE IF NOT EXISTS nations ("
+                            + "id TEXT PRIMARY KEY,"
+                            + "name TEXT NOT NULL,"
+                            + "updated_at INTEGER NOT NULL)");
+                    st.execute("PRAGMA user_version=" + SCHEMA_VERSION);
+                }
+                plugin.getLogger().info("SQLiteLedger: схема создана с нуля (v" + SCHEMA_VERSION + ")");
+            } else if (version > SCHEMA_VERSION) {
+                plugin.getLogger().warning("SQLiteLedger: схема v" + version + " новее поддерживаемой v"
+                        + SCHEMA_VERSION + " — откати jar или восстанови БД из бекапа, данные не трогаю");
+            }
+            ok = true;
+        } finally {
+            finish(c, ok);
         }
     }
 
     // ---------- currencies ----------
 
-    public synchronized void upsertCurrency(Currency currency) {
-        try (PreparedStatement ps = connection.prepareStatement(
+    public void upsertCurrency(Currency currency) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO currencies(id, display_name, symbol, type, nation_id, decimals, tradeable, created_at) "
                         + "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                         + "display_name=excluded.display_name, symbol=excluded.symbol, type=excluded.type, "
@@ -135,14 +159,19 @@ public final class SQLiteLedger {
             ps.setInt(7, currency.tradeable() ? 1 : 0);
             ps.setLong(8, System.currentTimeMillis());
             ps.executeUpdate();
+            ok = true;
         } catch (SQLException e) {
             throw new LedgerException("Не могу записать валюту " + currency.id() + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
     }
 
-    public synchronized List<Currency> loadCurrencies() {
+    public List<Currency> loadCurrencies() {
         List<Currency> out = new ArrayList<>();
-        try (Statement st = connection.createStatement();
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (Statement st = c.createStatement();
              ResultSet rs = st.executeQuery(
                      "SELECT id, display_name, symbol, type, nation_id, decimals, tradeable FROM currencies")) {
             while (rs.next()) {
@@ -150,117 +179,199 @@ public final class SQLiteLedger {
                         CurrencyType.valueOf(rs.getString(4)), rs.getString(5),
                         rs.getInt(6), rs.getInt(7) == 1));
             }
+            ok = true;
         } catch (SQLException e) {
             throw new LedgerException("Не могу прочитать валюты: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
         return out;
     }
 
-    public synchronized void deleteCurrency(String id) {
-        try (PreparedStatement ps = connection.prepareStatement("DELETE FROM currencies WHERE id=?")) {
+    public void deleteCurrency(String id) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement("DELETE FROM currencies WHERE id=?")) {
             ps.setString(1, id);
             ps.executeUpdate();
+            ok = true;
         } catch (SQLException e) {
             throw new LedgerException("Не могу удалить валюту " + id + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
     }
 
     /**
-     * Миграция старых строчных ID (gold/denarius/crown) в 3-буквенные капсом (GLD/RAS/VLR).
-     * Идемпотентна: повторный вызов ничего не переносит и молчит.
+     * Миграция старых строчных ID (gold/denarius/crown) в 3-буквенные капсом.
+     * Одна SQL-транзакция на весь прогон; идемпотентна, молчит при нулевом переносе.
      */
     public synchronized void migrateLegacyCurrencyIds(Map<String, String> mapping) {
         if (mapping.isEmpty()) {
             return;
         }
+        Connection c = pool.borrow();
+        boolean ok = false;
         try {
+            c.setAutoCommit(false);
+            int totalBalances = 0;
+            int totalTx = 0;
             for (Map.Entry<String, String> entry : mapping.entrySet()) {
                 String from = entry.getKey();
                 String to = entry.getValue();
                 if (from.equals(to)) {
                     continue;
                 }
-                int balanceUpdates;
-                int txUpdates;
-                try (PreparedStatement ps = connection.prepareStatement(
+                int bal;
+                int tx;
+                try (PreparedStatement ps = c.prepareStatement(
                         "UPDATE balances SET currency_id=? WHERE currency_id=?")) {
                     ps.setString(1, to);
                     ps.setString(2, from);
-                    balanceUpdates = ps.executeUpdate();
+                    bal = ps.executeUpdate();
                 }
-                try (PreparedStatement ps = connection.prepareStatement(
+                try (PreparedStatement ps = c.prepareStatement(
                         "UPDATE transactions SET currency_id=? WHERE currency_id=?")) {
                     ps.setString(1, to);
                     ps.setString(2, from);
-                    txUpdates = ps.executeUpdate();
+                    tx = ps.executeUpdate();
                 }
-                if (balanceUpdates == 0 && txUpdates == 0) {
-                    // Нечего переносить: не шумим в лог на каждом старте
+                if (bal == 0 && tx == 0) {
                     continue;
                 }
-                try (PreparedStatement ps = connection.prepareStatement(
-                        "DELETE FROM currencies WHERE id=?")) {
+                try (PreparedStatement ps = c.prepareStatement("DELETE FROM currencies WHERE id=?")) {
                     ps.setString(1, from);
                     ps.executeUpdate();
                 }
+                totalBalances += bal;
+                totalTx += tx;
                 plugin.getLogger().info("RaskolVault: миграция '" + from + "' → '" + to
-                        + "' (балансов " + balanceUpdates + ", транзакций " + txUpdates + ")");
+                        + "' (балансов " + bal + ", транзакций " + tx + ")");
+            }
+            c.commit();
+            ok = true;
+            if (totalBalances == 0 && totalTx == 0 && plugin.getConfig().getBoolean("general.debug", false)) {
+                plugin.getLogger().info("RaskolVault: миграция ID — переносить нечего");
             }
         } catch (SQLException e) {
+            rollbackQuiet(c);
             throw new LedgerException("Миграция ID валют провалена: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
     }
 
     // ---------- balances ----------
 
-    public synchronized Map<UUID, Map<String, Double>> loadAllBalances() {
+    public Map<UUID, Map<String, Double>> loadAllBalances() {
         Map<UUID, Map<String, Double>> out = new HashMap<>();
-        try (Statement st = connection.createStatement();
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (Statement st = c.createStatement();
              ResultSet rs = st.executeQuery("SELECT uuid, currency_id, amount FROM balances")) {
             while (rs.next()) {
                 UUID uuid = UUID.fromString(rs.getString(1));
                 out.computeIfAbsent(uuid, k -> new HashMap<>()).put(rs.getString(2), rs.getDouble(3));
             }
+            ok = true;
         } catch (SQLException e) {
             throw new LedgerException("Не могу прочитать балансы: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
         return out;
     }
 
-    public synchronized double getBalance(UUID owner, String currencyId) {
-        try (PreparedStatement ps = connection.prepareStatement(
+    public double getBalance(UUID owner, String currencyId) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
                 "SELECT amount FROM balances WHERE uuid=? AND currency_id=?")) {
             ps.setString(1, owner.toString());
             ps.setString(2, currencyId);
             try (ResultSet rs = ps.executeQuery()) {
+                ok = true;
                 return rs.next() ? rs.getDouble(1) : 0.0D;
             }
         } catch (SQLException e) {
             throw new LedgerException("Не могу прочитать баланс " + owner + "/" + currencyId + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
     }
 
-    public synchronized void setBalance(UUID owner, String currencyId, double amount) {
-        try (PreparedStatement ps = connection.prepareStatement(
-                "INSERT INTO balances(uuid, currency_id, amount, updated_at) VALUES(?,?,?,?) "
-                        + "ON CONFLICT(uuid, currency_id) DO UPDATE SET "
-                        + "amount=excluded.amount, updated_at=excluded.updated_at")) {
+    // ---------- атомарные коммиты (баланс + аудит одной транзакцией) ----------
+
+    /** Только аудиторская запись (GLOBAL-валюта: баланс живёт в Essentials). */
+    public long commitTransaction(Transaction tx) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            c.setAutoCommit(false);
+            long id = insertTx(c, tx);
+            c.commit();
+            ok = true;
+            return id;
+        } catch (SQLException e) {
+            rollbackQuiet(c);
+            throw new LedgerException("Коммит транзакции " + tx.type() + " провален: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    /** Баланс + аудит атомарно (депозит/снятие неблобальной валюты). */
+    public long commitBalanceAndTransaction(UUID owner, String currencyId, double newAmount, Transaction tx) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            c.setAutoCommit(false);
+            upsertBalance(c, owner, currencyId, newAmount);
+            long id = insertTx(c, tx);
+            c.commit();
+            ok = true;
+            return id;
+        } catch (SQLException e) {
+            rollbackQuiet(c);
+            throw new LedgerException("Коммит баланса+транзакции " + tx.type() + " провален: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    /** Перевод: два баланса + аудит атомарно. */
+    public long commitTransferAndTransaction(UUID from, UUID to, String currencyId,
+                                             double newFrom, double newTo, Transaction tx) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            c.setAutoCommit(false);
+            upsertBalance(c, from, currencyId, newFrom);
+            upsertBalance(c, to, currencyId, newTo);
+            long id = insertTx(c, tx);
+            c.commit();
+            ok = true;
+            return id;
+        } catch (SQLException e) {
+            rollbackQuiet(c);
+            throw new LedgerException("Коммит перевода " + tx.type() + " провален: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    private void upsertBalance(Connection c, UUID owner, String currencyId, double amount) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(UPSERT_BALANCE)) {
             ps.setString(1, owner.toString());
             ps.setString(2, currencyId);
             ps.setDouble(3, amount);
             ps.setLong(4, System.currentTimeMillis());
             ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new LedgerException("Не могу записать баланс " + owner + "/" + currencyId + ": " + e.getMessage(), e);
         }
     }
 
-    // ---------- transactions ----------
-
-    public synchronized long recordTransaction(Transaction tx) {
-        try (PreparedStatement ps = connection.prepareStatement(
-                "INSERT INTO transactions(timestamp, from_uuid, to_uuid, currency_id, amount, type, reason, metadata) "
-                        + "VALUES(?,?,?,?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
+    private long insertTx(Connection c, Transaction tx) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(INSERT_TX, Statement.RETURN_GENERATED_KEYS)) {
             ps.setLong(1, tx.timestampMillis());
             ps.setString(2, tx.from() == null ? null : tx.from().toString());
             ps.setString(3, tx.to() == null ? null : tx.to().toString());
@@ -273,14 +384,16 @@ public final class SQLiteLedger {
             try (ResultSet keys = ps.getGeneratedKeys()) {
                 return keys.next() ? keys.getLong(1) : -1L;
             }
-        } catch (SQLException e) {
-            throw new LedgerException("Не могу записать транзакцию " + tx.type() + ": " + e.getMessage(), e);
         }
     }
 
-    public synchronized List<Transaction> queryTransactions(UUID owner, int limit) {
+    // ---------- аудит-чтение ----------
+
+    public List<Transaction> queryTransactions(UUID owner, int limit) {
         List<Transaction> out = new ArrayList<>();
-        try (PreparedStatement ps = connection.prepareStatement(
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
                 "SELECT id, timestamp, from_uuid, to_uuid, currency_id, amount, type, reason, metadata "
                         + "FROM transactions WHERE from_uuid=? OR to_uuid=? ORDER BY id DESC LIMIT ?")) {
             ps.setString(1, owner.toString());
@@ -302,41 +415,108 @@ public final class SQLiteLedger {
                             rs.getString(9)));
                 }
             }
+            ok = true;
         } catch (SQLException e) {
             throw new LedgerException("Не могу прочитать историю " + owner + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
         return out;
     }
 
-    public synchronized int countBalances() {
+    public int countBalances() {
         return count("SELECT COUNT(*) FROM balances");
     }
 
-    public synchronized long countTransactions() {
+    public long countTransactions() {
         return count("SELECT COUNT(*) FROM transactions");
     }
 
     private int count(String sql) {
-        try (Statement st = connection.createStatement();
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (Statement st = c.createStatement();
              ResultSet rs = st.executeQuery(sql)) {
+            ok = true;
             return rs.next() ? rs.getInt(1) : 0;
         } catch (SQLException e) {
             throw new LedgerException("Не могу посчитать строки: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
         }
     }
 
-    public synchronized String describeStats() {
-        return "балансов " + countBalances() + " · транзакций " + countTransactions();
-    }
+    // ---------- WAL-гигиена ----------
 
-    public synchronized void close() {
-        if (connection != null) {
-            try {
-                connection.close();
-            } catch (SQLException e) {
-                plugin.getLogger().warning("SQLiteLedger: ошибка закрытия соединения: " + e.getMessage());
+    /**
+     * PRAGMA wal_checkpoint(TRUNCATE): сворачивает WAL в основной файл и обрезает его.
+     * Возвращает число страниц, свёрнутых в основной файл (-1 при ошибке).
+     */
+    public long checkpoint() {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+            long checkpointed = -1L;
+            if (rs.next()) {
+                checkpointed = rs.getLong(3);
             }
-            connection = null;
+            ok = true;
+            return checkpointed;
+        } catch (SQLException e) {
+            plugin.getLogger().warning("RaskolVault: WAL checkpoint не удался: " + e.getMessage());
+            return -1L;
+        } finally {
+            finish(c, ok);
         }
+    }
+
+    // ---------- служебное ----------
+
+    public String describeStats() {
+        return "балансов " + countBalances()
+                + " · транзакций " + countTransactions()
+                + " · пул " + pool.size() + "/" + pool.idleCount() + " idle"
+                + " · wait " + pool.waitingCount();
+    }
+
+    public int poolWaiting() {
+        return pool.waitingCount();
+    }
+
+    public int poolIdle() {
+        return pool.idleCount();
+    }
+
+    public int poolSize() {
+        return pool.size();
+    }
+
+    /** Успех → вернуть в пул; неуспех → уничтожить соединение (не тащить битое в пул). */
+    private void finish(Connection c, boolean ok) {
+        if (!ok) {
+            pool.discard(c);
+            return;
+        }
+        try {
+            if (!c.getAutoCommit()) {
+                c.setAutoCommit(true);
+            }
+            pool.release(c);
+        } catch (SQLException e) {
+            pool.discard(c);
+        }
+    }
+
+    private void rollbackQuiet(Connection c) {
+        try {
+            c.rollback();
+        } catch (SQLException ignored) {
+        }
+    }
+
+    public void close() {
+        checkpoint();
+        pool.close();
     }
 }
