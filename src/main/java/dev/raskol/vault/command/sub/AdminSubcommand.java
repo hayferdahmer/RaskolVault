@@ -3,6 +3,7 @@ package dev.raskol.vault.command.sub;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.storage.LedgerException;
@@ -25,9 +26,11 @@ public final class AdminSubcommand {
             .ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
 
     private final RaskolVault plugin;
+    private final CurrencySubcommand currency;
 
     public AdminSubcommand(RaskolVault plugin) {
         this.plugin = plugin;
+        this.currency = new CurrencySubcommand(plugin);
     }
 
     public void execute(CommandSender sender, String[] args) {
@@ -40,14 +43,132 @@ public final class AdminSubcommand {
             case "give" -> give(sender, args);
             case "take" -> take(sender, args);
             case "set" -> set(sender, args);
-            case "mint" -> sender.sendMessage(plugin.getMessages().prefix()
-                    + "§c/mint и /burn требуют Towny-интеграции (этап 5)");
-            case "burn" -> sender.sendMessage(plugin.getMessages().prefix()
-                    + "§c/mint и /burn требуют Towny-интеграции (этап 5)");
+            case "mint" -> mint(sender, args);
+            case "burn" -> burn(sender, args);
             case "audit" -> audit(sender, args);
             case "reload" -> reload(sender);
+            case "simulate" -> simulate(sender);
+            case "currency" -> currency.execute(sender, args);
             default -> sendHelp(sender);
         }
+    }
+
+    private void mint(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.console-cannot-mint", null));
+            return;
+        }
+        if (!sender.hasPermission("raskolvault.admin.mint")) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        if (args.length < 4) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§e/rv admin mint <валюта> <сумма>");
+            return;
+        }
+        if (!plugin.getTownyHook().isAvailable()) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.towny-unavailable", null));
+            return;
+        }
+        String currencyId = args[2];
+        Currency currency = plugin.getCurrencies().get(currencyId).orElse(null);
+        if (currency == null || currency.type() != CurrencyType.NATIONAL) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.not-national-currency", Map.of("id", currencyId)));
+            return;
+        }
+        double amount = parseAmount(args[3]);
+        if (!(amount > 0.0D)) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
+            return;
+        }
+        String nationId = currency.nationId();
+        if (!plugin.getTownyHook().isKing(player.getUniqueId(), nationId)) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.not-king", Map.of("nation", nationId)));
+            return;
+        }
+        boolean ok = plugin.getTreasury().deposit(nationId, currencyId, amount,
+                "mint-by-king:" + player.getName());
+        if (ok) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§aМинт в казну " + nationId + ": "
+                    + Formatter.withSymbol(amount, currency.decimals(), currency.symbol()));
+        } else {
+            sender.sendMessage(plugin.getMessages().prefix() + "§cМинт не прошёл (см. лог)");
+        }
+    }
+
+    private void burn(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.console-cannot-mint", null));
+            return;
+        }
+        if (!sender.hasPermission("raskolvault.admin.burn")) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        if (args.length < 4) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§e/rv admin burn <валюта> <сумма>");
+            return;
+        }
+        if (!plugin.getTownyHook().isAvailable()) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.towny-unavailable", null));
+            return;
+        }
+        String currencyId = args[2];
+        Currency currency = plugin.getCurrencies().get(currencyId).orElse(null);
+        if (currency == null || currency.type() != CurrencyType.NATIONAL) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.not-national-currency", Map.of("id", currencyId)));
+            return;
+        }
+        double amount = parseAmount(args[3]);
+        if (!(amount > 0.0D)) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
+            return;
+        }
+        String nationId = currency.nationId();
+        if (!plugin.getTownyHook().isKing(player.getUniqueId(), nationId)) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.not-king", Map.of("nation", nationId)));
+            return;
+        }
+        boolean ok = plugin.getTreasury().withdraw(nationId, currencyId, amount,
+                "burn-by-king:" + player.getName());
+        if (ok) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§aБёрн из казны " + nationId + ": "
+                    + Formatter.withSymbol(amount, currency.decimals(), currency.symbol()));
+        } else {
+            sender.sendMessage(plugin.getMessages().prefix() + "§cНедостаточно средств в казне");
+        }
+    }
+
+    private void simulate(CommandSender sender) {
+        if (!sender.hasPermission("raskolvault.admin.debug")) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        sender.sendMessage(plugin.getMessages().prefix() + "Запуск арбитражного сканера...");
+        var loops = plugin.getArbitrage().scan();
+        if (loops.isEmpty()) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§aПетель не найдено ✓");
+            plugin.getArbitrage().logReport();
+            return;
+        }
+        sender.sendMessage(plugin.getMessages().prefix() + "§cНайдено " + loops.size() + " петель:");
+        for (var loop : loops) {
+            sender.sendMessage("  §e" + loop.describe());
+        }
+        plugin.getArbitrage().logReport();
     }
 
     private void give(CommandSender sender, String[] args) {
@@ -174,8 +295,7 @@ public final class AdminSubcommand {
         }
         UUID uuid = target.getUniqueId();
         double old = plugin.getWallets().getBalance(uuid, currency.id());
-        TransactionType type = amount >= old ? TransactionType.ADMIN_SET : TransactionType.ADMIN_SET;
-        // Жёсткая установка: снимаем разницу или начисляем через deposit/withdraw
+        TransactionType type = TransactionType.ADMIN_SET;
         boolean ok;
         if (Math.abs(old - amount) < 1.0E-9D) {
             ok = true;
@@ -265,17 +385,19 @@ public final class AdminSubcommand {
                 plugin.getConfig().getString("exchange.rates-file", "rates.yml")));
         plugin.getMessages().load(new java.io.File(plugin.getDataFolder(),
                 plugin.getConfig().getString("messages.file", "messages.yml")));
-        sender.sendMessage(plugin.getMessages().prefix() + "§aКонфиги перезагружены (rates + messages)");
+        plugin.getArbitrage().logReport();
+        sender.sendMessage(plugin.getMessages().prefix()
+                + "§aКонфиги перезагружены (rates + messages), арбитражный сканер запущен");
     }
 
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(plugin.getMessages().prefix() + "Админ-команды:");
-        sender.sendMessage("§e/rv admin give <ник> <валюта> <сумма>");
-        sender.sendMessage("§e/rv admin take <ник> <валюта> <сумма>");
-        sender.sendMessage("§e/rv admin set <ник> <валюта> <сумма>");
+        sender.sendMessage("§e/rv admin give|take|set <ник> <валюта> <сумма>");
+        sender.sendMessage("§e/rv admin mint|burn <нац. валюта> <сумма> — только король нации");
+        sender.sendMessage("§e/rv admin currency list|create|remove");
         sender.sendMessage("§e/rv admin audit [ник] [лимит]");
+        sender.sendMessage("§e/rv admin simulate — арбитражный сканер");
         sender.sendMessage("§e/rv admin reload");
-        sender.sendMessage("§7mint/burn — этап 5 с Towny-интеграцией");
     }
 
     private double parseAmount(String raw) {
