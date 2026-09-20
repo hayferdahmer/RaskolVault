@@ -2,7 +2,7 @@
 package dev.raskol.vault.observability;
 
 import dev.raskol.vault.api.currency.Currency;
-import dev.raskol.vault.currency.CurrencyRegistry;
+import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.security.TokenBucket;
 import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.plugin.Plugin;
