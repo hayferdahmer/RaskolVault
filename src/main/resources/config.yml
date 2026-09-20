@@ -1,5 +1,7 @@
-# RaskolVault — многовалютный экономический слой поверх EssentialsX
-# для сервера «РАСКОЛ | ДВЕ КОРОНЫ»
+# RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX
+# «РАСКОЛ | ДВЕ КОРОНЫ»
+# ВАЖНО: на живом сервере удали старый plugins/RaskolVault/config.yml на стопе —
+# сгенерируется этот шаблон. Все ключи ниже уже являются дефолтами кода.
 
 general:
   debug: false
@@ -9,7 +11,7 @@ general:
 global-currency:
   id: GLD
   display-name: 'Золото'
-  symbol: '⚜'
+  symbol: 'GLD'          # 1.1.0: символы заменены буквенными кодами
   decimals: 2
   essentials-sync: true
 
@@ -54,20 +56,6 @@ storage:
     enabled: true
     time: '04:00'
     keep-days: 7
-
-# 1.0.5: анти-дюп контур
-security:
-  rate-limit:
-    # Token bucket на игрока для /rv pay и /rv convert (preview).
-    # enabled: false или capacity: 0 = лимит выключен.
-    enabled: true
-    capacity: 8.0
-    refill-per-second: 2.0
-  inflation-check:
-    # Почасовой чекпоинт инварианта SUM(balances) == SIGNSUM(transactions).
-    # Аномалия = SEVERE в лог + %raskolvault_inflation_anomalies%.
-    enabled: true
-    interval-minutes: 60
 
 audit:
   log-to-file: true
