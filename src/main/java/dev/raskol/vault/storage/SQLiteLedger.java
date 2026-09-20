@@ -5,6 +5,7 @@ import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
+import dev.raskol.vault.observability.TxPerMinuteCounter;
 import org.bukkit.plugin.Plugin;
 
 import java.io.File;
@@ -21,17 +22,13 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * SQLite-леджер на пуле соединений (1.0.2) + универсальный атомарный коммит (1.0.3).
- *
- * commitAbsolute(balances, txs): одна SQL-транзакция пишет N абсолютных балансов
- * и M аудиторских записей. Писатель (LedgerWriter) гарантирует порядок вызовов,
- * поэтому абсолютные значения схлодываются в леджер без гонок.
+ * SQLite-леджер на пуле соединений (1.0.2) + универсальный атомарный коммит (1.0.3)
+ * + счётчик tx-per-min (1.0.4).
  */
 public final class SQLiteLedger {
 
     public static final int SCHEMA_VERSION = 1;
 
-    /** Абсолютная запись баланса: «у владельца X валюта Y теперь равна Z». */
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {
     }
 
@@ -47,6 +44,7 @@ public final class SQLiteLedger {
     private final File dbFile;
     private final ConnectionPool pool;
     private volatile Supplier<String> writerStats;
+    private volatile TxPerMinuteCounter txCounter;
 
     public SQLiteLedger(Plugin plugin, File dbFile, int poolSize,
                         String synchronous, long borrowTimeoutMillis) throws SQLException {
@@ -62,6 +60,10 @@ public final class SQLiteLedger {
             throw new SQLException("Драйвер org.sqlite.JDBC не найден в jar (проверь shade в pom): " + e.getMessage(), e);
         }
         this.pool = new ConnectionPool(plugin, dbFile, poolSize, synchronous, borrowTimeoutMillis);
+    }
+
+    public void attachTxCounter(TxPerMinuteCounter counter) {
+        this.txCounter = counter;
     }
 
     public synchronized void init() throws SQLException {
@@ -142,8 +144,6 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- currencies ----------
-
     public void upsertCurrency(Currency currency) {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -204,7 +204,6 @@ public final class SQLiteLedger {
         }
     }
 
-    /** Миграция старых строчных ID в 3-буквенные капсом; идемпотентна, молчит при нуле. */
     public synchronized void migrateLegacyCurrencyIds(Map<String, String> mapping) {
         if (mapping.isEmpty()) {
             return;
@@ -257,8 +256,6 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- balances (чтение) ----------
-
     public Map<UUID, Map<String, Double>> loadAllBalances() {
         Map<UUID, Map<String, Double>> out = new HashMap<>();
         Connection c = pool.borrow();
@@ -296,12 +293,6 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- атомарный коммит (1.0.3) ----------
-
-    /**
-     * Одна SQL-транзакция: N абсолютных балансов + M аудиторских записей.
-     * Вызывается ТОЛЬКО из LedgerWriter (порядок гарантирован) либо синхронным путём.
-     */
     public void commitAbsolute(List<AbsoluteBalance> balances, List<Transaction> txs) {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -321,6 +312,10 @@ public final class SQLiteLedger {
             }
             c.commit();
             ok = true;
+            TxPerMinuteCounter counter = txCounter;
+            if (counter != null) {
+                counter.record(txs.size());
+            }
         } catch (SQLException e) {
             rollbackQuiet(c);
             throw new LedgerException("Атомарный коммит провален ("
@@ -346,8 +341,6 @@ public final class SQLiteLedger {
             }
         }
     }
-
-    // ---------- аудит-чтение ----------
 
     public List<Transaction> queryTransactions(UUID owner, int limit) {
         List<Transaction> out = new ArrayList<>();
@@ -392,6 +385,20 @@ public final class SQLiteLedger {
         return count("SELECT COUNT(*) FROM transactions");
     }
 
+    public long lastTransactionTimestamp() {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT MAX(timestamp) FROM transactions")) {
+            ok = true;
+            return rs.next() ? rs.getLong(1) : 0L;
+        } catch (SQLException e) {
+            return 0L;
+        } finally {
+            finish(c, ok);
+        }
+    }
+
     private int count(String sql) {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -405,8 +412,6 @@ public final class SQLiteLedger {
             finish(c, ok);
         }
     }
-
-    // ---------- WAL-гигиена и метрики ----------
 
     public long checkpoint() {
         Connection c = pool.borrow();
@@ -450,6 +455,10 @@ public final class SQLiteLedger {
 
     public int poolSize() {
         return pool.size();
+    }
+
+    public File dbFile() {
+        return dbFile;
     }
 
     private void finish(Connection c, boolean ok) {
