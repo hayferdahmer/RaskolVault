@@ -3,11 +3,11 @@ package dev.raskol.vault.wallet;
 
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
-import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.api.wallet.Wallet;
 import dev.raskol.vault.hook.EssentialsHook;
+import dev.raskol.vault.storage.LedgerException;
 import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.plugin.Plugin;
 
@@ -18,6 +18,17 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Кошельки игроков (1.0.2).
+ *
+ * Двойная природа балансов:
+ * - GLOBAL (⚜): источник правды — Essentials; в леджер пишется ТОЛЬКО аудит.
+ *   Если аудит-коммит провален — компенсационный откат Essentials (деньги не движутся без записи).
+ * - NATIONAL/WORLD: источник правды — леджер; баланс+аудит одной SQL-транзакцией.
+ *
+ * Кэш неблобальных балансов обновляется ТОЛЬКО после успешного коммита.
+ * Все мутации под монитором сервиса: атомарность бизнес-операции важнее параллельности.
+ */
 public final class WalletService {
 
     private static final double EPS = 1.0E-9D;
@@ -70,11 +81,28 @@ public final class WalletService {
                 if (!essentials.setBalance(uuid, round(old + rounded, currency))) {
                     return false;
                 }
+                try {
+                    ledger.commitTransaction(Transaction.fresh(System.currentTimeMillis(),
+                            null, uuid, currencyId, rounded, type, reason, null));
+                } catch (LedgerException e) {
+                    plugin.getLogger().severe("RaskolVault: аудит не записан — компенсационный откат Essentials для "
+                            + uuid + ": " + e.getMessage());
+                    essentials.setBalance(uuid, old);
+                    return false;
+                }
             } else {
-                write(uuid, currencyId, raw(uuid, currencyId) + rounded);
+                double neu = round(raw(uuid, currencyId) + rounded, currency);
+                try {
+                    ledger.commitBalanceAndTransaction(uuid, currencyId, neu,
+                            Transaction.fresh(System.currentTimeMillis(),
+                                    null, uuid, currencyId, rounded, type, reason, null));
+                } catch (LedgerException e) {
+                    plugin.getLogger().severe("RaskolVault: депозит отклонён (коммит провален) для "
+                            + uuid + "/" + currencyId + ": " + e.getMessage());
+                    return false;
+                }
+                cachePut(uuid, currencyId, neu);
             }
-            ledger.recordTransaction(Transaction.fresh(System.currentTimeMillis(),
-                    null, uuid, currencyId, rounded, type, reason, null));
         }
         return true;
     }
@@ -97,11 +125,28 @@ public final class WalletService {
                 if (!essentials.setBalance(uuid, round(old - rounded, currency))) {
                     return false;
                 }
+                try {
+                    ledger.commitTransaction(Transaction.fresh(System.currentTimeMillis(),
+                            uuid, null, currencyId, rounded, type, reason, null));
+                } catch (LedgerException e) {
+                    plugin.getLogger().severe("RaskolVault: аудит не записан — компенсационный откат Essentials для "
+                            + uuid + ": " + e.getMessage());
+                    essentials.setBalance(uuid, old);
+                    return false;
+                }
             } else {
-                write(uuid, currencyId, old - rounded);
+                double neu = round(old - rounded, currency);
+                try {
+                    ledger.commitBalanceAndTransaction(uuid, currencyId, neu,
+                            Transaction.fresh(System.currentTimeMillis(),
+                                    uuid, null, currencyId, rounded, type, reason, null));
+                } catch (LedgerException e) {
+                    plugin.getLogger().severe("RaskolVault: снятие отклонено (коммит провален) для "
+                            + uuid + "/" + currencyId + ": " + e.getMessage());
+                    return false;
+                }
+                cachePut(uuid, currencyId, neu);
             }
-            ledger.recordTransaction(Transaction.fresh(System.currentTimeMillis(),
-                    uuid, null, currencyId, rounded, type, reason, null));
         }
         return true;
     }
@@ -129,14 +174,35 @@ public final class WalletService {
                     return false;
                 }
                 if (!essentials.setBalance(to, round(oldTo + rounded, currency))) {
+                    plugin.getLogger().severe("RaskolVault: перевод оборван на зачислении — откат списания для " + from);
+                    essentials.setBalance(from, oldFrom);
+                    return false;
+                }
+                try {
+                    ledger.commitTransaction(Transaction.fresh(System.currentTimeMillis(),
+                            from, to, currencyId, rounded, TransactionType.PAY, reason, null));
+                } catch (LedgerException e) {
+                    plugin.getLogger().severe("RaskolVault: аудит не записан — полный откат перевода "
+                            + from + "→" + to + ": " + e.getMessage());
+                    essentials.setBalance(from, oldFrom);
+                    essentials.setBalance(to, oldTo);
                     return false;
                 }
             } else {
-                write(from, currencyId, oldFrom - rounded);
-                write(to, currencyId, oldTo + rounded);
+                double neuFrom = round(oldFrom - rounded, currency);
+                double neuTo = round(oldTo + rounded, currency);
+                try {
+                    ledger.commitTransferAndTransaction(from, to, currencyId, neuFrom, neuTo,
+                            Transaction.fresh(System.currentTimeMillis(),
+                                    from, to, currencyId, rounded, TransactionType.PAY, reason, null));
+                } catch (LedgerException e) {
+                    plugin.getLogger().severe("RaskolVault: перевод отклонён (коммит провален) "
+                            + from + "→" + to + "/" + currencyId + ": " + e.getMessage());
+                    return false;
+                }
+                cachePut(from, currencyId, neuFrom);
+                cachePut(to, currencyId, neuTo);
             }
-            ledger.recordTransaction(Transaction.fresh(System.currentTimeMillis(),
-                    from, to, currencyId, rounded, TransactionType.PAY, reason, null));
         }
         return true;
     }
@@ -166,9 +232,8 @@ public final class WalletService {
         return row == null ? 0.0D : row.getOrDefault(currencyId, 0.0D);
     }
 
-    private void write(UUID uuid, String currencyId, double value) {
+    private void cachePut(UUID uuid, String currencyId, double value) {
         cache.computeIfAbsent(uuid, k -> new ConcurrentHashMap<>()).put(currencyId, value);
-        ledger.setBalance(uuid, currencyId, value);
     }
 
     private double round(double value, Currency currency) {
