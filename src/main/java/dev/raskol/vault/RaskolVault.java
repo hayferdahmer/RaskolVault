@@ -1,7 +1,6 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault;
 
-import dev.raskol.vault.arbitrage.ArbitrageSimulator;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
@@ -10,17 +9,12 @@ import dev.raskol.vault.confirm.ConfirmManager;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
-import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.listener.TownyNationLifecycleListener;
 import dev.raskol.vault.nation.NationTreasury;
-import dev.raskol.vault.observability.InflationCheckpoint;
-import dev.raskol.vault.observability.SparkHook;
-import dev.raskol.vault.observability.TxPerMinuteCounter;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
-import dev.raskol.vault.security.TokenBucket;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SafeStorage;
@@ -40,10 +34,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault — многовалютный экономический слой поверх EssentialsX.
- *
- * 1.0.6: offline-player registry (tab-complete), Towny nation lifecycle listener,
- *        currency rename, rate-limit, inflation checkpoint (из 1.0.5).
+ * RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX.
+ * 1.1.0-a: бренд (буквенные коды), /rv admin balance, /rv rates, merge валют из БД.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -65,19 +57,12 @@ public final class RaskolVault extends JavaPlugin {
     private RaskolCoreHook coreHook;
     private TownyHook townyHook;
     private NationTreasury treasury;
-    private ArbitrageSimulator arbitrage;
-    private PlaceholderApiHook papiHook;
+    private OfflinePlayerRegistry offlinePlayerRegistry;
     private BackupService backups;
     private LoadSimulator loadSimulator;
     private BukkitTask checkpointTask;
     private BukkitTask inflationTask;
     private ConvertSubcommand convertSubcommand;
-    private TxPerMinuteCounter txCounter;
-    private SparkHook spark;
-    private TokenBucket rateLimiter;
-    private InflationCheckpoint inflationCheckpoint;
-    private OfflinePlayerRegistry offlinePlayerRegistry;
-    private TownyNationLifecycleListener townyLifecycleListener;
 
     @Override
     public void onEnable() {
@@ -105,39 +90,24 @@ public final class RaskolVault extends JavaPlugin {
             return;
         }
 
-        txCounter = new TxPerMinuteCounter();
-        ledger.attachTxCounter(txCounter);
-        spark = new SparkHook(this);
+        currencies = new CurrencyRegistry(this);
+        currencies.load(new File(getDataFolder(), "currencies.yml"),
+                getConfig().getString("global-currency.id", "GLD"),
+                getConfig().getString("global-currency.display-name", "Золото"),
+                getConfig().getString("global-currency.symbol", "GLD"),
+                getConfig().getInt("global-currency.decimals", 2));
+        currencies.mergeFromLedger(ledger);   // 1.1.0-a: рантайм-валюты переживают рестарт
+        currencies.syncToLedger(ledger);
 
-        rateLimiter = new TokenBucket(
-                getConfig().getBoolean("security.rate-limit.enabled", true)
-                        ? getConfig().getDouble("security.rate-limit.capacity", 8.0D)
-                        : 0.0D,
-                getConfig().getDouble("security.rate-limit.refill-per-second", 2.0D));
+        essentialsHook = new EssentialsHook(this);
+        essentialsHook.init();
 
         writer = new LedgerWriter(this, getConfig().getInt("storage.sqlite.writer-queue-cap", 10000));
         ledger.attachWriterStats(() -> " · writer queue " + writer.queueSize()
                 + " · applied " + writer.applied() + " · failed " + writer.failed());
 
-        currencies = new CurrencyRegistry(this);
-        currencies.load(new File(getDataFolder(), "currencies.yml"),
-                getConfig().getString("global-currency.id", "GLD"),
-                getConfig().getString("global-currency.display-name", "Золото"),
-                getConfig().getString("global-currency.symbol", "⚜"),
-                getConfig().getInt("global-currency.decimals", 2));
-        currencies.syncToLedger(ledger);
-
-        ledger.migrateLegacyCurrencyIds(Map.of(
-                "gold", "GLD",
-                "denarius", "RAS",
-                "crown", "VLR"
-        ));
-
-        essentialsHook = new EssentialsHook(this);
-        essentialsHook.init();
-
         wallets = new WalletService(this, ledger, writer, currencies, essentialsHook,
-                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000), spark);
+                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000));
         wallets.init();
 
         rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
@@ -152,24 +122,16 @@ public final class RaskolVault extends JavaPlugin {
         }
 
         treasury = new NationTreasury(wallets);
-        arbitrage = new ArbitrageSimulator(this, currencies, rates);
 
-        // 1.0.6: offline-registry для таб-комплита
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
         getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
 
-        // 1.0.6: Towny nation lifecycle (переименование/удаление наций)
         if (townyHook.isAvailable()) {
-            townyLifecycleListener = new TownyNationLifecycleListener(this, currencies, ledger);
-            townyLifecycleListener.register();
-        }
-
-        if (townyHook.isAvailable()
-                && getConfig().getBoolean("hooks.towny.auto-create-national", true)) {
-            NationAutoCurrencyListener listener =
-                    new NationAutoCurrencyListener(this, currencies, ledger);
-            listener.register();
+            new TownyNationLifecycleListener(this, currencies, ledger).register();
+            if (getConfig().getBoolean("hooks.towny.auto-create-national", true)) {
+                new NationAutoCurrencyListener(this, currencies, ledger).register();
+            }
         }
 
         if (corePresent && getConfig().getBoolean("hooks.raskolcore.register-as-provider", true)) {
@@ -179,8 +141,7 @@ public final class RaskolVault extends JavaPlugin {
 
         if (placeholderPresent && getConfig().getBoolean("hooks.placeholderapi.enabled", true)) {
             try {
-                papiHook = new PlaceholderApiHook(this);
-                papiHook.register();
+                new dev.raskol.vault.hook.PlaceholderApiHook(this).register();
                 getLogger().info("RaskolVault: PAPI-экспаншн зарегистрирован (%raskolvault_*)");
             } catch (Throwable t) {
                 getLogger().warning("RaskolVault: PAPI-регистрация не удалась: " + t.getMessage());
@@ -203,16 +164,6 @@ public final class RaskolVault extends JavaPlugin {
                     getLogger().info("RaskolVault: WAL checkpoint, страниц свёрнуто: " + pages);
                 }
             }, periodTicks, periodTicks);
-            getLogger().info("RaskolVault: WAL-checkpoint каждые " + checkpointMinutes + " мин");
-        }
-
-        if (getConfig().getBoolean("security.inflation-check.enabled", true)) {
-            inflationCheckpoint = new InflationCheckpoint(this, ledger, currencies, rateLimiter);
-            long intervalTicks = getConfig().getLong("security.inflation-check.interval-minutes", 60L) * 60L * 20L;
-            inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this,
-                    inflationCheckpoint, 100L, Math.max(1200L, intervalTicks));
-            getLogger().info("RaskolVault: инфляционный чекпоинт каждые "
-                    + getConfig().getLong("security.inflation-check.interval-minutes", 60L) + " мин");
         }
 
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
@@ -227,8 +178,6 @@ public final class RaskolVault extends JavaPlugin {
             getLogger().warning("Команда rv не описана в plugin.yml — команды отключены");
         }
 
-        arbitrage.logReport();
-
         getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён"
                 + " · Paper/MC " + getServer().getVersion()
                 + " · Core " + (corePresent ? "on" : "off")
@@ -236,10 +185,7 @@ public final class RaskolVault extends JavaPlugin {
                 + " · Essentials " + (essentialsPresent ? "on" : "off")
                 + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
                 + " · LP " + (luckPermsPresent ? "on" : "off")
-                + " · PAPI " + (placeholderPresent ? "on" : "off")
-                + " · Spark " + (spark.isAvailable() ? "on" : "off")
-                + " · RateLimit " + (rateLimiter.isEnabled() ? "on" : "off")
-                + " · OfflineRegistry " + (offlinePlayerRegistry != null ? "on" : "off"));
+                + " · PAPI " + (placeholderPresent ? "on" : "off"));
     }
 
     @Override
@@ -260,9 +206,6 @@ public final class RaskolVault extends JavaPlugin {
         }
         if (backups != null) {
             backups.stop();
-        }
-        if (papiHook != null) {
-            papiHook.unregister();
         }
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) {
             saveBalancesBackup();
@@ -320,16 +263,10 @@ public final class RaskolVault extends JavaPlugin {
     public RaskolCoreHook getCoreHook() { return coreHook; }
     public TownyHook getTownyHook() { return townyHook; }
     public NationTreasury getTreasury() { return treasury; }
-    public ArbitrageSimulator getArbitrage() { return arbitrage; }
+    public OfflinePlayerRegistry getOfflinePlayerRegistry() { return offlinePlayerRegistry; }
     public BackupService getBackups() { return backups; }
     public LoadSimulator getLoadSimulator() { return loadSimulator; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
-    public TxPerMinuteCounter getTxCounter() { return txCounter; }
-    public SparkHook getSpark() { return spark; }
-    public TokenBucket getRateLimiter() { return rateLimiter; }
-    public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
-    public OfflinePlayerRegistry getOfflinePlayerRegistry() { return offlinePlayerRegistry; }
-    public TownyNationLifecycleListener getTownyLifecycleListener() { return townyLifecycleListener; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
