@@ -5,7 +5,7 @@ import dev.raskol.vault.arbitrage.ArbitrageSimulator;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.config.MessagesConfig;
 import dev.raskol.vault.confirm.ConfirmManager;
-import dev.raskol.vault.currency.CurrencyRegistry;
+import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
@@ -101,10 +101,8 @@ public final class RaskolVault extends JavaPlugin {
 
         if (townyHook.isAvailable()
                 && getConfig().getBoolean("hooks.towny.auto-create-national", true)) {
-            NationAutoCurrencyListener listener = new NationAutoCurrencyListener(
-                    this, currencies, ledger,
-                    getConfig().getString("hooks.towny.light-prefix", "svet"),
-                    getConfig().getString("hooks.towny.dark-prefix", "mrak"));
+            NationAutoCurrencyListener listener =
+                    new NationAutoCurrencyListener(this, currencies, ledger);
             listener.register();
         }
 
