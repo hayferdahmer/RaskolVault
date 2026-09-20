@@ -4,17 +4,18 @@ package dev.raskol.vault.command.sub;
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.confirm.PendingExchange;
-import dev.raskol.vault.exchange.ExchangeResult;
+import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.util.Formatter;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 /**
- * /rv convert <из> <в> <сумма> — preview обмена с подтверждением /rv confirm.
- * Работает через ExchangeService.preview/execute (API этапа 4).
+ * /rv convert <из> <в> <сумма> → preview → /rv confirm (1.1.0-b).
+ * Курсы и налог — из ConvertEngine (Валютный совет). Rate-limit на игрока.
  */
 public final class ConvertSubcommand {
 
@@ -46,62 +47,52 @@ public final class ConvertSubcommand {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
             return;
         }
-
-        ExchangeResult preview = plugin.getExchange().preview(player.getUniqueId(), fromId, toId, amount);
-        if (!"preview".equals(preview.reason())) {
-            showFailure(sender, preview, fromId, toId);
+        if (!plugin.getRateLimiter().tryConsume(player.getUniqueId())) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.rate-limited", null));
             return;
         }
-
+        Optional<ConvertEngine.Quote> quoted =
+                plugin.getConvertEngine().quote(player.getUniqueId(), fromId, toId, amount);
+        if (quoted.isEmpty()) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.convert.generic",
+                    Map.of("reason", "нет курса или недостаточно средств", "from", fromId, "to", toId)));
+            return;
+        }
+        ConvertEngine.Quote q = quoted.get();
         long ttl = plugin.getConfig().getLong("exchange.confirm-timeout-seconds", 30) * 1000L;
-        PendingExchange pe = new PendingExchange(
-                player.getUniqueId(), fromId, toId, amount,
-                preview.net(), preview.feeAmount(), preview.rate(),
-                System.currentTimeMillis() + ttl);
-        plugin.getConfirms().store(pe);
+        plugin.getConfirms().store(new PendingExchange(
+                player.getUniqueId(), q.fromId(), q.toId(), q.amount(),
+                q.net(), q.feeBase() + q.feeTax(), q.rate(),
+                System.currentTimeMillis() + ttl));
 
         Currency from = plugin.getCurrencies().get(fromId).orElse(null);
         Currency to = plugin.getCurrencies().get(toId).orElse(null);
         sender.sendMessage(prefix() + plugin.getMessages().get("convert.preview", Map.of(
-                "from", Formatter.withSymbol(amount, from == null ? 2 : from.decimals(), from == null ? fromId : from.symbol()),
-                "to", Formatter.withSymbol(preview.net(), to == null ? 2 : to.decimals(), to == null ? toId : to.symbol()),
-                "rate", String.format(Locale.ROOT, "%.4f", preview.rate()),
-                "fee", Formatter.withSymbol(preview.feeAmount(), from == null ? 2 : from.decimals(), from == null ? fromId : from.symbol()))));
+                "from", Formatter.withSymbol(q.amount(), from == null ? 2 : from.decimals(), from == null ? fromId : from.symbol()),
+                "to", Formatter.withSymbol(q.net(), to == null ? 2 : to.decimals(), to == null ? toId : to.symbol()),
+                "rate", String.format(Locale.ROOT, "%.4f", q.rate()),
+                "fee", Formatter.withSymbol(q.feeBase() + q.feeTax(), from == null ? 2 : from.decimals(), from == null ? fromId : from.symbol()))));
+        if (q.taxNation() != null && q.feeTax() > 0.0D) {
+            sender.sendMessage(prefix() + "&7 Налог нации " + q.taxNation() + ": "
+                    + Formatter.withSymbol(q.taxInTo(), to == null ? 2 : to.decimals(), to == null ? toId : to.symbol())
+                    + " &7→ в её казну");
+        }
         sender.sendMessage(prefix() + plugin.getMessages().get("convert.confirm-hint", null));
     }
 
-    /** Вызывается из /rv confirm: исполняет отложенный обмен. */
+    /** Вызывается из /rv confirm: исполняет по текущему курсу. */
     public void runConfirmed(Player player, PendingExchange pe, CommandSender sender) {
-        ExchangeResult result = plugin.getExchange().execute(
-                player.getUniqueId(), pe.fromId(), pe.toId(), pe.amount());
-        if (result.applied()) {
-            Currency to = plugin.getCurrencies().get(pe.toId()).orElse(null);
-            sender.sendMessage(prefix() + plugin.getMessages().get("convert.done", Map.of(
-                    "amount", Formatter.withSymbol(result.net(),
-                            to == null ? 2 : to.decimals(),
-                            to == null ? pe.toId() : to.symbol()))));
-        } else {
-            showFailure(sender, result, pe.fromId(), pe.toId());
+        Optional<ConvertEngine.Quote> executed = plugin.getConvertEngine()
+                .execute(player.getUniqueId(), pe.fromId(), pe.toId(), pe.amount());
+        if (executed.isEmpty()) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.convert.generic",
+                    Map.of("reason", "не исполнено (курс/средства изменились)", "from", pe.fromId(), "to", pe.toId())));
+            return;
         }
-    }
-
-    private void showFailure(CommandSender sender, ExchangeResult result, String fromId, String toId) {
-        String reason = result.reason();
-        String key;
-        Map<String, String> params;
-        if (reason.startsWith("unknown-currency:")) {
-            key = "error.unknown-currency";
-            params = Map.of("id", reason.substring("unknown-currency:".length()));
-        } else {
-            key = "error.convert." + reason;
-            params = Map.of("from", fromId, "to", toId);
-        }
-        String text = plugin.getMessages().get(key, params);
-        if (text.equals(key)) {
-            text = plugin.getMessages().get("error.convert.generic",
-                    Map.of("reason", reason, "from", fromId, "to", toId));
-        }
-        sender.sendMessage(prefix() + text);
+        ConvertEngine.Quote q = executed.get();
+        Currency to = plugin.getCurrencies().get(q.toId()).orElse(null);
+        sender.sendMessage(prefix() + plugin.getMessages().get("convert.done", Map.of(
+                "amount", Formatter.withSymbol(q.net(), to == null ? 2 : to.decimals(), to == null ? q.toId() : to.symbol()))));
     }
 
     private String prefix() {
