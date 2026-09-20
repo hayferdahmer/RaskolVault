@@ -63,6 +63,14 @@ public final class WalletService {
         return row == null ? 0.0D : row.getOrDefault(currencyId, 0.0D);
     }
 
+    /**
+     * Хватает ли средств у игрока (с эпсилон-допуском от ошибок double-арифметики).
+     * Нужна ExchangeService для проверки возможности обмена ДО списания.
+     */
+    public boolean has(UUID uuid, String currencyId, double amount) {
+        return getBalance(uuid, currencyId) + EPS >= amount;
+    }
+
     public boolean deposit(UUID uuid, String currencyId, double amount, TransactionType type, String reason) {
         Currency currency = currencies.get(currencyId).orElse(null);
         if (currency == null || !(amount > 0.0D)) {
