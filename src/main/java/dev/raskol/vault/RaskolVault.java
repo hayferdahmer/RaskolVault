@@ -15,6 +15,8 @@ import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.nation.NationTreasury;
+import dev.raskol.vault.observability.SparkHook;
+import dev.raskol.vault.observability.TxPerMinuteCounter;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SafeStorage;
@@ -34,10 +36,9 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault — многовалютный экономический слой поверх EssentialsX
- * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
+ * RaskolVault — многовалютный экономический слой поверх EssentialsX.
  *
- * 1.0.3: LedgerWriter (single-writer) + проекция кэша; main-thread не пишет в SQLite.
+ * 1.0.4: observability (PAPI-метрики, /rv admin health, Spark-тайминги).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -65,6 +66,8 @@ public final class RaskolVault extends JavaPlugin {
     private LoadSimulator loadSimulator;
     private BukkitTask checkpointTask;
     private ConvertSubcommand convertSubcommand;
+    private TxPerMinuteCounter txCounter;
+    private SparkHook spark;
 
     @Override
     public void onEnable() {
@@ -92,6 +95,11 @@ public final class RaskolVault extends JavaPlugin {
             return;
         }
 
+        // 1.0.4: observability
+        txCounter = new TxPerMinuteCounter();
+        ledger.attachTxCounter(txCounter);
+        spark = new SparkHook(this);
+
         writer = new LedgerWriter(this, getConfig().getInt("storage.sqlite.writer-queue-cap", 10000));
         ledger.attachWriterStats(() -> " · writer queue " + writer.queueSize()
                 + " · applied " + writer.applied() + " · failed " + writer.failed());
@@ -114,7 +122,7 @@ public final class RaskolVault extends JavaPlugin {
         essentialsHook.init();
 
         wallets = new WalletService(this, ledger, writer, currencies, essentialsHook,
-                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000));
+                getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000), spark);
         wallets.init();
 
         rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
@@ -193,7 +201,8 @@ public final class RaskolVault extends JavaPlugin {
                 + " · Essentials " + (essentialsPresent ? "on" : "off")
                 + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
                 + " · LP " + (luckPermsPresent ? "on" : "off")
-                + " · PAPI " + (placeholderPresent ? "on" : "off"));
+                + " · PAPI " + (placeholderPresent ? "on" : "off")
+                + " · Spark " + (spark.isAvailable() ? "on" : "off"));
     }
 
     @Override
@@ -218,7 +227,6 @@ public final class RaskolVault extends JavaPlugin {
             saveBalancesBackup();
         }
         if (writer != null) {
-            // Drain очереди ДО закрытия пула: ни одна принятая запись не теряется при graceful-stop
             writer.close(10000L);
         }
         if (ledger != null) {
@@ -275,6 +283,8 @@ public final class RaskolVault extends JavaPlugin {
     public BackupService getBackups() { return backups; }
     public LoadSimulator getLoadSimulator() { return loadSimulator; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
+    public TxPerMinuteCounter getTxCounter() { return txCounter; }
+    public SparkHook getSpark() { return spark; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
