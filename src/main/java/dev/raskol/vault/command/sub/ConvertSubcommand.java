@@ -11,8 +11,7 @@ import org.bukkit.entity.Player;
 import java.util.Map;
 
 /**
- * /rv convert (1.0.3): preview мгновенный из кэша; исполнение после /rv confirm
- * уходит в асинхронный коммит, итог приходит в callback.
+ * /rv convert + /rv confirm (1.0.5: + token-bucket rate-limit на preview).
  */
 public final class ConvertSubcommand {
 
@@ -31,6 +30,12 @@ public final class ConvertSubcommand {
         if (!sender.hasPermission("raskolvault.convert")) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        // 1.0.5: rate-limit до preview (защита от спама проекций)
+        if (!plugin.getRateLimiter().tryConsume(player.getUniqueId())) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.rate-limited", null));
             return;
         }
         if (args.length < 4) {
