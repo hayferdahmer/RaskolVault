@@ -13,6 +13,9 @@ ru:
     done: '&aОбмен выполнен: получено &e{amount}'
   confirm:
     none: '&7Нет ожидающего обмена'
+  nation:
+    header: '&6=== Нация {nation} ==='
+    not-in-nation: '&7Ты не состоишь в нации'
   error:
     no-permission: '&cНедостаточно прав'
     unknown-currency: '&cВалюта {id} не найдена'
@@ -24,7 +27,11 @@ ru:
     storage: '&cОшибка хранилища, операция отменена'
     console-cannot-pay: '&cИз консоли платить нельзя'
     console-cannot-convert: '&cИз консоли обменивать нельзя'
+    console-cannot-nation: '&cИз консоли нельзя проверить нацию'
     rate-limited: '&eСлишком часто. Подожди пару секунд и повтори.'
+    towny-unavailable: '&cTowny не установлен или не загружен'
+    currency:
+      exists: '&cВалюта {id} уже существует'
     convert:
       same-currency: '&cНельзя обменять валюту на саму себя'
       no-rate: '&cКурс {from}→{to} не задан'
