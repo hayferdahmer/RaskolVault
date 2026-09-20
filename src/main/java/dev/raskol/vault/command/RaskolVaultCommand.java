@@ -4,6 +4,7 @@ package dev.raskol.vault.command;
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.command.sub.AdminSubcommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
+import dev.raskol.vault.command.sub.NationSubcommand;
 import dev.raskol.vault.command.sub.PaySubcommand;
 import dev.raskol.vault.command.sub.RatesSubcommand;
 import dev.raskol.vault.exchange.ExchangeResult;
@@ -24,9 +25,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * Роутер /rv. Этапы 0–4: help, version, balance, pay, convert, confirm, rates, admin, debug.
- */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
     private final RaskolVault plugin;
@@ -34,6 +32,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     private final ConvertSubcommand convert;
     private final RatesSubcommand rates;
     private final AdminSubcommand admin;
+    private final NationSubcommand nation;
 
     public RaskolVaultCommand(RaskolVault plugin) {
         this.plugin = plugin;
@@ -41,6 +40,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         this.convert = new ConvertSubcommand(plugin);
         this.rates = new RatesSubcommand(plugin);
         this.admin = new AdminSubcommand(plugin);
+        this.nation = new NationSubcommand(plugin);
     }
 
     private String prefix() {
@@ -62,6 +62,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "convert" -> convert.execute(sender, args);
             case "confirm" -> handleConfirm(sender);
             case "rates" -> rates.execute(sender);
+            case "nation" -> nation.execute(sender);
             case "admin" -> admin.execute(sender, args);
             case "debug" -> {
                 if (!sender.hasPermission("raskolvault.admin.debug")) {
@@ -151,6 +152,9 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("§e/rv help§7 — эта справка");
         sender.sendMessage("§e/rv version§7 — версия плагина");
         sender.sendMessage("§e/rv balance [ник]§7 — кошелёк");
+        if (sender.hasPermission("raskolvault.use") && plugin.getTownyHook().isAvailable()) {
+            sender.sendMessage("§e/rv nation§7 — моя нация и её казна");
+        }
         if (sender.hasPermission("raskolvault.convert")) {
             sender.sendMessage("§e/rv rates§7 — курсы обмена");
             sender.sendMessage("§e/rv convert <из> <в> <сумма>§7 — обмен валют");
@@ -160,7 +164,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("§e/rv pay <ник> <валюта> <сумма> [причина]§7 — перевод игроку");
         }
         if (sender.hasPermission("raskolvault.admin")) {
-            sender.sendMessage("§e/rv admin <give|take|set|audit|reload>§7 — админ-команды");
+            sender.sendMessage("§e/rv admin <give|take|set|mint|burn|currency|simulate|audit|reload>");
         }
         if (sender.hasPermission("raskolvault.admin.debug")) {
             sender.sendMessage("§e/rv debug§7 — состояние хуков, леджера и кэшей");
@@ -170,7 +174,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     private void sendDebug(CommandSender sender) {
         sender.sendMessage(prefix() + "Хуки: Core=" + yn(plugin.isCorePresent())
                 + " Essentials=" + yn(plugin.isEssentialsPresent())
-                + " Towny=" + yn(plugin.isTownyPresent())
+                + " Towny=" + yn(plugin.isTownyPresent()) + "/" + yn(plugin.getTownyHook().isAvailable())
                 + " LP=" + yn(plugin.isLuckPermsPresent())
                 + " PAPI=" + yn(plugin.isPlaceholderPresent()));
         sender.sendMessage(prefix() + "Essentials-хук кошелька: "
@@ -203,6 +207,9 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             subs.add("version");
             subs.add("balance");
             if (sender.hasPermission("raskolvault.use")) subs.add("pay");
+            if (sender.hasPermission("raskolvault.use") && plugin.getTownyHook().isAvailable()) {
+                subs.add("nation");
+            }
             if (sender.hasPermission("raskolvault.convert")) {
                 subs.add("convert");
                 subs.add("confirm");
@@ -215,7 +222,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         }
         String sub = args[0].toLowerCase(Locale.ROOT);
         if ("balance".equals(sub) && args.length == 2 && sender.hasPermission("raskolvault.admin.view")) {
-            return null; // ники онлайна
+            return null;
         }
         if ("pay".equals(sub)) {
             if (args.length == 2 && sender.hasPermission("raskolvault.use")) return null;
@@ -239,15 +246,16 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         if ("admin".equals(sub)) {
             if (args.length == 2 && sender.hasPermission("raskolvault.admin")) {
                 String prefix = args[1].toLowerCase(Locale.ROOT);
-                return List.of("give", "take", "set", "mint", "burn", "audit", "reload")
+                return List.of("give", "take", "set", "mint", "burn", "currency", "simulate", "audit", "reload")
                         .stream().filter(s -> s.startsWith(prefix)).toList();
             }
             String op = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "";
             if ((op.equals("give") || op.equals("take") || op.equals("set")) && args.length == 3
                     && sender.hasPermission("raskolvault.admin")) {
-                return null; // ники
+                return null;
             }
-            if ((op.equals("give") || op.equals("take") || op.equals("set")) && args.length == 4
+            if ((op.equals("give") || op.equals("take") || op.equals("set")
+                    || op.equals("mint") || op.equals("burn")) && args.length == 4
                     && sender.hasPermission("raskolvault.admin")) {
                 String prefix = args[3].toLowerCase(Locale.ROOT);
                 return plugin.getCurrencies().all().stream()
@@ -255,8 +263,13 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                         .filter(id -> id.toLowerCase(Locale.ROOT).startsWith(prefix))
                         .toList();
             }
+            if (op.equals("currency") && args.length == 3 && sender.hasPermission("raskolvault.admin.currency")) {
+                String prefix = args[2].toLowerCase(Locale.ROOT);
+                return List.of("list", "create", "remove")
+                        .stream().filter(s -> s.startsWith(prefix)).toList();
+            }
             if (op.equals("audit") && args.length == 3 && sender.hasPermission("raskolvault.admin.audit")) {
-                return null; // ники
+                return null;
             }
         }
         return List.of();
