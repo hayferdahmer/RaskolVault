@@ -12,6 +12,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
+import java.io.File;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -48,10 +49,14 @@ public final class AdminSubcommand {
             case "audit" -> audit(sender, args);
             case "reload" -> reload(sender);
             case "simulate" -> simulate(sender);
+            case "simulate-load" -> simulateLoad(sender, args);
+            case "backup" -> backup(sender);
             case "currency" -> currency.execute(sender, args);
             default -> sendHelp(sender);
         }
     }
+
+    // ---------- mint / burn (казна нации, только король) ----------
 
     private void mint(CommandSender sender, String[] args) {
         if (!(sender instanceof Player player)) {
@@ -73,7 +78,7 @@ public final class AdminSubcommand {
                     + plugin.getMessages().get("error.towny-unavailable", null));
             return;
         }
-        String currencyId = args[2];
+        String currencyId = args[2].toUpperCase(Locale.ROOT);
         Currency currency = plugin.getCurrencies().get(currencyId).orElse(null);
         if (currency == null || currency.type() != CurrencyType.NATIONAL) {
             sender.sendMessage(plugin.getMessages().prefix()
@@ -122,7 +127,7 @@ public final class AdminSubcommand {
                     + plugin.getMessages().get("error.towny-unavailable", null));
             return;
         }
-        String currencyId = args[2];
+        String currencyId = args[2].toUpperCase(Locale.ROOT);
         Currency currency = plugin.getCurrencies().get(currencyId).orElse(null);
         if (currency == null || currency.type() != CurrencyType.NATIONAL) {
             sender.sendMessage(plugin.getMessages().prefix()
@@ -151,6 +156,8 @@ public final class AdminSubcommand {
         }
     }
 
+    // ---------- арбитраж и нагрузка ----------
+
     private void simulate(CommandSender sender) {
         if (!sender.hasPermission("raskolvault.admin.debug")) {
             sender.sendMessage(plugin.getMessages().prefix()
@@ -171,6 +178,47 @@ public final class AdminSubcommand {
         plugin.getArbitrage().logReport();
     }
 
+    private void simulateLoad(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("raskolvault.admin.debug")) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        if (args.length >= 3 && "cleanup".equalsIgnoreCase(args[2])) {
+            plugin.getLoadSimulator().cleanup(sender);
+            return;
+        }
+        int players = 50;
+        int txs = 1000;
+        if (args.length >= 3) {
+            try { players = Integer.parseInt(args[2]); } catch (NumberFormatException ignored) { }
+        }
+        if (args.length >= 4) {
+            try { txs = Integer.parseInt(args[3]); } catch (NumberFormatException ignored) { }
+        }
+        plugin.getLoadSimulator().run(sender, players, txs);
+    }
+
+    // ---------- бекап ----------
+
+    private void backup(CommandSender sender) {
+        if (!sender.hasPermission("raskolvault.admin.reload")) {
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        sender.sendMessage(plugin.getMessages().prefix() + "§eСоздаю бекап SQLite...");
+        File file = plugin.getBackups().runBackupNow();
+        if (file != null) {
+            sender.sendMessage(plugin.getMessages().prefix() + "§aБекап создан: §f"
+                    + file.getName() + " (" + humanSize(file.length()) + ")");
+        } else {
+            sender.sendMessage(plugin.getMessages().prefix() + "§cБекап не удался (см. лог)");
+        }
+    }
+
+    // ---------- give / take / set ----------
+
     private void give(CommandSender sender, String[] args) {
         if (!sender.hasPermission("raskolvault.admin.give")) {
             sender.sendMessage(plugin.getMessages().prefix()
@@ -187,7 +235,7 @@ public final class AdminSubcommand {
                     + plugin.getMessages().get("error.player-not-found", Map.of("name", args[2])));
             return;
         }
-        Currency currency = plugin.getCurrencies().get(args[3]).orElse(null);
+        Currency currency = plugin.getCurrencies().get(args[3].toUpperCase(Locale.ROOT)).orElse(null);
         if (currency == null) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[3])));
@@ -231,7 +279,7 @@ public final class AdminSubcommand {
                     + plugin.getMessages().get("error.player-not-found", Map.of("name", args[2])));
             return;
         }
-        Currency currency = plugin.getCurrencies().get(args[3]).orElse(null);
+        Currency currency = plugin.getCurrencies().get(args[3].toUpperCase(Locale.ROOT)).orElse(null);
         if (currency == null) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[3])));
@@ -275,7 +323,7 @@ public final class AdminSubcommand {
                     + plugin.getMessages().get("error.player-not-found", Map.of("name", args[2])));
             return;
         }
-        Currency currency = plugin.getCurrencies().get(args[3]).orElse(null);
+        Currency currency = plugin.getCurrencies().get(args[3].toUpperCase(Locale.ROOT)).orElse(null);
         if (currency == null) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[3])));
@@ -295,16 +343,15 @@ public final class AdminSubcommand {
         }
         UUID uuid = target.getUniqueId();
         double old = plugin.getWallets().getBalance(uuid, currency.id());
-        TransactionType type = TransactionType.ADMIN_SET;
         boolean ok;
         if (Math.abs(old - amount) < 1.0E-9D) {
             ok = true;
         } else if (amount > old) {
-            ok = plugin.getWallets().deposit(uuid, currency.id(), amount - old, type,
-                    "admin-set:" + senderName(sender));
+            ok = plugin.getWallets().deposit(uuid, currency.id(), amount - old,
+                    TransactionType.ADMIN_SET, "admin-set:" + senderName(sender));
         } else {
-            ok = plugin.getWallets().withdraw(uuid, currency.id(), old - amount, type,
-                    "admin-set:" + senderName(sender));
+            ok = plugin.getWallets().withdraw(uuid, currency.id(), old - amount,
+                    TransactionType.ADMIN_SET, "admin-set:" + senderName(sender));
         }
         if (ok) {
             sender.sendMessage(plugin.getMessages().prefix() + "§aБаланс " + target.getName()
@@ -313,6 +360,8 @@ public final class AdminSubcommand {
             sender.sendMessage(plugin.getMessages().prefix() + "§cОперация не прошла (см. лог)");
         }
     }
+
+    // ---------- аудит ----------
 
     private void audit(CommandSender sender, String[] args) {
         if (!sender.hasPermission("raskolvault.admin.audit")) {
@@ -332,8 +381,7 @@ public final class AdminSubcommand {
             if (args.length >= 4) {
                 try {
                     limit = Math.max(1, Math.min(100, Integer.parseInt(args[3])));
-                } catch (NumberFormatException ignored) {
-                }
+                } catch (NumberFormatException ignored) { }
             }
         } else if (sender instanceof Player p) {
             target = p;
@@ -375,15 +423,17 @@ public final class AdminSubcommand {
         return p != null ? p.getName() : uuid.toString().substring(0, 8);
     }
 
+    // ---------- reload ----------
+
     private void reload(CommandSender sender) {
         if (!sender.hasPermission("raskolvault.admin.reload")) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.no-permission", null));
             return;
         }
-        plugin.getRates().load(new java.io.File(plugin.getDataFolder(),
+        plugin.getRates().load(new File(plugin.getDataFolder(),
                 plugin.getConfig().getString("exchange.rates-file", "rates.yml")));
-        plugin.getMessages().load(new java.io.File(plugin.getDataFolder(),
+        plugin.getMessages().load(new File(plugin.getDataFolder(),
                 plugin.getConfig().getString("messages.file", "messages.yml")));
         plugin.getArbitrage().logReport();
         sender.sendMessage(plugin.getMessages().prefix()
@@ -397,6 +447,9 @@ public final class AdminSubcommand {
         sender.sendMessage("§e/rv admin currency list|create|remove");
         sender.sendMessage("§e/rv admin audit [ник] [лимит]");
         sender.sendMessage("§e/rv admin simulate — арбитражный сканер");
+        sender.sendMessage("§e/rv admin simulate-load [игроки] [транзакции] — нагрузочный тест");
+        sender.sendMessage("§e/rv admin simulate-load cleanup — очистить виртуальные кошельки");
+        sender.sendMessage("§e/rv admin backup — ручной бекап SQLite");
         sender.sendMessage("§e/rv admin reload");
     }
 
@@ -410,5 +463,11 @@ public final class AdminSubcommand {
 
     private String senderName(CommandSender sender) {
         return sender instanceof Player p ? p.getName() : "console";
+    }
+
+    private String humanSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024L * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        return String.format("%.2f MB", bytes / (1024.0 * 1024.0));
     }
 }
