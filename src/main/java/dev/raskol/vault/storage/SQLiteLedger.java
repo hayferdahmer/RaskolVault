@@ -18,21 +18,22 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
- * SQLite-леджер на пуле соединений (1.0.2).
+ * SQLite-леджер на пуле соединений (1.0.2) + универсальный атомарный коммит (1.0.3).
  *
- * Гарантия аудита: каждая бизнес-операция пишется ОДНОЙ SQL-транзакцией
- * (BEGIN IMMEDIATE → upsert баланса + insert транзакции → COMMIT).
- * Баланс и аудит не могут разойтись даже при краше процесса между записями.
- *
- * Durability: WAL + synchronous из конфига (NORMAL — быстро, защита от краша
- * процесса; FULL — медленнее, защита от обрыва питания).
- * WAL-гигиена: PRAGMA wal_checkpoint(TRUNCATE) по расписанию и на выключении.
+ * commitAbsolute(balances, txs): одна SQL-транзакция пишет N абсолютных балансов
+ * и M аудиторских записей. Писатель (LedgerWriter) гарантирует порядок вызовов,
+ * поэтому абсолютные значения схлодываются в леджер без гонок.
  */
 public final class SQLiteLedger {
 
     public static final int SCHEMA_VERSION = 1;
+
+    /** Абсолютная запись баланса: «у владельца X валюта Y теперь равна Z». */
+    public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {
+    }
 
     private static final String INSERT_TX =
             "INSERT INTO transactions(timestamp, from_uuid, to_uuid, currency_id, amount, type, reason, metadata) "
@@ -45,6 +46,7 @@ public final class SQLiteLedger {
     private final Plugin plugin;
     private final File dbFile;
     private final ConnectionPool pool;
+    private volatile Supplier<String> writerStats;
 
     public SQLiteLedger(Plugin plugin, File dbFile, int poolSize,
                         String synchronous, long borrowTimeoutMillis) throws SQLException {
@@ -202,10 +204,7 @@ public final class SQLiteLedger {
         }
     }
 
-    /**
-     * Миграция старых строчных ID (gold/denarius/crown) в 3-буквенные капсом.
-     * Одна SQL-транзакция на весь прогон; идемпотентна, молчит при нулевом переносе.
-     */
+    /** Миграция старых строчных ID в 3-буквенные капсом; идемпотентна, молчит при нуле. */
     public synchronized void migrateLegacyCurrencyIds(Map<String, String> mapping) {
         if (mapping.isEmpty()) {
             return;
@@ -250,9 +249,6 @@ public final class SQLiteLedger {
             }
             c.commit();
             ok = true;
-            if (totalBalances == 0 && totalTx == 0 && plugin.getConfig().getBoolean("general.debug", false)) {
-                plugin.getLogger().info("RaskolVault: миграция ID — переносить нечего");
-            }
         } catch (SQLException e) {
             rollbackQuiet(c);
             throw new LedgerException("Миграция ID валют провалена: " + e.getMessage(), e);
@@ -261,7 +257,7 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- balances ----------
+    // ---------- balances (чтение) ----------
 
     public Map<UUID, Map<String, Double>> loadAllBalances() {
         Map<UUID, Map<String, Double>> out = new HashMap<>();
@@ -300,73 +296,37 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- атомарные коммиты (баланс + аудит одной транзакцией) ----------
+    // ---------- атомарный коммит (1.0.3) ----------
 
-    /** Только аудиторская запись (GLOBAL-валюта: баланс живёт в Essentials). */
-    public long commitTransaction(Transaction tx) {
+    /**
+     * Одна SQL-транзакция: N абсолютных балансов + M аудиторских записей.
+     * Вызывается ТОЛЬКО из LedgerWriter (порядок гарантирован) либо синхронным путём.
+     */
+    public void commitAbsolute(List<AbsoluteBalance> balances, List<Transaction> txs) {
         Connection c = pool.borrow();
         boolean ok = false;
         try {
             c.setAutoCommit(false);
-            long id = insertTx(c, tx);
+            for (AbsoluteBalance b : balances) {
+                try (PreparedStatement ps = c.prepareStatement(UPSERT_BALANCE)) {
+                    ps.setString(1, b.owner().toString());
+                    ps.setString(2, b.currencyId());
+                    ps.setDouble(3, b.newAmount());
+                    ps.setLong(4, System.currentTimeMillis());
+                    ps.executeUpdate();
+                }
+            }
+            for (Transaction t : txs) {
+                insertTx(c, t);
+            }
             c.commit();
             ok = true;
-            return id;
         } catch (SQLException e) {
             rollbackQuiet(c);
-            throw new LedgerException("Коммит транзакции " + tx.type() + " провален: " + e.getMessage(), e);
+            throw new LedgerException("Атомарный коммит провален ("
+                    + balances.size() + " балансов, " + txs.size() + " транзакций): " + e.getMessage(), e);
         } finally {
             finish(c, ok);
-        }
-    }
-
-    /** Баланс + аудит атомарно (депозит/снятие неблобальной валюты). */
-    public long commitBalanceAndTransaction(UUID owner, String currencyId, double newAmount, Transaction tx) {
-        Connection c = pool.borrow();
-        boolean ok = false;
-        try {
-            c.setAutoCommit(false);
-            upsertBalance(c, owner, currencyId, newAmount);
-            long id = insertTx(c, tx);
-            c.commit();
-            ok = true;
-            return id;
-        } catch (SQLException e) {
-            rollbackQuiet(c);
-            throw new LedgerException("Коммит баланса+транзакции " + tx.type() + " провален: " + e.getMessage(), e);
-        } finally {
-            finish(c, ok);
-        }
-    }
-
-    /** Перевод: два баланса + аудит атомарно. */
-    public long commitTransferAndTransaction(UUID from, UUID to, String currencyId,
-                                             double newFrom, double newTo, Transaction tx) {
-        Connection c = pool.borrow();
-        boolean ok = false;
-        try {
-            c.setAutoCommit(false);
-            upsertBalance(c, from, currencyId, newFrom);
-            upsertBalance(c, to, currencyId, newTo);
-            long id = insertTx(c, tx);
-            c.commit();
-            ok = true;
-            return id;
-        } catch (SQLException e) {
-            rollbackQuiet(c);
-            throw new LedgerException("Коммит перевода " + tx.type() + " провален: " + e.getMessage(), e);
-        } finally {
-            finish(c, ok);
-        }
-    }
-
-    private void upsertBalance(Connection c, UUID owner, String currencyId, double amount) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(UPSERT_BALANCE)) {
-            ps.setString(1, owner.toString());
-            ps.setString(2, currencyId);
-            ps.setDouble(3, amount);
-            ps.setLong(4, System.currentTimeMillis());
-            ps.executeUpdate();
         }
     }
 
@@ -446,12 +406,8 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- WAL-гигиена ----------
+    // ---------- WAL-гигиена и метрики ----------
 
-    /**
-     * PRAGMA wal_checkpoint(TRUNCATE): сворачивает WAL в основной файл и обрезает его.
-     * Возвращает число страниц, свёрнутых в основной файл (-1 при ошибке).
-     */
     public long checkpoint() {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -471,13 +427,17 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- служебное ----------
+    public void attachWriterStats(Supplier<String> stats) {
+        this.writerStats = stats;
+    }
 
     public String describeStats() {
-        return "балансов " + countBalances()
+        String base = "балансов " + countBalances()
                 + " · транзакций " + countTransactions()
                 + " · пул " + pool.size() + "/" + pool.idleCount() + " idle"
                 + " · wait " + pool.waitingCount();
+        Supplier<String> extra = writerStats;
+        return extra == null ? base : base + extra.get();
     }
 
     public int poolWaiting() {
@@ -492,7 +452,6 @@ public final class SQLiteLedger {
         return pool.size();
     }
 
-    /** Успех → вернуть в пул; неуспех → уничтожить соединение (не тащить битое в пул). */
     private void finish(Connection c, boolean ok) {
         if (!ok) {
             pool.discard(c);
