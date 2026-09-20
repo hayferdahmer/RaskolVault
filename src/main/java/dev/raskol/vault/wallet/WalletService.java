@@ -355,10 +355,17 @@ public final class WalletService {
                 writes.add(new SQLiteLedger.AbsoluteBalance(owner, toId, neuToCache));
             }
         }
+        
+        // ФИКС: создаём final-копии для использования в лямбде
+        final double finalOldFromGlobal = oldFromGlobal;
+        final double finalOldToGlobal = oldToGlobal;
+        final double finalOldFromCache = oldFromCache;
+        final double finalNeuFromCache = neuFromCache;
+        
         writer.submit(() -> ledger.commitAbsolute(writes, txs), ok -> {
             if (!ok) {
-                compensateGlobal(fromGlobal, toGlobal, owner, oldFromGlobal, oldToGlobal, from, to, fromAmount, toAmount);
-                logWriteLoss("convert", owner, fromId, fromAmount, oldFromCache, neuFromCache, reason);
+                compensateGlobal(fromGlobal, toGlobal, owner, finalOldFromGlobal, finalOldToGlobal, from, to, fromAmount, toAmount);
+                logWriteLoss("convert", owner, fromId, fromAmount, finalOldFromCache, finalNeuFromCache, reason);
             }
             cb.accept(ok);
         });
