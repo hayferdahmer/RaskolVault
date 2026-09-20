@@ -22,14 +22,23 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * SQLite-леджер на пуле соединений (1.0.2) + универсальный атомарный коммит (1.0.3)
- * + счётчик tx-per-min (1.0.4).
+ * SQLite-леджер на пуле соединений (1.0.2) + атомарный коммит (1.0.3)
+ * + оптимистичная блокировка commitAbsoluteChecked и агрегаты инварианта (1.0.5).
  */
 public final class SQLiteLedger {
 
     public static final int SCHEMA_VERSION = 1;
 
+    /** Абсолютная запись баланса без проверки (служебные пути). */
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {
+    }
+
+    /**
+     * Абсолютная запись с оптимистичной проверкой (1.0.5):
+     * коммит применится ТОЛЬКО если текущее значение в БД == expectedOld.
+     * Иначе 0 затронутых строк → LedgerException → лечение кэша наверху.
+     */
+    public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {
     }
 
     private static final String INSERT_TX =
@@ -39,6 +48,11 @@ public final class SQLiteLedger {
             "INSERT INTO balances(uuid, currency_id, amount, updated_at) VALUES(?,?,?,?) "
                     + "ON CONFLICT(uuid, currency_id) DO UPDATE SET "
                     + "amount=excluded.amount, updated_at=excluded.updated_at";
+    private static final String UPSERT_BALANCE_CHECKED =
+            "INSERT INTO balances(uuid, currency_id, amount, updated_at) VALUES(?,?,?,?) "
+                    + "ON CONFLICT(uuid, currency_id) DO UPDATE SET "
+                    + "amount=excluded.amount, updated_at=excluded.updated_at "
+                    + "WHERE balances.amount=?";
 
     private final Plugin plugin;
     private final File dbFile;
@@ -143,6 +157,8 @@ public final class SQLiteLedger {
             finish(c, ok);
         }
     }
+
+    // ---------- currencies ----------
 
     public void upsertCurrency(Currency currency) {
         Connection c = pool.borrow();
@@ -256,6 +272,8 @@ public final class SQLiteLedger {
         }
     }
 
+    // ---------- balances ----------
+
     public Map<UUID, Map<String, Double>> loadAllBalances() {
         Map<UUID, Map<String, Double>> out = new HashMap<>();
         Connection c = pool.borrow();
@@ -325,6 +343,49 @@ public final class SQLiteLedger {
         }
     }
 
+    /**
+     * 1.0.5: коммит с оптимистичной проверкой старых значений.
+     * Каждая строка баланса применяется только если текущее amount в БД совпадает
+     * с expectedOld. Любое расхождение (гонка, ручная правка БД, restore во время
+     * работы) = LedgerException, транзакция откатывается целиком.
+     */
+    public void commitAbsoluteChecked(List<CheckedBalance> balances, List<Transaction> txs) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            c.setAutoCommit(false);
+            for (CheckedBalance b : balances) {
+                try (PreparedStatement ps = c.prepareStatement(UPSERT_BALANCE_CHECKED)) {
+                    ps.setString(1, b.owner().toString());
+                    ps.setString(2, b.currencyId());
+                    ps.setDouble(3, b.newAmount());
+                    ps.setLong(4, System.currentTimeMillis());
+                    ps.setDouble(5, b.expectedOld());
+                    int affected = ps.executeUpdate();
+                    if (affected == 0) {
+                        throw new SQLException("optimistic lock failed: " + b.owner() + "/" + b.currencyId()
+                                + " expected=" + b.expectedOld());
+                    }
+                }
+            }
+            for (Transaction t : txs) {
+                insertTx(c, t);
+            }
+            c.commit();
+            ok = true;
+            TxPerMinuteCounter counter = txCounter;
+            if (counter != null) {
+                counter.record(txs.size());
+            }
+        } catch (SQLException e) {
+            rollbackQuiet(c);
+            throw new LedgerException("Проверенный коммит отклонён ("
+                    + balances.size() + " балансов, " + txs.size() + " транзакций): " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
     private long insertTx(Connection c, Transaction tx) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(INSERT_TX, Statement.RETURN_GENERATED_KEYS)) {
             ps.setLong(1, tx.timestampMillis());
@@ -341,6 +402,51 @@ public final class SQLiteLedger {
             }
         }
     }
+
+    // ---------- агрегаты инварианта (1.0.5) ----------
+
+    public double sumBalances(String currencyId) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT COALESCE(SUM(amount),0) FROM balances WHERE currency_id=?")) {
+            ps.setString(1, currencyId);
+            try (ResultSet rs = ps.executeQuery()) {
+                ok = true;
+                return rs.next() ? rs.getDouble(1) : 0.0D;
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу посчитать сумму балансов " + currencyId + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    /**
+     * Ожидаемая эмиссия: +amount для (from NULL, to NOT NULL),
+     * −amount для (from NOT NULL, to NULL), 0 для PAY (оба заполнены).
+     */
+    public double expectedSupply(String currencyId) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT COALESCE(SUM(CASE "
+                        + "WHEN from_uuid IS NULL AND to_uuid IS NOT NULL THEN amount "
+                        + "WHEN from_uuid IS NOT NULL AND to_uuid IS NULL THEN -amount "
+                        + "ELSE 0 END),0) FROM transactions WHERE currency_id=?")) {
+            ps.setString(1, currencyId);
+            try (ResultSet rs = ps.executeQuery()) {
+                ok = true;
+                return rs.next() ? rs.getDouble(1) : 0.0D;
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу посчитать ожидаемую эмиссию " + currencyId + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    // ---------- аудит-чтение ----------
 
     public List<Transaction> queryTransactions(UUID owner, int limit) {
         List<Transaction> out = new ArrayList<>();
@@ -385,20 +491,6 @@ public final class SQLiteLedger {
         return count("SELECT COUNT(*) FROM transactions");
     }
 
-    public long lastTransactionTimestamp() {
-        Connection c = pool.borrow();
-        boolean ok = false;
-        try (Statement st = c.createStatement();
-             ResultSet rs = st.executeQuery("SELECT MAX(timestamp) FROM transactions")) {
-            ok = true;
-            return rs.next() ? rs.getLong(1) : 0L;
-        } catch (SQLException e) {
-            return 0L;
-        } finally {
-            finish(c, ok);
-        }
-    }
-
     private int count(String sql) {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -427,6 +519,20 @@ public final class SQLiteLedger {
         } catch (SQLException e) {
             plugin.getLogger().warning("RaskolVault: WAL checkpoint не удался: " + e.getMessage());
             return -1L;
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    public long lastTransactionTimestamp() {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT MAX(timestamp) FROM transactions")) {
+            ok = true;
+            return rs.next() ? rs.getLong(1) : 0L;
+        } catch (SQLException e) {
+            return 0L;
         } finally {
             finish(c, ok);
         }
