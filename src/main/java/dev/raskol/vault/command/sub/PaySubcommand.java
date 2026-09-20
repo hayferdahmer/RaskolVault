@@ -10,11 +10,7 @@ import org.bukkit.entity.Player;
 
 import java.util.Arrays;
 import java.util.Map;
-import java.util.UUID;
 
-/**
- * /rv pay (1.0.5: + token-bucket rate-limit на игрока).
- */
 public final class PaySubcommand {
 
     private final RaskolVault plugin;
@@ -24,20 +20,14 @@ public final class PaySubcommand {
     }
 
     public void execute(CommandSender sender, String[] args) {
-        if (!(sender instanceof Player from)) {
+        if (!(sender instanceof Player player)) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.console-cannot-pay", null));
             return;
         }
-        if (!sender.hasPermission("raskolvault.use")) {
+        if (!player.hasPermission("raskolvault.use")) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.no-permission", null));
-            return;
-        }
-        // 1.0.5: rate-limit до любой работы
-        if (!plugin.getRateLimiter().tryConsume(from.getUniqueId())) {
-            sender.sendMessage(plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.rate-limited", null));
             return;
         }
         if (args.length < 4) {
@@ -45,19 +35,18 @@ public final class PaySubcommand {
                     + "§e/rv pay <ник> <валюта> <сумма> [причина]");
             return;
         }
-        Player to = Bukkit.getPlayerExact(args[1]);
-        if (to == null) {
+        Player target = Bukkit.getPlayerExact(args[1]);
+        if (target == null) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.player-not-found", Map.of("name", args[1])));
             return;
         }
-        if (to.getUniqueId().equals(from.getUniqueId())) {
+        if (target.getUniqueId().equals(player.getUniqueId())) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.self-pay", null));
             return;
         }
-        String currencyId = args[2].toUpperCase(java.util.Locale.ROOT);
-        Currency currency = plugin.getCurrencies().get(currencyId).orElse(null);
+        Currency currency = plugin.getCurrencies().get(args[2]).orElse(null);
         if (currency == null) {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[2])));
@@ -79,28 +68,27 @@ public final class PaySubcommand {
         String reason = args.length > 4
                 ? String.join(" ", Arrays.copyOfRange(args, 4, args.length))
                 : "pay";
-        UUID fromUuid = from.getUniqueId();
-        UUID toUuid = to.getUniqueId();
-        String formatted = Formatter.withSymbol(amount, currency.decimals(), currency.symbol());
-
-        plugin.getWallets().transferAsync(fromUuid, toUuid, currency.id(), amount, reason, ok -> {
-            if (ok) {
-                from.sendMessage(plugin.getMessages().prefix()
-                        + plugin.getMessages().get("pay.sent",
-                        Map.of("player", to.getName(), "amount", formatted)));
-                to.sendMessage(plugin.getMessages().prefix()
-                        + plugin.getMessages().get("pay.received",
-                        Map.of("player", from.getName(), "amount", formatted)));
-                return;
+        boolean ok = plugin.getWallets().transfer(
+                player.getUniqueId(), target.getUniqueId(), currency.id(), amount,
+                dev.raskol.vault.api.transaction.TransactionType.PAY, reason);
+        if (!ok) {
+            double bal = plugin.getWallets().getBalance(player.getUniqueId(), currency.id());
+            if (bal < amount) {
+                sender.sendMessage(plugin.getMessages().prefix()
+                        + plugin.getMessages().get("error.insufficient", Map.of(
+                        "needed", Formatter.amount(amount, currency.decimals()),
+                        "balance", Formatter.amount(bal, currency.decimals()),
+                        "symbol", currency.symbol())));
+            } else {
+                sender.sendMessage(plugin.getMessages().prefix()
+                        + plugin.getMessages().get("error.storage", null));
             }
-            boolean insufficient = !plugin.getWallets().has(fromUuid, currency.id(), amount);
-            from.sendMessage(plugin.getMessages().prefix() + (insufficient
-                    ? plugin.getMessages().get("error.insufficient", Map.of(
-                    "symbol", currency.symbol(),
-                    "needed", Formatter.amount(amount, currency.decimals()),
-                    "balance", Formatter.amount(plugin.getWallets().getBalance(fromUuid, currency.id()),
-                            currency.decimals())))
-                    : plugin.getMessages().get("error.storage", null)));
-        });
+            return;
+        }
+        String formatted = Formatter.withSymbol(amount, currency.decimals(), currency.symbol());
+        sender.sendMessage(plugin.getMessages().prefix()
+                + plugin.getMessages().get("pay.sent", Map.of("amount", formatted, "player", target.getName())));
+        target.sendMessage(plugin.getMessages().prefix()
+                + plugin.getMessages().get("pay.received", Map.of("amount", formatted, "player", player.getName())));
     }
 }
