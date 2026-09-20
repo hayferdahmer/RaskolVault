@@ -1,58 +1,48 @@
-# RaskolVault 1.0.0
+# Changelog
 
-Многовалютный экономический слой поверх EssentialsX для сервера **«РАСКОЛ | ДВЕ КОРОНЫ»**.
+Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/).
+Версионирование: [SemVer](https://semver.org/lang/ru/).
+Лицензия: RASKOL Proprietary License v1.0 (см. LICENSE).
 
-## Возможности
+## [1.0.0] — 2026-09-20 — Первый релиз
 
-- **3-буквенные ID валют** (GLD, RAS, VLR) — единый стандарт бренда
-- **Глобальная валюта ⚜** проксируется в EssentialsX (единый источник правды)
-- **Национальные валюты** ☀ ☾ привязаны к Towny-нациям (авто-создание при `NewNationEvent`)
-- **SQLite-леджер** с WAL-режимом, аудитом всех транзакций и каскадными FK
-- **Обмен валют** с комиссией и подтверждением `/rv confirm`
-- **Арбитражный сканер** — находит прибыльные петли в графе курсов
-- **PAPI-плейсхолдеры** (`%raskolvault_balance_GLD%`, `%raskolvault_nation%`, `%raskolvault_treasury_RAS%`)
-- **Ежедневный бекап** SQLite (04:00, ротация 7 дней)
-- **Нагрузочный тест** `/rv admin simulate-load 50 1000`
-- **Интеграция с RaskolCore** через Proxy-рефлексию (регистрация EconomyProvider)
+### Добавлено
+- Многовалютный кошелёк: GLD (глобальная, ⚜), RAS (Рассвет, ☀), VLR (Вальрадис, ☾).
+- Стандарт ID валют: ровно 3 буквы капсом ([A-Z]{3}) с валидацией на уровне модели.
+- SQLite-леджер: WAL-режим, FK-каскады, миграции через PRAGMA user_version (схема v1).
+- Рефлексия-хуки без compile-зависимостей: EssentialsX (global-баланс),
+  RaskolCore (Proxy-регистрация EconomyProvider в EconomyRegistry), Towny, PlaceholderAPI.
+- Авто-создание национальной валюты при Towny NewNationEvent;
+  символы по точной карте nation-symbols (rassvet → ☀, valradis → ☾).
+- Казны наций через детерминированный UUID (nation:<id>); mint/burn только королём нации.
+- Обмен валют с комиссией (default + per-pair), preview и подтверждением /rv confirm (TTL 30 c).
+- Арбитражный сканер: BFS по графу курсов до 4 шагов, отчёт прибыльных петель в лог и чат.
+- PAPI-плейсхолдеры: %raskolvault_balance_<ID>%, %raskolvault_balance_raw_<ID>%,
+  %raskolvault_nation%, %raskolvault_treasury_<ID>%, %raskolvault_symbol_<ID>%.
+- Бекапы: ежедневный дамп SQLite в 04:00 с ротацией 7 дней + ручной /rv admin backup
+  (копируются WAL-соседи), атомарный YAML-бекап балансов при выключении.
+- Нагрузочный тест /rv admin simulate-load [игроки] [транзакции] + cleanup.
+- Команды: /rv balance|pay|convert|confirm|rates|nation|debug;
+  /rv admin give|take|set|mint|burn|currency|audit|simulate|simulate-load|backup|reload.
+- Аудит всех движений средств в таблице transactions (PAY/CONVERT/MINT/BURN/ADMIN_*).
+- Миграция legado-ID: gold→GLD, denarius→RAS, crown→VLR (balances + transactions).
 
-## Команды
+### Дизайн-решения
+- GLOBAL-валюта проксируется в EssentialsX: единый источник правды, без дублирования баланса.
+- Обратные курсы задаются явно (GLD_RAS ≠ авто-инверсия RAS_GLD) — антиарбитраж по построению.
+- Все мутации кошелька под одним монитором + синхронная запись в леджер: атомарность
+  «списал → начислил → записал транзакцию» важнее параллельности на пре-лаунч объёмах.
+- Откат обмена при сбое deposit: средства возвращаются, инцидент логируется как SEVERE.
+- Null-safe контракт всех хуков и EconomyProvider (null uuid = 0/false без исключений).
 
-| Команда | Описание |
-|---------|----------|
-| `/rv balance [ник]` | Кошелёк (свой или чужой с правом просмотра) |
-| `/rv pay <ник> <валюта> <сумма> [причина]` | P2P-перевод |
-| `/rv convert <из> <в> <сумма>` | Обмен с подтверждением |
-| `/rv confirm` | Подтвердить обмен |
-| `/rv rates` | Таблица курсов |
-| `/rv nation` | Моя нация и её казна |
-| `/rv admin give/take/set` | Управление балансами |
-| `/rv admin mint/burn` | Эмиссия/сжигание нацвалюты (только король) |
-| `/rv admin currency list/create/remove` | Управление валютами |
-| `/rv admin audit [ник] [лимит]` | Аудит транзакций |
-| `/rv admin simulate` | Арбитражный сканер |
-| `/rv admin backup` | Ручной бекап SQLite |
-| `/rv admin simulate-load [игроки] [tx]` | Нагрузочный тест |
-| `/rv admin reload` | Горячая перезагрузка rates+messages |
+### Известные ограничения
+- Пул SQLite-соединений = 1 (synchronized); асинхронные операции отложены до 1.1.
+- Towny-хук рассчитан на пакет com.palmergames.bukkit.towny.* (актуальные релизы Towny).
+- Нагрузочный тест очищает кэш, но записи леджера от теста сохраняются (аудит неприкосновенен).
+- Автоконвертация при /pay (auto-convert) выключена по умолчанию в 1.0.0.
 
-## PAPI-плейсхолдеры
-
-| Плейсхолдер | Значение |
-|-------------|----------|
-| `%raskolvault_balance_<ID>%` | Баланс с символом (например «1 234,50 ⚜») |
-| `%raskolvault_balance_raw_<ID>%` | Баланс без символа (для вычислений) |
-| `%raskolvault_nation%` | ID текущей нации игрока |
-| `%raskolvault_treasury_<ID>%` | Баланс казны национальной валюты |
-| `%raskolvault_symbol_<ID>%` | Символ валюты |
-
-## Зависимости
-
-- Paper 1.21.4+
-- EssentialsX (global-валюта)
-- Towny (национальные валюты)
-- RaskolCore 1.3.0+ (опционально, через рефлексию)
-- PlaceholderAPI (опционально)
-
-## Сборка
-
-```bash
-mvn -B clean package
+## [Unreleased] — запланировано на 1.1
+- Асинхронные операции леджера и пул соединений.
+- Автоконвертация при /pay с предпочтениями игрока.
+- Плагины-мосты: Parties (временные союзники), кланы (пост-запуск).
+- RaskolCore 1.5.0 «Картографический слой»: HOI4-заливка территорий на BlueMap.
