@@ -13,6 +13,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * Симулятор арбитражных петель: BFS по графу курсов, ищет циклы длины 2–4,
+ * где product(rate × (1-fee)) > 1.0.
+ *
+ * 1.0.1: в граф попадают только tradeable-валюты; пустой граф/пустые курсы
+ * дают информативный пропуск вместо ложного отчёта.
+ */
 public final class ArbitrageSimulator {
 
     public record Loop(List<String> path, double product) {
@@ -36,8 +43,14 @@ public final class ArbitrageSimulator {
 
     public List<Loop> scan() {
         List<Loop> loops = new ArrayList<>();
+        if (rates.allRates().isEmpty()) {
+            return loops;
+        }
         Set<String> seen = new HashSet<>();
         for (Currency start : currencies.all()) {
+            if (!start.tradeable()) {
+                continue;
+            }
             Deque<Node> stack = new ArrayDeque<>();
             stack.push(new Node(start.id(), 1.0D, List.of(start.id())));
             while (!stack.isEmpty()) {
@@ -46,6 +59,9 @@ public final class ArbitrageSimulator {
                     continue;
                 }
                 for (Currency other : currencies.all()) {
+                    if (!other.tradeable()) {
+                        continue;
+                    }
                     if (other.id().equals(n.last())) {
                         continue;
                     }
@@ -74,6 +90,11 @@ public final class ArbitrageSimulator {
     }
 
     public void logReport() {
+        long tradeable = currencies.all().stream().filter(Currency::tradeable).count();
+        if (tradeable < 2 || rates.allRates().isEmpty()) {
+            plugin.getLogger().info("RaskolVault: арбитражный сканер — нет торгуемых пар, пропускаю");
+            return;
+        }
         List<Loop> loops = scan();
         if (loops.isEmpty()) {
             plugin.getLogger().info("RaskolVault: арбитражный сканер — петель не найдено ✓");
