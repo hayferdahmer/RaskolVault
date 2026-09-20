@@ -10,6 +10,10 @@ import org.bukkit.entity.Player;
 
 import java.util.Map;
 
+/**
+ * /rv convert (1.0.3): preview мгновенный из кэша; исполнение после /rv confirm
+ * уходит в асинхронный коммит, итог приходит в callback.
+ */
 public final class ConvertSubcommand {
 
     private final RaskolVault plugin;
@@ -34,8 +38,8 @@ public final class ConvertSubcommand {
                     + "§e/rv convert <из> <в> <сумма>");
             return;
         }
-        String fromId = args[1];
-        String toId = args[2];
+        String fromId = args[1].toUpperCase(java.util.Locale.ROOT);
+        String toId = args[2].toUpperCase(java.util.Locale.ROOT);
         double amount;
         try {
             amount = Double.parseDouble(args[3]);
@@ -46,8 +50,8 @@ public final class ConvertSubcommand {
         }
         if (plugin.getConfig().getBoolean("exchange.require-confirm", true)) {
             ExchangeResult preview = plugin.getExchange().preview(player.getUniqueId(), fromId, toId, amount);
-            if (!preview.applied() && !"preview".equals(preview.reason())) {
-                sendFailure(sender, preview, fromId, toId);
+            if (!"preview".equals(preview.reason())) {
+                sendFailure(sender, preview);
                 return;
             }
             plugin.getConfirms().put(player.getUniqueId(), preview);
@@ -63,24 +67,34 @@ public final class ConvertSubcommand {
             sender.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("convert.confirm-hint", null));
         } else {
-            ExchangeResult result = plugin.getExchange().execute(player.getUniqueId(), fromId, toId, amount);
-            if (result.applied()) {
-                Currency to = plugin.getCurrencies().get(result.toId()).orElse(null);
-                sender.sendMessage(plugin.getMessages().prefix()
-                        + plugin.getMessages().get("convert.done",
-                        Map.of("amount", formatAmount(result.net(), to))));
-            } else {
-                sendFailure(sender, result, fromId, toId);
-            }
+            plugin.getExchange().executeAsync(player.getUniqueId(), fromId, toId, amount,
+                    result -> sendResult(sender, result));
         }
     }
 
-    private void sendFailure(CommandSender sender, ExchangeResult result, String fromId, String toId) {
+    /** Вызывается из /rv confirm (RaskolVaultCommand): асинхронное исполнение pending-preview. */
+    public void runConfirmed(Player player, ExchangeResult preview, CommandSender sender) {
+        plugin.getExchange().executeAsync(player.getUniqueId(), preview.fromId(), preview.toId(),
+                preview.gross(), result -> sendResult(sender, result));
+    }
+
+    private void sendResult(CommandSender sender, ExchangeResult result) {
+        if (result.applied()) {
+            Currency to = plugin.getCurrencies().get(result.toId()).orElse(null);
+            sender.sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("convert.done",
+                    Map.of("amount", formatAmount(result.net(), to))));
+        } else {
+            sendFailure(sender, result);
+        }
+    }
+
+    private void sendFailure(CommandSender sender, ExchangeResult result) {
         String key = "error.convert." + result.reason().replace(':', '.');
-        String msg = plugin.getMessages().get(key, Map.of("from", fromId, "to", toId));
+        String msg = plugin.getMessages().get(key, Map.of("from", result.fromId(), "to", result.toId()));
         if (msg.equals(key)) {
             msg = plugin.getMessages().get("error.convert.generic",
-                    Map.of("reason", result.reason(), "from", fromId, "to", toId));
+                    Map.of("reason", result.reason(), "from", result.fromId(), "to", result.toId()));
         }
         sender.sendMessage(plugin.getMessages().prefix() + msg);
     }
