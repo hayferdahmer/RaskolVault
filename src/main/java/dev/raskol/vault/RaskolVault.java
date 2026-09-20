@@ -2,19 +2,22 @@
 package dev.raskol.vault;
 
 import dev.raskol.vault.arbitrage.ArbitrageSimulator;
+import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.config.MessagesConfig;
 import dev.raskol.vault.confirm.ConfirmManager;
-import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
+import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.nation.NationTreasury;
+import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.storage.SQLiteLedger;
+import dev.raskol.vault.test.LoadSimulator;
 import dev.raskol.vault.wallet.WalletService;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.ConfigurationSection;
@@ -27,6 +30,13 @@ import java.sql.SQLException;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * RaskolVault v1.0.0 — многовалютный экономический слой поверх EssentialsX
+ * для сервера «РАСКОЛ | ДВЕ КОРОНЫ».
+ *
+ * Этап 6: 3-буквенные ID (GLD/RAS/VLR) + миграция старых ID из леджера,
+ * PAPI-экспаншн, ежедневный бекап SQLite, нагрузочный симулятор.
+ */
 public final class RaskolVault extends JavaPlugin {
 
     private boolean corePresent;
@@ -47,6 +57,9 @@ public final class RaskolVault extends JavaPlugin {
     private TownyHook townyHook;
     private NationTreasury treasury;
     private ArbitrageSimulator arbitrage;
+    private PlaceholderApiHook papiHook;
+    private BackupService backups;
+    private LoadSimulator loadSimulator;
 
     @Override
     public void onEnable() {
@@ -73,11 +86,18 @@ public final class RaskolVault extends JavaPlugin {
 
         currencies = new CurrencyRegistry(this);
         currencies.load(new File(getDataFolder(), "currencies.yml"),
-                getConfig().getString("global-currency.id", "gold"),
+                getConfig().getString("global-currency.id", "GLD"),
                 getConfig().getString("global-currency.display-name", "Золото"),
                 getConfig().getString("global-currency.symbol", "⚜"),
                 getConfig().getInt("global-currency.decimals", 2));
         currencies.syncToLedger(ledger);
+
+        // Этап 6: миграция старых строчных ID в 3-буквенные капсом
+        ledger.migrateLegacyCurrencyIds(Map.of(
+                "gold", "GLD",
+                "denarius", "RAS",
+                "crown", "VLR"
+        ));
 
         essentialsHook = new EssentialsHook(this);
         essentialsHook.init();
@@ -111,6 +131,25 @@ public final class RaskolVault extends JavaPlugin {
             coreHook.init();
         }
 
+        if (placeholderPresent && getConfig().getBoolean("hooks.placeholderapi.enabled", true)) {
+            try {
+                papiHook = new PlaceholderApiHook(this);
+                papiHook.register();
+                getLogger().info("RaskolVault: PAPI-экспаншн зарегистрирован (%raskolvault_*)");
+            } catch (Throwable t) {
+                getLogger().warning("RaskolVault: PAPI-регистрация не удалась: " + t.getMessage());
+            }
+        }
+
+        if (getConfig().getBoolean("storage.daily-backup.enabled", true)) {
+            backups = new BackupService(this, dbFile,
+                    getConfig().getString("storage.daily-backup.time", "04:00"),
+                    getConfig().getInt("storage.daily-backup.keep-days", 7));
+            backups.start();
+        }
+
+        loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
+
         RaskolVaultCommand executor = new RaskolVaultCommand(this);
         PluginCommand command = getCommand("rv");
         if (command != null) {
@@ -139,6 +178,12 @@ public final class RaskolVault extends JavaPlugin {
         }
         if (confirms != null) {
             confirms.clear();
+        }
+        if (backups != null) {
+            backups.stop();
+        }
+        if (papiHook != null) {
+            papiHook.unregister();
         }
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) {
             saveBalancesBackup();
@@ -187,6 +232,8 @@ public final class RaskolVault extends JavaPlugin {
     public TownyHook getTownyHook() { return townyHook; }
     public NationTreasury getTreasury() { return treasury; }
     public ArbitrageSimulator getArbitrage() { return arbitrage; }
+    public BackupService getBackups() { return backups; }
+    public LoadSimulator getLoadSimulator() { return loadSimulator; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
