@@ -27,6 +27,9 @@ import java.util.Optional;
  * Символ берётся из ТОЧНОЙ карты hooks.towny.nation-symbols (rassvet → ☀,
  * valradis → ☾), для прочих наций — hooks.towny.default-symbol.
  * Семантики «свет/тьма» нет: только фракции Рассвет (Лайтрис) и Вальрадис (Драгос).
+ *
+ * Компиляционная тонкость: registerEvent() требует Class<? extends Event>,
+ * поэтому Class.forName(...) сужается через asSubclass(Event.class).
  */
 public final class NationAutoCurrencyListener implements Listener {
 
@@ -63,9 +66,9 @@ public final class NationAutoCurrencyListener implements Listener {
             return false;
         }
         try {
-            Class<?> eventClass = Class.forName(
+            Class<? extends Event> eventClass = Class.forName(
                     "com.palmergames.bukkit.towny.event.NewNationEvent",
-                    true, towny.getClass().getClassLoader());
+                    true, towny.getClass().getClassLoader()).asSubclass(Event.class);
             Method getNation = eventClass.getMethod("getNation");
 
             EventExecutor executor = (listener, event) -> {
@@ -82,6 +85,10 @@ public final class NationAutoCurrencyListener implements Listener {
         } catch (ReflectiveOperationException e) {
             plugin.getLogger().warning("RaskolVault: не удалось подписаться на NewNationEvent: "
                     + e.getMessage() + " — валюты наций создаются вручную (/rv admin currency create)");
+            return false;
+        } catch (ClassCastException e) {
+            plugin.getLogger().warning("RaskolVault: класс NewNationEvent не является Event: "
+                    + e.getMessage() + " — авто-создание валют отключено");
             return false;
         }
     }
