@@ -1,10 +1,11 @@
-# RaskolVault 1.0.0 — многовалютный слой поверх EssentialsX
-# «РАСКОЛ | ДВЕ КОРОНЫ»
+# RaskolVault 1.0.0 — многовалютный экономический слой поверх EssentialsX
+# для сервера «РАСКОЛ | ДВЕ КОРОНЫ»
 
 general:
   debug: false
   locale: ru
-  # Интервал автосохранения балансов из кэша в хранилище
+  # Интервал автосохранения балансов из кэша в хранилище (резерв: записи идут
+  # в SQLite синхронно при каждой мутации; ключ пригодится для async-оптимизации)
   auto-save-minutes: 5
 
 # Глобальная валюта: проксируется в EssentialsX (⚜)
@@ -18,15 +19,20 @@ global-currency:
 
 exchange:
   enabled: true
-  # Комиссия по умолчанию для пары, если у пары не задана своя (доля от суммы)
+  # Комиссия по умолчанию для пары, если у пары нет своей в rates.yml (доля от суммы)
   default-fee: 0.02
-  # Требовать явное подтверждение обмена (/rv confirm)
+  # Требовать явное подтверждение обмена командой /rv confirm
   require-confirm: true
-  # Защита от спама: не более N обменов в секунду на игрока
+  # Сколько секунд живёт ожидание подтверждения после /rv convert
+  confirm-timeout-seconds: 30
+  # Файл курсов обмена (формат ключей: <from>_<to>)
+  rates-file: rates.yml
+  # Резерв (этап 5): лимит обменов в секунду на игрока (анти-спам)
   rate-limit-per-second: 10
 
 auto-convert:
-  # Автоконвертация при /pay, если у плательщика другая валюта (opt-in в 1.0.0)
+  # Резерв: автоконвертация при /pay, если у плательщика другая валюта.
+  # В 1.0.0 выключено: переводы идут только в валюте получателя.
   enabled: false
   require-confirm: true
 
@@ -35,7 +41,7 @@ hooks:
     enabled: true
   towny:
     enabled: true
-    # Создавать национальную валюту автоматически при создании нации
+    # Этап 5: создавать национальную валюту автоматически при создании нации
     auto-create-national: true
   luckperms:
     enabled: true
@@ -49,16 +55,19 @@ hooks:
 storage:
   sqlite:
     file: data/ledger.sqlite
+    # Резерв: пул соединений (сейчас одно соединение + synchronized)
     pool-size: 5
   yaml-backup:
     enabled: true
     file: data/balances.yml
   daily-backup:
+    # Резерв (этап 5/6): ежедневный бекап SQLite-файла
     enabled: true
     time: "04:00"
     keep-days: 7
 
 audit:
+  # Резерв: дублирование аудита в отдельный лог-файл с ротацией
   log-to-file: true
   log-to-console: false
   rotation-mb: 5
