@@ -14,10 +14,12 @@ import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
+import dev.raskol.vault.listener.TownyNationLifecycleListener;
 import dev.raskol.vault.nation.NationTreasury;
 import dev.raskol.vault.observability.InflationCheckpoint;
 import dev.raskol.vault.observability.SparkHook;
 import dev.raskol.vault.observability.TxPerMinuteCounter;
+import dev.raskol.vault.offline.OfflinePlayerRegistry;
 import dev.raskol.vault.security.TokenBucket;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
@@ -40,8 +42,8 @@ import java.util.UUID;
 /**
  * RaskolVault — многовалютный экономический слой поверх EssentialsX.
  *
- * 1.0.5: TokenBucket rate-limit, оптимистичные коммиты + heal,
- * почасовой инфляционный чекпоинт, GLOBAL-мутации под локом.
+ * 1.0.6: offline-player registry (tab-complete), Towny nation lifecycle listener,
+ *        currency rename, rate-limit, inflation checkpoint (из 1.0.5).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -74,6 +76,8 @@ public final class RaskolVault extends JavaPlugin {
     private SparkHook spark;
     private TokenBucket rateLimiter;
     private InflationCheckpoint inflationCheckpoint;
+    private OfflinePlayerRegistry offlinePlayerRegistry;
+    private TownyNationLifecycleListener townyLifecycleListener;
 
     @Override
     public void onEnable() {
@@ -105,7 +109,6 @@ public final class RaskolVault extends JavaPlugin {
         ledger.attachTxCounter(txCounter);
         spark = new SparkHook(this);
 
-        // 1.0.5: rate-limit (capacity <= 0 = выключен)
         rateLimiter = new TokenBucket(
                 getConfig().getBoolean("security.rate-limit.enabled", true)
                         ? getConfig().getDouble("security.rate-limit.capacity", 8.0D)
@@ -151,6 +154,17 @@ public final class RaskolVault extends JavaPlugin {
         treasury = new NationTreasury(wallets);
         arbitrage = new ArbitrageSimulator(this, currencies, rates);
 
+        // 1.0.6: offline-registry для таб-комплита
+        offlinePlayerRegistry = new OfflinePlayerRegistry(this);
+        offlinePlayerRegistry.init();
+        getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
+
+        // 1.0.6: Towny nation lifecycle (переименование/удаление наций)
+        if (townyHook.isAvailable()) {
+            townyLifecycleListener = new TownyNationLifecycleListener(this, currencies, ledger);
+            townyLifecycleListener.register();
+        }
+
         if (townyHook.isAvailable()
                 && getConfig().getBoolean("hooks.towny.auto-create-national", true)) {
             NationAutoCurrencyListener listener =
@@ -192,7 +206,6 @@ public final class RaskolVault extends JavaPlugin {
             getLogger().info("RaskolVault: WAL-checkpoint каждые " + checkpointMinutes + " мин");
         }
 
-        // 1.0.5: инфляционный чекпоинт (первый прогон через 100 тиков, далее каждый час)
         if (getConfig().getBoolean("security.inflation-check.enabled", true)) {
             inflationCheckpoint = new InflationCheckpoint(this, ledger, currencies, rateLimiter);
             long intervalTicks = getConfig().getLong("security.inflation-check.interval-minutes", 60L) * 60L * 20L;
@@ -225,7 +238,8 @@ public final class RaskolVault extends JavaPlugin {
                 + " · LP " + (luckPermsPresent ? "on" : "off")
                 + " · PAPI " + (placeholderPresent ? "on" : "off")
                 + " · Spark " + (spark.isAvailable() ? "on" : "off")
-                + " · RateLimit " + (rateLimiter.isEnabled() ? "on" : "off"));
+                + " · RateLimit " + (rateLimiter.isEnabled() ? "on" : "off")
+                + " · OfflineRegistry " + (offlinePlayerRegistry != null ? "on" : "off"));
     }
 
     @Override
@@ -314,6 +328,8 @@ public final class RaskolVault extends JavaPlugin {
     public SparkHook getSpark() { return spark; }
     public TokenBucket getRateLimiter() { return rateLimiter; }
     public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
+    public OfflinePlayerRegistry getOfflinePlayerRegistry() { return offlinePlayerRegistry; }
+    public TownyNationLifecycleListener getTownyLifecycleListener() { return townyLifecycleListener; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
