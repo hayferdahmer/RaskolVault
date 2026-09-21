@@ -2,6 +2,7 @@
 package dev.raskol.vault;
 
 import dev.raskol.vault.api.currency.CurrencyRegistry;
+import dev.raskol.vault.arbitrage.ArbitrageSimulator;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.config.MessagesConfig;
@@ -9,7 +10,6 @@ import dev.raskol.vault.confirm.ConfirmManager;
 import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
-import dev.raskol.vault.gui.GuiListener;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
@@ -42,9 +42,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX.
- * 1.1.0-c: GUI «Кошелёк» (WalletGui + GuiListener).
- * Fix: SparkHook импортируется из dev.raskol.vault.observability (фактический пакет класса).
+ * RaskolVault 1.1.1 — резерв в таблице reserves, конверты через резерв, GUI на след. тик.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -62,6 +60,7 @@ public final class RaskolVault extends JavaPlugin {
     private WalletService wallets;
     private RatesService rates;
     private ExchangeService exchange;
+    private ConvertEngine convertEngine;
     private ConfirmManager confirms;
     private RaskolCoreHook coreHook;
     private TownyHook townyHook;
@@ -71,11 +70,9 @@ public final class RaskolVault extends JavaPlugin {
     private LoadSimulator loadSimulator;
     private BukkitTask checkpointTask;
     private BukkitTask inflationTask;
-    private BukkitTask txCounterTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
     private ReserveBank reserveBank;
-    private ConvertEngine convertEngine;
     private RateLimiter rateLimiter;
     private TxCounter txCounter;
     private InflationCheckpoint inflationCheckpoint;
@@ -131,6 +128,9 @@ public final class RaskolVault extends JavaPlugin {
         rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
         rates.load(new File(getDataFolder(), getConfig().getString("exchange.rates-file", "rates.yml")));
 
+        // 1.1.1: ReserveBank получает ledger (резерв живёт в таблице reserves)
+        reserveBank = new ReserveBank(this, wallets, currencies, ledger);
+        convertEngine = new ConvertEngine(this, wallets, currencies, reserveBank);
         exchange = new ExchangeService(this, wallets, currencies, rates);
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
 
@@ -141,24 +141,15 @@ public final class RaskolVault extends JavaPlugin {
 
         treasury = new NationTreasury(wallets);
 
-        reserveBank = new ReserveBank(this, wallets, currencies);
-        convertEngine = new ConvertEngine(this, wallets, currencies, reserveBank);
         rateLimiter = new RateLimiter(
                 getConfig().getDouble("safety.rate-limit.capacity", 5.0D),
                 getConfig().getDouble("safety.rate-limit.refill-per-second", 0.5D));
         txCounter = new TxCounter(ledger);
-        txCounterTask = getServer().getScheduler().runTaskTimerAsynchronously(this, txCounter, 100L, 100L);
         inflationCheckpoint = new InflationCheckpoint(this, reserveBank, currencies, townyHook);
-        long inflationMinutes = getConfig().getLong("reserve.check-interval-minutes", 60L);
-        inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this,
-                inflationCheckpoint, 60L * 20L, inflationMinutes * 60L * 20L);
 
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
         getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
-
-        // 1.1.0-c: GUI кошелька
-        getServer().getPluginManager().registerEvents(new GuiListener(this), this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
@@ -199,6 +190,13 @@ public final class RaskolVault extends JavaPlugin {
             }, periodTicks, periodTicks);
         }
 
+        long inflationMinutes = getConfig().getLong("reserve.check-interval-minutes", 60L);
+        if (inflationMinutes > 0) {
+            long periodTicks = inflationMinutes * 60L * 20L;
+            inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this,
+                    inflationCheckpoint, periodTicks, periodTicks);
+        }
+
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
 
         convertSubcommand = new ConvertSubcommand(this);
@@ -223,10 +221,6 @@ public final class RaskolVault extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (txCounterTask != null) {
-            txCounterTask.cancel();
-            txCounterTask = null;
-        }
         if (inflationTask != null) {
             inflationTask.cancel();
             inflationTask = null;
@@ -296,6 +290,7 @@ public final class RaskolVault extends JavaPlugin {
     public WalletService getWallets() { return wallets; }
     public RatesService getRates() { return rates; }
     public ExchangeService getExchange() { return exchange; }
+    public ConvertEngine getConvertEngine() { return convertEngine; }
     public ConfirmManager getConfirms() { return confirms; }
     public RaskolCoreHook getCoreHook() { return coreHook; }
     public TownyHook getTownyHook() { return townyHook; }
@@ -306,7 +301,6 @@ public final class RaskolVault extends JavaPlugin {
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public SparkHook getSparkHook() { return sparkHook; }
     public ReserveBank getReserveBank() { return reserveBank; }
-    public ConvertEngine getConvertEngine() { return convertEngine; }
     public RateLimiter getRateLimiter() { return rateLimiter; }
     public TxCounter getTxCounter() { return txCounter; }
     public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
