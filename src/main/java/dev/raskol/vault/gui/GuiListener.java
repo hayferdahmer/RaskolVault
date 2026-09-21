@@ -3,12 +3,16 @@ package dev.raskol.vault.gui;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.api.currency.CurrencyType;
+import dev.raskol.vault.reserve.ReserveBank;
+import dev.raskol.vault.util.Formatter;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 
 import java.util.ArrayList;
@@ -17,8 +21,10 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Обработчик кликов GUI «Кошелёк» + захват чата (фикс 1.1.0.1):
- * клик по иконке валюты на главной = быстрый старт конверта ИЗ этой валюты.
+ * Обработчик GUI «Кошелёк» (1.1.0.2):
+ * - InventoryDragEvent отменяется (предметы больше нельзя вытащить перетаскиванием);
+ * - действия кабинета дают явную обратную связь (успех/отказ с причиной);
+ * - добавлена страница советника.
  */
 public final class GuiListener implements Listener {
 
@@ -54,7 +60,20 @@ public final class GuiListener implements Listener {
             }
             case HISTORY -> onHistory(player, holder, slot);
             case CABINET -> onCabinet(player, slot);
+            case ADVISOR -> {
+                if (slot == 49) {
+                    WalletGui.openCabinet(plugin, player);
+                }
+            }
             case CODEX -> onCodex(player, holder, slot);
+        }
+    }
+
+    /** ФИКС 1.1.0.2: перетаскивание предметов из GUI запрещено. */
+    @EventHandler
+    public void onDrag(InventoryDragEvent event) {
+        if (event.getInventory().getHolder() instanceof WalletGuiHolder) {
+            event.setCancelled(true);
         }
     }
 
@@ -181,7 +200,7 @@ public final class GuiListener implements Listener {
         Currency to = plugin.getCurrencies().get(q.toId()).orElse(null);
         player.sendMessage(plugin.getMessages().prefix()
                 + plugin.getMessages().get("convert.done", Map.of(
-                "amount", dev.raskol.vault.util.Formatter.withSymbol(q.net(),
+                "amount", Formatter.withSymbol(q.net(),
                         to == null ? 2 : to.decimals(),
                         to == null ? q.toId() : to.symbol()))));
         WalletGui.openMain(plugin, player);
@@ -207,42 +226,67 @@ public final class GuiListener implements Listener {
             player.closeInventory();
             return;
         }
-        var bank = plugin.getReserveBank();
+        ReserveBank bank = plugin.getReserveBank();
         Currency national = null;
         for (Currency c : plugin.getCurrencies().all()) {
-            if (c.type() == dev.raskol.vault.api.currency.CurrencyType.NATIONAL
-                    && nation.equalsIgnoreCase(c.nationId())) {
+            if (c.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(c.nationId())) {
                 national = c;
             }
         }
+        boolean refresh = true;
         switch (slot) {
-            case 19 -> bank.setParity(nation, Math.round((bank.parityOf(nation) - 0.10D) * 100.0D) / 100.0D);
-            case 21 -> bank.setParity(nation, Math.round((bank.parityOf(nation) + 0.10D) * 100.0D) / 100.0D);
-            case 23 -> bank.setTax(nation, Math.round((bank.taxOf(nation) - 0.005D) * 1000.0D) / 1000.0D);
-            case 25 -> bank.setTax(nation, Math.round((bank.taxOf(nation) + 0.005D) * 1000.0D) / 1000.0D);
-            case 29 -> bank.depositToReserve(player.getUniqueId(), nation, 100.0D, "gui");
-            case 30 -> bank.depositToReserve(player.getUniqueId(), nation, 1000.0D, "gui");
-            case 31 -> bank.withdrawFromReserve(player.getUniqueId(), nation, 100.0D, "gui");
-            case 32 -> bank.withdrawFromReserve(player.getUniqueId(), nation, 1000.0D, "gui");
+            case 19 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) - 0.10D)),
+                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 0.50");
+            case 21 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) + 0.10D)),
+                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 2.00");
+            case 23 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) - 0.005D)),
+                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 0%");
+            case 25 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) + 0.005D)),
+                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 5%");
+            case 29 -> feedback(player, bank.depositToReserve(player.getUniqueId(), nation, 100.0D, "gui"),
+                    "Внесено 100 GLD в резерв (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
+                    "недостаточно личного золота");
+            case 30 -> feedback(player, bank.depositToReserve(player.getUniqueId(), nation, 1000.0D, "gui"),
+                    "Внесено 1000 GLD в резерв (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
+                    "недостаточно личного золота");
+            case 31 -> feedback(player, bank.withdrawFromReserve(player.getUniqueId(), nation, 100.0D, "gui"),
+                    "Выведено 100 GLD из резерва (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
+                    "лимит 25% резерва в сутки или резерв пуст");
+            case 32 -> feedback(player, bank.withdrawFromReserve(player.getUniqueId(), nation, 1000.0D, "gui"),
+                    "Выведено 1000 GLD из резерва (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
+                    "лимит 25% резерва в сутки или резерв пуст");
             case 33 -> {
-                if (national != null && bank.canMint(nation, national.id(), 100.0D)) {
-                    plugin.getTreasury().deposit(nation, national.id(), 100.0D, "gui-mint");
+                if (national == null) {
+                    feedback(player, false, "Минт невозможен: нет национальной валюты", "создай валюту нации");
+                } else if (!bank.canMint(nation, national.id(), 100.0D)) {
+                    feedback(player, false, "Минт отклонён: лимит покрытия",
+                            "лимит: " + Formatter.amount(bank.maxMint(nation, national.id()), 2) + " — пополняй резерв");
+                } else {
+                    feedback(player, plugin.getTreasury().deposit(nation, national.id(), 100.0D, "gui-mint"),
+                            "Минт 100 " + national.id() + " в казну", "казна недоступна");
                 }
             }
             case 34 -> {
-                if (national != null) {
-                    plugin.getTreasury().withdraw(nation, national.id(), 100.0D, "gui-burn");
+                if (national == null) {
+                    feedback(player, false, "Бёрн невозможен: нет национальной валюты", "создай валюту нации");
+                } else {
+                    feedback(player, plugin.getTreasury().withdraw(nation, national.id(), 100.0D, "gui-burn"),
+                            "Бёрн 100 " + national.id() + " из казны", "в казне меньше 100");
                 }
+            }
+            case 40 -> {
+                WalletGui.openAdvisor(plugin, player);
+                refresh = false;
             }
             case 49 -> {
                 WalletGui.openMain(plugin, player);
-                return;
+                refresh = false;
             }
-            default -> {
-                return;
-            }
+            default -> refresh = false;
         }
-        WalletGui.openCabinet(plugin, player);
+        if (refresh) {
+            WalletGui.openCabinet(plugin, player);
+        }
     }
 
     private void onCodex(Player player, WalletGuiHolder holder, int slot) {
@@ -253,6 +297,11 @@ public final class GuiListener implements Listener {
         } else if (slot == 22) {
             player.closeInventory();
         }
+    }
+
+    private void feedback(Player player, boolean ok, String success, String failReason) {
+        player.sendMessage(plugin.getMessages().prefix()
+                + (ok ? "&a✔ " + success : "&c✖ Отказ: " + failReason));
     }
 
     private List<Currency> tradeable() {
@@ -280,5 +329,13 @@ public final class GuiListener implements Listener {
             return -1;
         }
         return (slot - 10) / 2;
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100.0D) / 100.0D;
+    }
+
+    private static double round4(double v) {
+        return Math.round(v * 10000.0D) / 10000.0D;
     }
 }
