@@ -1,4 +1,4 @@
-# RaskolVault 1.1.3 — многовалютный экономический слой поверх EssentialsX
+# RaskolVault 1.1.5 — многовалютный экономический слой поверх EssentialsX
 
 general:
   debug: false
@@ -28,7 +28,12 @@ hooks:
     enabled: true
   towny:
     enabled: true
-    auto-create-national: true
+    auto-create-national: true       # при создании нации создавать валюту автоматически
+    auto-currency:
+      enabled: true                  # авто-генерация ID валюты из имени нации (первые 3 буквы)
+    # nation-currency:              # ЯВНЫЙ МАППИНГ (опционально, если нужны стабильные ID):
+      # Валрадис: VLR               #   nation-name: CURRENCY_ID
+      # Орда: ORD
   luckperms:
     enabled: true
   raskolcore:
@@ -51,10 +56,10 @@ reserve:
     interval-minutes: 10080
 
 safety:
-  rate-limit:            # конверты
+  rate-limit:
     capacity: 5.0
     refill-per-second: 0.5
-  pay-rate-limit:        # 1.1.3: переводы
+  pay-rate-limit:
     capacity: 5.0
     refill-per-second: 0.5
 
@@ -66,7 +71,7 @@ storage:
     borrow-timeout-ms: 5000
     checkpoint-interval-minutes: 5
     writer-queue-cap: 10000
-  reconcile-interval-minutes: 30   # 1.1.3: сверка кэш↔леджер
+  reconcile-interval-minutes: 30
   yaml-backup:
     enabled: true
     file: data/balances.yml
