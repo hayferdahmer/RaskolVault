@@ -4,8 +4,6 @@ package dev.raskol.vault.gui;
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyType;
-import dev.raskol.vault.api.transaction.Transaction;
-import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.util.Formatter;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -15,22 +13,17 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * GUI «Кошелёк» (1.1.0.2): строгая тема, кабинет правителя с обратной связью
- * и страницей «Экономический советник».
+ * GUI «Кошелёк» (1.1.2): кошелёк БЕЗ кабинета и кодекса (только валюты + конверт/курсы/история).
+ * Кабинет правителя: рычаги + внизу книги по механике валюты (открывают кодекс).
  */
 public final class WalletGui {
 
-    public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>();
+    public static final java.util.Map<java.util.UUID, String[]> CHAT_CAPTURE = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final String TITLE_MAIN = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Кошелёк &8▌");
     private static final String TITLE_FROM = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Конверт: из &8▌");
@@ -41,53 +34,50 @@ public final class WalletGui {
     private static final String TITLE_HISTORY = ChatColor.translateAlternateColorCodes('&', "&8▌&6 История &8▌");
     private static final String TITLE_CABINET = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Кабинет правителя &8▌");
     private static final String TITLE_CODEX = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Кодекс правителя &8▌");
-    private static final String TITLE_ADVISOR = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Экономический советник &8▌");
 
     private static final ItemStack PANE = item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of());
 
+    /** Страницы кодекса: механика валюты простыми словами. */
     public static final List<String[]> CODEX_PAGES = List.of(
             new String[]{
                     "&6I. Резерв и покрытие",
-                    "&7Национальная валюта обеспечена золотом резерва.",
-                    "&7Цена = min(паритет, резерв / эмиссия).",
+                    "&7Резерв — золото нации, внесённое депозитом.",
                     "&7Покрытие = резерв / (эмиссия × паритет).",
-                    "&7Печатать деньги без золота = цена падает.",
-                    "&7Держи покрытие ≥ 100% — валюта торгуется по паритету."
+                    "&7≥100% = валюта полностью обеспечена.",
+                    "&7<100% = валюта обеспечена частично → дешевеет.",
+                    "&717500% = переобеспечение: цена = паритет, минт-лимит большой."
             },
             new String[]{
-                    "&6II. Паритет и налог",
-                    "&7Паритет — официальный курс твоей валюты к золоту.",
-                    "&7Границы: 0.50 … 2.00 (шаг 0.10 в кабинете).",
-                    "&7Налог конвертации В твою валюту: 0 … 5% (шаг 0.5%).",
-                    "&7Налог уходит в казну твоей нации — это её доход."
+                    "&6II. Паритет и цена",
+                    "&7Паритет = объявленный курс нации к золоту.",
+                    "&7Это ПОТОЛОК цены, не пол.",
+                    "&7Цена = min(паритет, резерв/эмиссия).",
+                    "&7Границы паритета 0.50…2.00 — чтобы король",
+                    "&7не мог устроить гипер-ревальвацию одним кликом."
             },
             new String[]{
-                    "&6III. Интервенции",
-                    "&7Депозит: твоё личное золото → резерв нации (курс крепнет).",
-                    "&7Вывод: резерв → твоё личное золото (курс слабеет).",
-                    "&7Лимит вывода: 25% резерва в сутки.",
-                    "&7Минт ограничен: (эмиссия+X) × паритет × 0.5 ≤ резерв."
+                    "&6III. Покрытие и девальвация",
+                    "&7Покрытие ≥100% → цена = паритет (стабильно).",
+                    "&7Покрытие <100% → цена = резерв/эмиссия (дешевеет).",
+                    "&7Вернул резерв ≥100% → цена вернулась к паритету",
+                    "&7автоматически (ре-вальвация, broadcast нации).",
+                    "&7Кризис = покрытие < пола (0.5) → broadcast."
             },
             new String[]{
-                    "&6IV. Конвертация",
-                    "&7Курс A→B = цена(A) / цена(B).",
-                    "&7Комиссия = база (сжигается) + налог нации-цели.",
-                    "&7Налог уходит в казну нации, чью валюту покупаешь.",
-                    "&7Конверт в GLD: весь налог сжигается (сток инфляции)."
+                    "&6IV. Налог и конвертация",
+                    "&7Конверт A→B идёт через резерв нации A.",
+                    "&7Резерв A отдаёт золото, резерв B его принимает.",
+                    "&7Налог конвертации В валюту B идёт в казну B.",
+                    "&7Границы налога 0…5% (рычаг короля B).",
+                    "&7Если резерв A исчерпан — конверт закрыт."
             },
             new String[]{
-                    "&6V. Кризис",
-                    "&7Покрытие < 50% → цена падает до резерв/эмиссия.",
-                    "&7Жители нации получают предупреждение.",
-                    "&7Лечится депозитом золота в резерв или сжиганием эмиссии."
-            },
-            new String[]{
-                    "&6VI. Команды правителя",
-                    "&7/rv bank info — резерв, покрытие, цена, лимиты",
-                    "&7/rv bank deposit|withdraw <сумма> — интервенции",
-                    "&7/rv bank parity|tax <значение> — регулирование",
-                    "&7/rv admin mint|burn <валюта> <сумма> — эмиссия",
-                    "&7/rv admin audit <ник> — разбор движений"
+                    "&6V. Кризис и команды",
+                    "&7Кризис = резерв исчерпан → конверты закрыты.",
+                    "&7Лечится депозитом золота в резерв.",
+                    "&7Команды: /rv bank info|deposit|withdraw|parity|tax",
+                    "&7Админ: /rv admin mint|burn|reserve set|add",
+                    "&7Минт облагается сеньоражем (burn в никуда)."
             }
     );
 
@@ -110,18 +100,9 @@ public final class WalletGui {
                             "&7Нажми для конвертации")));
             slot += 2;
         }
-        inv.setItem(19, item(Material.GRAY_STAINED_GLASS_PANE, "&8|", List.of()));
         inv.setItem(29, item(Material.EMERALD, "&aКонверт", List.of("&7Обменять одну валюту на другую")));
         inv.setItem(31, item(Material.MAP, "&6Курсы", List.of("&7Матрица курсов и комиссий")));
         inv.setItem(33, item(Material.CLOCK, "&bИстория", List.of("&7Твои последние транзакции")));
-        if (isKing(plugin, player)) {
-            inv.setItem(35, item(Material.GOLDEN_CHESTPLATE, "&6Кабинет правителя",
-                    List.of("&7Резерв, паритет, налог, интервенции", "&7Нажми для управления")));
-        } else {
-            inv.setItem(35, item(Material.GRAY_STAINED_GLASS_PANE, "&8Кабинет правителя",
-                    List.of("&7Доступно только королю нации")));
-        }
-        inv.setItem(40, item(Material.WRITABLE_BOOK, "&6Кодекс правителя", List.of("&7Инструкции по управлению валютой")));
         inv.setItem(49, item(Material.BARRIER, "&cЗакрыть", List.of()));
         player.openInventory(inv);
     }
@@ -188,15 +169,13 @@ public final class WalletGui {
             return;
         }
         var q = quote.get();
-        List<String> lore = new ArrayList<>();
-        lore.add("&7Отдаёшь: &c" + Formatter.amount(q.amount(), 2) + " " + q.fromId());
-        lore.add("&7Получаешь: &a" + Formatter.amount(q.net(), 2) + " " + q.toId());
-        lore.add("&7Курс: &f" + String.format(Locale.ROOT, "%.4f", q.rate()));
-        lore.add("&7База (сжигается): &f" + Formatter.amount(q.feeBase(), 2) + " " + q.fromId());
-        if (q.taxNation() != null && q.feeTax() > 0.0D) {
-            lore.add("&7Налог " + q.taxNation() + ": &f" + Formatter.amount(q.taxInTo(), 2) + " " + q.toId());
-        }
-        inv.setItem(13, item(Material.GOLD_NUGGET, "&6Сводка конверта", lore));
+        Currency from = plugin.getCurrencies().get(fromId).orElse(null);
+        Currency to = plugin.getCurrencies().get(toId).orElse(null);
+        inv.setItem(13, item(Material.GOLD_NUGGET, "&6Сводка конверта", List.of(
+                "&7Отдаёшь: &c" + fmtSym(q.amount(), from, fromId),
+                "&7Получаешь: &a" + fmtSym(q.net(), to, toId),
+                "&7Курс: &f" + String.format(Locale.ROOT, "%.4f", q.rate()),
+                "&7Комиссия: &f" + fmtSym(q.feeBase() + q.feeTax(), from, fromId))));
         inv.setItem(11, item(Material.RED_CONCRETE, "&cОтмена", List.of()));
         inv.setItem(15, item(Material.LIME_CONCRETE, "&aПодтвердить", List.of("&7Курс фиксируется в момент клика")));
         player.openInventory(inv);
@@ -213,12 +192,9 @@ public final class WalletGui {
                 if (a.id().equals(b.id()) || i >= slots.length) {
                     continue;
                 }
-                double rate = plugin.getConvertEngine().rate(a.id(), b.id());
-                double tax = b.type() == CurrencyType.NATIONAL && b.nationId() != null
-                        ? plugin.getReserveBank().taxOf(b.nationId()) : 0.0D;
+                double r = plugin.getConvertEngine().rate(a.id(), b.id());
                 inv.setItem(slots[i], item(Material.PAPER, "&6" + a.id() + " → " + b.id(),
-                        List.of("&7Курс: &f" + String.format(Locale.ROOT, "%.4f", rate),
-                                "&7База: &f2.0% &7+ налог: &f" + String.format(Locale.ROOT, "%.1f%%", tax * 100.0D))));
+                        List.of("&7Курс: &f" + String.format(Locale.ROOT, "%.4f", r))));
                 i++;
             }
         }
@@ -229,7 +205,7 @@ public final class WalletGui {
     public static void openHistory(RaskolVault plugin, Player player, int page) {
         WalletGuiHolder holder = WalletGuiHolder.ofPage(player.getUniqueId(), WalletGuiHolder.Page.HISTORY, page);
         Inventory inv = Bukkit.createInventory(holder, 54, TITLE_HISTORY);
-        List<Transaction> all;
+        List<dev.raskol.vault.api.transaction.Transaction> all;
         try {
             all = plugin.getLedger().queryTransactions(player.getUniqueId(), 200);
         } catch (Exception e) {
@@ -237,18 +213,18 @@ public final class WalletGui {
         }
         int perPage = 45;
         int from = page * perPage;
-        SimpleDateFormat fmt = new SimpleDateFormat("MM-dd HH:mm");
+        java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("MM-dd HH:mm");
         for (int i = 0; i < perPage; i++) {
             int idx = from + i;
             if (idx >= all.size()) {
                 break;
             }
-            Transaction tx = all.get(idx);
+            var tx = all.get(idx);
             boolean incoming = tx.to() != null && tx.to().equals(player.getUniqueId());
             String sign = incoming ? "&a+" : "&c-";
             inv.setItem(i, item(Material.PAPER,
                     sign + Formatter.amount(tx.amount(), 2) + " " + tx.currencyId(),
-                    List.of("&7" + fmt.format(new Date(tx.timestampMillis())),
+                    List.of("&7" + fmt.format(new java.util.Date(tx.timestampMillis())),
                             "&7" + tx.type(),
                             "&7" + tx.reason())));
         }
@@ -273,7 +249,7 @@ public final class WalletGui {
         WalletGuiHolder holder = WalletGuiHolder.of(player.getUniqueId(), WalletGuiHolder.Page.CABINET);
         Inventory inv = Bukkit.createInventory(holder, 54, TITLE_CABINET);
         border(inv);
-        ReserveBank bank = plugin.getReserveBank();
+        var bank = plugin.getReserveBank();
         Currency national = nationalOf(plugin, nation);
         double reserve = bank.reserveOf(nation);
         double coverage = national == null ? 1.0D : bank.coverageOf(nation, national.id());
@@ -283,7 +259,7 @@ public final class WalletGui {
 
         inv.setItem(10, item(Material.GOLD_BLOCK, "&6Резерв",
                 List.of("&f" + Formatter.amount(reserve, 2) + " GLD",
-                        "&7Твоё личное золото, внесённое депозитом")));
+                        "&7Золото нации, внесённое депозитом")));
         inv.setItem(13, item(coverage >= 1.0D ? Material.LIME_CONCRETE : (coverage >= bank.coverageFloor() ? Material.YELLOW_CONCRETE : Material.RED_CONCRETE),
                 "&6Покрытие",
                 List.of("&f" + String.format(Locale.ROOT, "%.1f%%", coverage * 100.0D),
@@ -309,34 +285,17 @@ public final class WalletGui {
         inv.setItem(32, item(Material.GOLD_BLOCK, "&cВывод 1000 GLD",
                 List.of("&7Резерв → личное золото", "&7Лимит 25% резерва в сутки")));
         inv.setItem(33, item(Material.SUNFLOWER, "&aМинт 100",
-                List.of("&7Эмиссия в казну", "&7Лимит: &f" + Formatter.amount(national == null ? 0 : bank.maxMint(nation, national.id()), 2))));
+                List.of("&7Эмиссия в казну (минус сеньораж)",
+                        "&7Лимит: &f" + Formatter.amount(national == null ? 0 : bank.maxMint(nation, national.id()), 2))));
         inv.setItem(34, item(Material.WITHER_ROSE, "&cБёрн 100",
                 List.of("&7Сжечь эмиссию из казны", "&7Курс крепнет")));
 
-        inv.setItem(40, item(Material.WRITABLE_BOOK, "&6Экономический советник",
-                List.of("&7Прогнозы: что будет, если изменить", "&7резерв / паритет / налог", "&7Нажми, чтобы открыть")));
-        inv.setItem(49, item(Material.ARROW, "&7Назад", List.of()));
-        player.openInventory(inv);
-    }
-
-    public static void openAdvisor(RaskolVault plugin, Player player) {
-        if (!isKing(plugin, player)) {
-            return;
-        }
-        String nation = plugin.getTownyHook().nationOf(player.getUniqueId());
-        if (nation == null) {
-            return;
-        }
-        WalletGuiHolder holder = WalletGuiHolder.of(player.getUniqueId(), WalletGuiHolder.Page.ADVISOR);
-        Inventory inv = Bukkit.createInventory(holder, 54, TITLE_ADVISOR);
-        border(inv);
-        List<ReserveBank.Advice> advice = plugin.getReserveBank().advise(nation);
-        int[] slots = {10, 12, 14, 19, 21, 23};
-        for (int i = 0; i < advice.size() && i < slots.length; i++) {
-            ReserveBank.Advice a = advice.get(i);
-            inv.setItem(slots[i], item(Material.PAPER, a.title(), a.lore()));
-        }
-        inv.setItem(49, item(Material.ARROW, "&7Назад в кабинет", List.of()));
+        // Книги по механике валюты (внизу кабинета)
+        inv.setItem(45, item(Material.BOOK, "&6Резерв и покрытие", List.of("&7Открыть кодекс, стр. 1")));
+        inv.setItem(46, item(Material.BOOK, "&6Паритет и цена", List.of("&7Открыть кодекс, стр. 2")));
+        inv.setItem(47, item(Material.BOOK, "&6Налог и конвертация", List.of("&7Открыть кодекс, стр. 4")));
+        inv.setItem(48, item(Material.BOOK, "&6Кризис и команды", List.of("&7Открыть кодекс, стр. 5")));
+        inv.setItem(53, item(Material.ARROW, "&7Назад", List.of()));
         player.openInventory(inv);
     }
 
@@ -374,12 +333,19 @@ public final class WalletGui {
     }
 
     private static Currency nationalOf(RaskolVault plugin, String nation) {
-        for (Currency c : plugin.getCurrencies().all()) {
-            if (c.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(c.nationId())) {
-                return c;
+        for (Currency cur : plugin.getCurrencies().all()) {
+            if (cur.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(cur.nationId())) {
+                return cur;
             }
         }
         return null;
+    }
+
+    private static String fmtSym(double value, Currency cur, String fallback) {
+        if (cur == null) {
+            return Formatter.amount(value, 2) + " " + fallback;
+        }
+        return Formatter.withSymbol(value, cur.decimals(), cur.symbol());
     }
 
     public static Material iconOf(String currencyId) {
