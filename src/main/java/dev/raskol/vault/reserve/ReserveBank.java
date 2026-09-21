@@ -16,10 +16,8 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * Валютный совет (1.1.1): резерв живёт в таблице reserves леджера, НЕ в Essentials.
- * Депозит: списание GLD у игрока через Essentials → кредит строки резерва (компенсация при сбое).
- * Вывод: дебет резерва → начисление GLD игроку (компенсация при сбое).
- * Конверты национальных валют проходят через резерв (ConvertEngine) — печать GLD закрыта.
+ * Валютный совет (1.1.2): резерв в таблице reserves; минт облагается сеньоражем
+ * (часть эмиссии сжигается в никуда = антиинфляционный sink).
  */
 public final class ReserveBank {
 
@@ -39,10 +37,14 @@ public final class ReserveBank {
         this.ledger = ledger;
     }
 
-    /** Детерминированный UUID резерва нации (для аудита транзакций). */
     public static UUID reserveUuid(String nation) {
         return UUID.nameUUIDFromBytes(
                 ("reserve:" + nation.toLowerCase(Locale.ROOT)).getBytes(StandardCharsets.UTF_8));
+    }
+
+    public static UUID treasuryUuid(String nation) {
+        return UUID.nameUUIDFromBytes(
+                ("treasury:" + nation.toLowerCase(Locale.ROOT)).getBytes(StandardCharsets.UTF_8));
     }
 
     public double reserveOf(String nation) {
@@ -61,7 +63,6 @@ public final class ReserveBank {
         ledger.reserveSet(nation, amount);
     }
 
-    /** Депозит личного золота игрока в резерв нации. */
     public boolean depositToReserve(UUID player, String nation, double amount, String reason) {
         if (!(amount > 0.0D)) {
             return false;
@@ -80,7 +81,6 @@ public final class ReserveBank {
         return true;
     }
 
-    /** Вывод золота из резерва нации в личное золото игрока (суточный лимит). */
     public boolean withdrawFromReserve(UUID player, String nation, double amount, String reason) {
         if (!(amount > 0.0D) || amount > dailyWithdrawLimit(nation) + 1.0E-9D) {
             return false;
@@ -94,6 +94,36 @@ public final class ReserveBank {
             return false;
         }
         return true;
+    }
+
+    /** Минт с сеньоражем: в казну идёт amount*(1-seigniorage), сеньораж сжигается в никуда. */
+    public boolean mintToTreasury(String nation, Currency currency, double amount) {
+        if (!(amount > 0.0D) || !canMint(nation, currency.id(), amount)) {
+            return false;
+        }
+        double seigniorage = seigniorageRate();
+        double fee = round2dec(amount * seigniorage, currency);
+        double net = round2dec(amount - fee, currency);
+        UUID treasury = treasuryUuid(nation);
+        if (!wallets.deposit(treasury, currency.id(), net, TransactionType.MINT, "mint:" + nation)) {
+            return false;
+        }
+        if (fee > 0.0D) {
+            wallets.withdraw(treasury, currency.id(), fee, TransactionType.BURN, "seigniorage:" + nation);
+        }
+        return true;
+    }
+
+    public boolean burnFromTreasury(String nation, Currency currency, double amount) {
+        if (!(amount > 0.0D)) {
+            return false;
+        }
+        return wallets.withdraw(treasuryUuid(nation), currency.id(), amount,
+                TransactionType.BURN, "burn:" + nation);
+    }
+
+    public double seigniorageRate() {
+        return plugin.getConfig().getDouble("reserve.seigniorage", 0.02D);
     }
 
     public double supplyOf(String currencyId) {
@@ -179,121 +209,10 @@ public final class ReserveBank {
         return reserveOf(nation) * plugin.getConfig().getDouble("reserve.withdraw-daily-share", 0.25D);
     }
 
-    // ---------- ЭКОНОМИЧЕСКИЙ СОВЕТНИК ----------
-
-    public List<Advice> advise(String nation) {
-        List<Advice> out = new ArrayList<>();
-        Currency national = nationalOf(nation);
-        if (national == null) {
-            out.add(new Advice("&cНет национальной валюты",
-                    List.of("&7Создай её: /rv admin currency create", "&7или дождись авто-создания")));
-            return out;
-        }
-        double R = reserveOf(nation);
-        double S = supplyOf(national.id());
-        double P = parityOf(nation);
-        double T = taxOf(nation);
-        double price = priceAt(R, S, P);
-        double cov = S <= 0.0D ? 1.0D : R / (S * P);
-
-        double R2 = R + 1000.0D;
-        out.add(adviceReserve("&6Депозит +1000 GLD", R, R2, S, P, cov, true));
-
-        double amt = Math.min(1000.0D, R);
-        if (R <= 0.0D) {
-            out.add(new Advice("&cВывод −1000 GLD",
-                    List.of("&7Резерв пуст — выводить нечего.", "&7Сначала внеси золото депозитом.")));
-        } else {
-            out.add(adviceReserve("&cВывод −" + fmt0(amt) + " GLD", R, R - amt, S, P, cov, false));
-        }
-
-        double P2 = Math.min(parityMax(), round2(P + 0.10D));
-        out.add(adviceParity("&6Паритет → " + fmt2(P2), P2, R, S, P, cov));
-
-        double P3 = Math.max(parityMin(), round2(P - 0.10D));
-        out.add(adviceParity("&cПаритет → " + fmt2(P3), P3, R, S, P, cov));
-
-        double T2 = Math.min(taxMax(), round4(T + 0.005D));
-        out.add(adviceTax("&6Налог → " + fmtPct(T2), T2, price, T));
-
-        double T3 = Math.max(0.0D, round4(T - 0.005D));
-        out.add(adviceTax("&cНалог → " + fmtPct(T3), T3, price, T));
-
-        return out;
-    }
-
-    private Advice adviceReserve(String title, double R, double R2, double S, double P, double cov, boolean deposit) {
-        double price1 = priceAt(R, S, P);
-        double price2 = priceAt(R2, S, P);
-        double cov2 = S <= 0.0D ? 1.0D : R2 / (S * P);
-        List<String> lore = new ArrayList<>();
-        lore.add("&7Резерв: &f" + fmt0(R) + " → " + fmt0(R2) + " GLD");
-        lore.add("&7Покрытие: " + covColor(cov) + fmtPct(cov) + " → " + covColor(cov2) + fmtPct(cov2));
-        lore.add("&7Цена: &f" + fmt4(price1) + " → " + (price2 > price1 ? "&a" : (price2 < price1 ? "&c" : "&7")) + fmt4(price2) + " GLD");
-        if (deposit) {
-            lore.add(price2 > price1 ? "&a✔ Укрепляет валюту" : "&7Цена не изменится (покрытие уже ≥ 100%)");
-        } else {
-            lore.add(cov2 < coverageFloor() ? "&c⚠ ПОКРЫТИЕ НИЖЕ ПОЛА → КРИЗИС" :
-                    (price2 < price1 ? "&c Ослабляет валюту" : "&7Цена не изменится (покрытие ≥ 100%)"));
-        }
-        lore.add("&7Применяется в кабинете (слоты 29–32)");
-        return new Advice(title, lore);
-    }
-
-    private Advice adviceParity(String title, double P2, double R, double S, double P, double cov) {
-        double price1 = priceAt(R, S, P);
-        double price2 = priceAt(R, S, P2);
-        double cov2 = S <= 0.0D ? 1.0D : R / (S * P2);
-        List<String> lore = new ArrayList<>();
-        lore.add("&7Паритет: &f" + fmt2(P) + " → " + fmt2(P2));
-        lore.add("&7Цена: &f" + fmt4(price1) + " → " + (price2 > price1 ? "&a" : (price2 < price1 ? "&c" : "&7")) + fmt4(price2) + " GLD");
-        lore.add("&7Покрытие: " + covColor(cov) + fmtPct(cov) + " → " + covColor(cov2) + fmtPct(cov2));
-        if (cov < 1.0D && Math.abs(price2 - price1) < 1.0E-9D) {
-            lore.add("&7Пока покрытие < 100%, цену держит резерв,");
-            lore.add("&7а не паритет — сначала пополняй резерв.");
-        } else {
-            lore.add(price2 > price1 ? "&a✔ Дороже для покупателей" : (price2 < price1 ? "&c⚠ Дешевле для покупателей" : "&7Без изменений"));
-        }
-        lore.add("&7Применяется в кабинете (слоты 19–25)");
-        return new Advice(title, lore);
-    }
-
-    private Advice adviceTax(String title, double T2, double price, double T) {
-        List<String> lore = new ArrayList<>();
-        lore.add("&7Налог конвертации В твою валюту:");
-        lore.add("&f" + fmtPct(T) + " → " + fmtPct(T2));
-        if (price > 0.0D) {
-            double per1kNow = 1000.0D / price * T;
-            double per1kNew = 1000.0D / price * T2;
-            lore.add("&7Казна с каждых 1000 GLD входа:");
-            lore.add("&f" + fmt2(per1kNow) + " → " + (per1kNew > per1kNow ? "&a" : (per1kNew < per1kNow ? "&c" : "&7")) + fmt2(per1kNew));
-        }
-        lore.add(T2 > T ? "&a✔ Больше дохода казны, но обмен дороже" :
-                (T2 < T ? "&c⚠ Меньше дохода казны, но обмен дешевле" : "&7Без изменений"));
-        lore.add("&7Применяется в кабинете (слоты 19–25)");
-        return new Advice(title, lore);
-    }
-
-    private Currency nationalOf(String nation) {
-        for (Currency c : currencies.all()) {
-            if (c.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(c.nationId())) {
-                return c;
-            }
-        }
-        return null;
-    }
-
-    private double priceAt(double reserve, double supply, double parity) {
-        if (supply <= 0.0D) {
-            return parity;
-        }
-        return Math.min(parity, reserve / supply);
-    }
-
-    private String covColor(double cov) {
-        if (cov >= 1.0D) return "&a";
-        if (cov >= coverageFloor()) return "&e";
-        return "&c";
+    private double round2dec(double v, Currency c) {
+        int scale = c == null ? 2 : c.decimals();
+        double factor = Math.pow(10, scale);
+        return Math.round(v * factor) / factor;
     }
 
     private static double round2(double v) {
@@ -302,21 +221,5 @@ public final class ReserveBank {
 
     private static double round4(double v) {
         return Math.round(v * 10000.0D) / 10000.0D;
-    }
-
-    private static String fmt0(double v) {
-        return String.format(Locale.ROOT, "%.0f", v);
-    }
-
-    private static String fmt2(double v) {
-        return String.format(Locale.ROOT, "%.2f", v);
-    }
-
-    private static String fmt4(double v) {
-        return String.format(Locale.ROOT, "%.4f", v);
-    }
-
-    private static String fmtPct(double v) {
-        return String.format(Locale.ROOT, "%.1f%%", v * 100.0D);
     }
 }
