@@ -10,12 +10,12 @@ softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI, sp
 commands:
   rv:
     description: 'Команды RaskolVault'
-    usage: '/rv [help|version|debug]'
+    usage: '/rv [help|wallet|version|debug]'
     aliases: [raskolvault, wallet]
 
 permissions:
   raskolvault.use:
-    description: 'Базовые команды кошелька'
+    description: 'Базовые команды кошелька и GUI'
     default: true
   raskolvault.convert:
     description: 'Обмен валют'
