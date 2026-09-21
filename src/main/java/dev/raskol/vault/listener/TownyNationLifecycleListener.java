@@ -1,26 +1,26 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.listener;
 
+import com.palmergames.bukkit.towny.event.nation.DeleteNationEvent;
+import com.palmergames.bukkit.towny.event.nation.RenameNationEvent;
+import com.palmergames.bukkit.towny.object.Nation;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.event.Event;
+import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.plugin.EventExecutor;
 import org.bukkit.plugin.Plugin;
 
 import java.io.File;
-import java.lang.reflect.Method;
 
 /**
- * Слушатель переименования/удаления наций (фикс 1.1.0.2).
- * Использует ТОЛЬКО существующие методы реестра: updateNationId / disableNationCurrencies.
- * currencies.yml перезаписывается как источник правды (на рестарте syncToLedger
- * приведёт таблицу currencies в БД к тому же состоянию).
+ * Слушатель переименования/удаления наций (1.2.0).
+ * Переименование → обновляет nation_id валют в реестре + currencies.yml.
+ * Удаление → tradeable=false для валют + сброс резерва нации в 0.
  */
 public final class TownyNationLifecycleListener implements Listener {
 
@@ -35,67 +35,50 @@ public final class TownyNationLifecycleListener implements Listener {
     }
 
     public void register() {
-        registerEvent("com.palmergames.bukkit.towny.event.nation.RenameNationEvent", this::onRename);
-        registerEvent("com.palmergames.bukkit.towny.event.nation.DeleteNationEvent", this::onDelete);
+        plugin.getServer().getPluginManager().registerEvents(this, plugin);
+        plugin.getLogger().info("RaskolVault: подписан на RenameNationEvent + DeleteNationEvent");
     }
 
-    private void registerEvent(String className, EventExecutor executor) {
-        try {
-            Class<? extends Event> eventClass = (Class<? extends Event>) Class.forName(className);
-            plugin.getServer().getPluginManager().registerEvent(
-                    eventClass, this, EventPriority.MONITOR, executor, plugin, true);
-            plugin.getLogger().info("RaskolVault: подписан на " + className);
-        } catch (ClassNotFoundException e) {
-            plugin.getLogger().warning("RaskolVault: событие " + className
-                    + " не найдено (Towny другой версии?) — авто-обновление валют отключено");
-        } catch (Exception e) {
-            plugin.getLogger().warning("RaskolVault: не удалось подписаться на " + className + ": " + e.getMessage());
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onRename(RenameNationEvent event) {
+        Nation nation = event.getNation();
+        if (nation == null) {
+            return;
         }
+        String oldName = event.getOldName();
+        String newName = nation.getName();
+        if (oldName == null || newName == null || oldName.equals(newName)) {
+            return;
+        }
+        int n = currencies.updateNationId(oldName, newName);
+        rewriteCurrenciesYml();
+        plugin.getLogger().info("RaskolVault: нация переименована '" + oldName + "' → '" + newName
+                + "', валют обновлено: " + n + " (currencies.yml перезаписан)");
     }
 
-    private void onRename(Listener listener, Event event) {
-        try {
-            Method getOldName = event.getClass().getMethod("getOldName");
-            Method getNation = event.getClass().getMethod("getNation");
-            Object nation = getNation.invoke(event);
-            if (nation == null) {
-                return;
-            }
-            Method getName = nation.getClass().getMethod("getName");
-            String oldName = (String) getOldName.invoke(event);
-            String newName = (String) getName.invoke(nation);
-            if (oldName == null || newName == null || oldName.equals(newName)) {
-                return;
-            }
-            int n = currencies.updateNationId(oldName, newName);
-            rewriteCurrenciesYml();
-            plugin.getLogger().info("RaskolVault: нация переименована '" + oldName + "' → '" + newName
-                    + "', валют обновлено: " + n + " (currencies.yml перезаписан)");
-        } catch (Exception e) {
-            plugin.getLogger().warning("RaskolVault: обработка переименования нации провалена: " + e.getMessage());
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onDelete(DeleteNationEvent event) {
+        Nation nation = event.getNation();
+        if (nation == null) {
+            return;
         }
-    }
-
-    private void onDelete(Listener listener, Event event) {
-        try {
-            Method getNation = event.getClass().getMethod("getNation");
-            Object nation = getNation.invoke(event);
-            if (nation == null) {
-                return;
-            }
-            Method getName = nation.getClass().getMethod("getName");
-            String nationName = (String) getName.invoke(nation);
-            if (nationName == null) {
-                return;
-            }
-            int n = currencies.disableNationCurrencies(nationName);
-            rewriteCurrenciesYml();
-            plugin.getLogger().warning("RaskolVault: нация '" + nationName + "' удалена: "
-                    + n + " валют(ы) помечены неторгуемыми. Балансы игроков сохранены. "
-                    + "Вернуть торговлю: /rv admin currency + tradeable в currencies.yml");
-        } catch (Exception e) {
-            plugin.getLogger().warning("RaskolVault: обработка удаления нации провалена: " + e.getMessage());
+        String nationName = nation.getName();
+        if (nationName == null) {
+            return;
         }
+        int n = currencies.disableNationCurrencies(nationName);
+        // Сбрасываем резерв нации в 0 — иначе при пересоздании нации с тем же именем
+        // новый игрок унаследует старый резерв (дыра экономики)
+        try {
+            ledger.reserveSet(nationName, 0.0D);
+        } catch (Exception e) {
+            plugin.getLogger().warning("RaskolVault: не удалось сбросить резерв нации '"
+                    + nationName + "': " + e.getMessage());
+        }
+        rewriteCurrenciesYml();
+        plugin.getLogger().warning("RaskolVault: нация '" + nationName + "' удалена: "
+                + n + " валют(ы) помечены неторгуемыми, резерв обнулён. "
+                + "Балансы игроков сохранены. Вернуть торговлю: /rv admin currency + tradeable");
     }
 
     /** Перезаписывает currencies.yml из текущего состояния реестра (источник правды). */
