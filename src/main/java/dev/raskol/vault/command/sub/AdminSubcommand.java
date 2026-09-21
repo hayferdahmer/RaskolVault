@@ -23,7 +23,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * /rv admin … (FIX 1.1.1.1): сдвиг префикса "admin" + трансляция &-кодов.
+ * /rv admin … (1.1.2): минт/бёрн через ReserveBank (минт с сеньоражем).
  */
 public final class AdminSubcommand {
 
@@ -42,7 +42,6 @@ public final class AdminSubcommand {
     }
 
     public void execute(CommandSender sender, String[] args) {
-        // FIX: RaskolVaultCommand передаёт полный массив, где args[0]="admin"
         if (args.length > 0 && args[0].equalsIgnoreCase("admin")) {
             args = Arrays.copyOfRange(args, 1, args.length);
         }
@@ -80,6 +79,60 @@ public final class AdminSubcommand {
         send(sender, "&f health · reload · backup · restore <файл> · simulate-load [игроки] [tx]");
     }
 
+    private void treasuryOp(CommandSender sender, String[] args, boolean mint) {
+        String perm = mint ? "raskolvault.admin.mint" : "raskolvault.admin.burn";
+        if (!sender.hasPermission(perm)) {
+            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        if (args.length < 3) {
+            send(sender, plugin.getMessages().prefix()
+                    + "&f/rv admin " + (mint ? "mint" : "burn") + " <валюта> <сумма>");
+            return;
+        }
+        Currency currency = plugin.getCurrencies().get(args[1]).orElse(null);
+        if (currency == null) {
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[1])));
+            return;
+        }
+        if (currency.type() != dev.raskol.vault.api.currency.CurrencyType.NATIONAL) {
+            send(sender, plugin.getMessages().prefix() + "&cТолько национальные валюты (NATIONAL)");
+            return;
+        }
+        double amount;
+        try {
+            amount = Double.parseDouble(args[2]);
+        } catch (NumberFormatException e) {
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
+            return;
+        }
+        if (!(amount > 0.0D)) {
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
+            return;
+        }
+        String nation = currency.nationId();
+        var bank = plugin.getReserveBank();
+        boolean ok = mint
+                ? bank.mintToTreasury(nation, currency, amount)
+                : bank.burnFromTreasury(nation, currency, amount);
+        if (ok && mint) {
+            double fee = amount * bank.seigniorageRate();
+            send(sender, plugin.getMessages().prefix() + "&aМинт &f"
+                    + Formatter.amount(amount, currency.decimals()) + " " + currency.id()
+                    + " &7в казну " + nation + " &7(сеньораж сожжён: &f"
+                    + Formatter.amount(fee, currency.decimals()) + "&7)");
+        } else if (ok) {
+            send(sender, plugin.getMessages().prefix() + "&aБёрн &f"
+                    + Formatter.amount(amount, currency.decimals()) + " " + currency.id()
+                    + " &7из казны " + nation);
+        } else {
+            send(sender, plugin.getMessages().prefix() + "&cОперация не прошла (лимит покрытия или недостаточно средств)");
+        }
+    }
+
     private void reserveOp(CommandSender sender, String[] args) {
         if (!sender.hasPermission("raskolvault.admin")) {
             send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
@@ -95,17 +148,20 @@ public final class AdminSubcommand {
         try {
             amount = Double.parseDouble(args[3]);
         } catch (NumberFormatException e) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
             return;
         }
         if (!Double.isFinite(amount) || amount < 0.0D) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
             return;
         }
         var bank = plugin.getReserveBank();
         if (mode.equals("set")) {
             bank.reserveSet(nation, amount);
-            send(sender, plugin.getMessages().prefix() + "&aРезерв " + nation + " установлен: " + Formatter.amount(amount, 2) + " GLD");
+            send(sender, plugin.getMessages().prefix() + "&aРезерв " + nation + " установлен: "
+                    + Formatter.amount(amount, 2) + " GLD");
         } else if (mode.equals("add")) {
             boolean ok = bank.reserveCredit(nation, amount);
             send(sender, plugin.getMessages().prefix() + (ok
@@ -161,10 +217,12 @@ public final class AdminSubcommand {
         }
         UUID uuid = resolveUuid(args[1]);
         if (uuid == null) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.player-not-found", Map.of("name", args[1])));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.player-not-found", Map.of("name", args[1])));
             return;
         }
-        send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("balance.header", Map.of("player", args[1])));
+        send(sender, plugin.getMessages().prefix()
+                + plugin.getMessages().get("balance.header", Map.of("player", args[1])));
         for (Currency cur : plugin.getCurrencies().all()) {
             double bal = plugin.getWallets().getBalance(uuid, cur.id());
             send(sender, plugin.getMessages().get("balance.line", Map.of(
@@ -175,16 +233,19 @@ public final class AdminSubcommand {
 
     private void nationInfo(CommandSender sender, String[] args) {
         if (!(sender instanceof Player player)) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.console-cannot-nation", null));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.console-cannot-nation", null));
             return;
         }
         if (!plugin.getTownyHook().isAvailable()) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.towny-unavailable", null));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.towny-unavailable", null));
             return;
         }
         String nation = plugin.getTownyHook().nationOf(player.getUniqueId());
         if (nation == null) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("nation.not-in-nation", null));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("nation.not-in-nation", null));
             return;
         }
         var bank = plugin.getReserveBank();
@@ -195,10 +256,12 @@ public final class AdminSubcommand {
                 national = cur;
             }
         }
-        send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("nation.header", Map.of("nation", nation)));
+        send(sender, plugin.getMessages().prefix()
+                + plugin.getMessages().get("nation.header", Map.of("nation", nation)));
         send(sender, "&7 Резерв: &f" + Formatter.amount(bank.reserveOf(nation), 2) + " GLD");
         if (national != null) {
-            send(sender, "&7 Покрытие: &f" + String.format(Locale.ROOT, "%.1f%%", bank.coverageOf(nation, national.id()) * 100.0D));
+            send(sender, "&7 Покрытие: &f" + String.format(Locale.ROOT, "%.1f%%",
+                    bank.coverageOf(nation, national.id()) * 100.0D));
             send(sender, "&7 Цена: &f" + String.format(Locale.ROOT, "%.4f", bank.priceOf(national)) + " GLD");
         }
         send(sender, "&7 Паритет: &f" + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation))
@@ -216,19 +279,22 @@ public final class AdminSubcommand {
         }
         UUID uuid = resolveUuid(args[1]);
         if (uuid == null) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.player-not-found", Map.of("name", args[1])));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.player-not-found", Map.of("name", args[1])));
             return;
         }
         Currency currency = plugin.getCurrencies().get(args[2]).orElse(null);
         if (currency == null) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[2])));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[2])));
             return;
         }
         double amount;
         try {
             amount = Double.parseDouble(args[3]);
         } catch (NumberFormatException e) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
             return;
         }
         String reason = args.length > 4 ? String.join(" ", Arrays.copyOfRange(args, 4, args.length)) : "admin";
@@ -255,45 +321,6 @@ public final class AdminSubcommand {
         double neu = plugin.getWallets().getBalance(uuid, currency.id());
         send(sender, plugin.getMessages().prefix() + "&a" + kind + " &f" + args[1] + ": &f"
                 + Formatter.withSymbol(neu, currency.decimals(), currency.symbol()));
-    }
-
-    private void treasuryOp(CommandSender sender, String[] args, boolean mint) {
-        String perm = mint ? "raskolvault.admin.mint" : "raskolvault.admin.burn";
-        if (!sender.hasPermission(perm)) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
-            return;
-        }
-        if (args.length < 3) {
-            send(sender, plugin.getMessages().prefix() + "&f/rv admin " + (mint ? "mint" : "burn") + " <валюта> <сумма>");
-            return;
-        }
-        Currency currency = plugin.getCurrencies().get(args[1]).orElse(null);
-        if (currency == null) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[1])));
-            return;
-        }
-        if (currency.type() != dev.raskol.vault.api.currency.CurrencyType.NATIONAL) {
-            send(sender, plugin.getMessages().prefix() + "&cТолько национальные валюты (NATIONAL)");
-            return;
-        }
-        double amount;
-        try {
-            amount = Double.parseDouble(args[2]);
-        } catch (NumberFormatException e) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
-            return;
-        }
-        if (!(amount > 0.0D)) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
-            return;
-        }
-        String reason = args.length > 3 ? String.join(" ", Arrays.copyOfRange(args, 3, args.length)) : "admin";
-        boolean ok = mint
-                ? plugin.getTreasury().deposit(currency.nationId(), currency.id(), amount, reason)
-                : plugin.getTreasury().withdraw(currency.nationId(), currency.id(), amount, reason);
-        send(sender, plugin.getMessages().prefix() + (ok
-                ? "&a" + (mint ? "mint" : "burn") + " &f" + Formatter.withSymbol(amount, currency.decimals(), currency.symbol())
-                : "&cОперация не прошла"));
     }
 
     private void simulateLoad(CommandSender sender, String[] args) {
@@ -325,7 +352,8 @@ public final class AdminSubcommand {
         }
         UUID uuid = resolveUuid(args[1]);
         if (uuid == null) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.player-not-found", Map.of("name", args[1])));
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.player-not-found", Map.of("name", args[1])));
             return;
         }
         int limit = 10;
@@ -378,7 +406,8 @@ public final class AdminSubcommand {
                 return;
             }
             Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            send(sender, plugin.getMessages().prefix() + "&aБекап: &f" + dst.getName() + " &7(WAL " + pages + " стр.)");
+            send(sender, plugin.getMessages().prefix() + "&aБекап: &f" + dst.getName()
+                    + " &7(WAL " + pages + " стр.)");
         } catch (Exception e) {
             send(sender, plugin.getMessages().prefix() + "&cБекап не удался: " + e.getMessage());
         }
@@ -390,7 +419,8 @@ public final class AdminSubcommand {
             return;
         }
         if (args.length < 2) {
-            send(sender, plugin.getMessages().prefix() + "&f/rv admin restore <файл.sqlite> &7(из plugins/RaskolVault/backups/)");
+            send(sender, plugin.getMessages().prefix()
+                    + "&f/rv admin restore <файл.sqlite> &7(из plugins/RaskolVault/backups/)");
             return;
         }
         File backupFile = new File(plugin.getDataFolder(), "backups/" + args[1]);
@@ -400,7 +430,8 @@ public final class AdminSubcommand {
         }
         send(sender, plugin.getMessages().prefix() + "&eRestore требует стопа сервера:");
         send(sender, "&7 1) /stop");
-        send(sender, "&7 2) cp plugins/RaskolVault/backups/" + args[1] + " plugins/RaskolVault/data/ledger.sqlite");
+        send(sender, "&7 2) cp plugins/RaskolVault/backups/" + args[1]
+                + " plugins/RaskolVault/data/ledger.sqlite");
         send(sender, "&7 3) start");
     }
 
