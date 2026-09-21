@@ -43,7 +43,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.1.3: + pay-rate-limit + периодическая сверка кэш↔леджер + TTL-чистки.
+ * RaskolVault 1.1.4: + uptime + алерты писателя (queue > 500 / failed > 0) +
+ * lastReconcileMillis для health.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -72,6 +73,7 @@ public final class RaskolVault extends JavaPlugin {
     private BukkitTask checkpointTask;
     private BukkitTask inflationTask;
     private BukkitTask reconcileTask;
+    private BukkitTask writerAlarmTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
     private ReserveBank reserveBank;
@@ -79,9 +81,12 @@ public final class RaskolVault extends JavaPlugin {
     private RateLimiter payLimiter;
     private TxCounter txCounter;
     private InflationCheckpoint inflationCheckpoint;
+    private long startTimeMillis;
+    private volatile long lastReconcileMillis;
 
     @Override
     public void onEnable() {
+        this.startTimeMillis = System.currentTimeMillis();
         saveDefaultConfig();
         saveResourceIfAbsent("currencies.yml");
         saveResourceIfAbsent("messages.yml");
@@ -123,6 +128,7 @@ public final class RaskolVault extends JavaPlugin {
                 + " · applied " + writer.applied() + " · failed " + writer.failed());
 
         sparkHook = new SparkHook(this);
+        getLogger().info("RaskolVault: " + sparkHook.describe());
 
         wallets = new WalletService(this, ledger, writer, currencies, essentialsHook,
                 getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000), sparkHook);
@@ -210,6 +216,7 @@ public final class RaskolVault extends JavaPlugin {
                 int healed = wallets.reconcile();
                 int evicted = confirms.evictExpired();
                 WalletGui.CHAT_CAPTURE.clear();
+                lastReconcileMillis = System.currentTimeMillis();
                 if (healed > 0) {
                     getLogger().warning("RaskolVault: сверка кэш↔леджер: вылечено расхождений: " + healed);
                 }
@@ -218,6 +225,23 @@ public final class RaskolVault extends JavaPlugin {
                 }
             }, periodTicks, periodTicks);
         }
+
+        // 1.1.4: алерт писателя (каждые 30 сек: queue > 500 → WARN, failed растёт → WARN)
+        long lastFailed = 0;
+        long[] alarmState = new long[]{lastFailed};
+        writerAlarmTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+            int queue = writer.queueSize();
+            long failed = writer.failed();
+            if (queue > 500) {
+                getLogger().warning("RaskolVault: ⚠ writer queue " + queue
+                        + " > 500 — возможно, леджер не успевает за нагрузкой");
+            }
+            if (failed > alarmState[0]) {
+                long delta = failed - alarmState[0];
+                getLogger().warning("RaskolVault: ⚠ writer failed +" + delta + " (итого " + failed + ")");
+                alarmState[0] = failed;
+            }
+        }, 600L, 600L);
 
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
 
@@ -241,6 +265,10 @@ public final class RaskolVault extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (writerAlarmTask != null) {
+            writerAlarmTask.cancel();
+            writerAlarmTask = null;
+        }
         if (reconcileTask != null) {
             reconcileTask.cancel();
             reconcileTask = null;
@@ -329,6 +357,8 @@ public final class RaskolVault extends JavaPlugin {
     public RateLimiter getPayRateLimiter() { return payLimiter; }
     public TxCounter getTxCounter() { return txCounter; }
     public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
+    public long getStartTimeMillis() { return startTimeMillis; }
+    public long getLastReconcileMillis() { return lastReconcileMillis; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
