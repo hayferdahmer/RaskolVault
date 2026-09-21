@@ -32,7 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ReserveGui implements Listener {
 
     public static final double CELL_GLD = 1000.0D;
-    public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>(); // {nation, mode}
+    public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>();
 
     public static final class Holder implements InventoryHolder {
         private final String nation;
@@ -62,13 +62,11 @@ public final class ReserveGui implements Listener {
                 ChatColor.translateAlternateColorCodes('&', "&8▌&6 Казна " + nation + " &8▌"));
         holder.inventory = inv;
 
-        // Ячейки золота: 1 блок = 1000 GLD
         int cells = (int) Math.min(27L, (long) (reserve / CELL_GLD));
         for (int i = 0; i < cells; i++) {
             inv.setItem(i, item(Material.GOLD_BLOCK, "&6Ячейка резерва",
                     List.of("&71000 GLD", "&7Всего в казне: &f" + fmt(reserve) + " GLD")));
         }
-        // Пустые ячейки — стекло
         for (int i = cells; i < 27; i++) {
             inv.setItem(i, item(Material.BLACK_STAINED_GLASS_PANE, "&8пусто", List.of()));
         }
@@ -110,7 +108,8 @@ public final class ReserveGui implements Listener {
             player.sendMessage(prefix() + "&7Введите сумму вывода в чат (GLD):");
         } else if (slot == 29) {
             player.closeInventory();
-            WalletGui.openCabinet(player);
+            // FIX: WalletGui.openCabinet требует (plugin, player)
+            WalletGui.openCabinet(plugin, player);
         }
     }
 
