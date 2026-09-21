@@ -1,11 +1,14 @@
 name: RaskolVault
-version: '1.1.5'
+version: '1.2.0-SNAPSHOT'
 main: dev.raskol.vault.RaskolVault
 api-version: '1.21'
 author: hayferdahmer
 description: 'Многовалютный экономический слой поверх EssentialsX: национальные и мировые валюты, курсы, комиссии, SQLite-аудит'
 
+# 1.2.0: порядок загрузки — RaskolVault должен стартовать ПОСЛЕ зависимостей (чтобы хуки успели инициализироваться)
+# и ДО друзей (RaskolMarket/Caravans/Charters), чтобы они увидели наш Vault-провайдер при своём старте.
 softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI, spark]
+loadbefore: [RaskolMarket, RaskolCaravans, RaskolCharters, EconomyShopGUI, ChestShop]
 
 commands:
   rv:
@@ -37,3 +40,10 @@ permissions:
       raskolvault.admin.debug: true
       raskolvault.admin.backup: true
       raskolvault.admin.health: true
+  # 1.2.0: права для плагинов-друзей
+  raskolvault.api.use:
+    description: 'Доступ к API RaskolVault для плагинов-друзей (RaskolMarket/Caravans/Charters)'
+    default: true
+  raskolvault.api.admin:
+    description: 'Админские операции через API (выдача/списание без лимитов)'
+    default: op
