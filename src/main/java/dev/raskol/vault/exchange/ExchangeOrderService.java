@@ -14,42 +14,25 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Сервис ордеров межгосударственной биржи (1.2.1).
+ * Сервис ордеров межгосударственной биржи (1.2.1, фикс 1.2.2-a: createOrder public).
  *
  * Семантика ордера:
  *  - sell_currency / sell_amount — что продаёт владелец (заморожено в escrow);
  *  - buy_currency / buy_amount — что владелец хочет получить суммарно;
- *  - price = buy_amount / sell_amount (цена за единицу продаваемой валюты);
- *  - статусы: OPEN → MATCHED (исполнен целиком) / CANCELLED (отменён владельцем).
- *
- * В 1.2.1 исполнение — all-or-nothing (ордер забирается целиком).
- * Частичные исполнения — в 1.2.2.
- * Выставлять ордера могут ТОЛЬКО короли наций (временное ограничение).
- *
- * FIX 1.2.1-hotfix: фабрики рекордов переименованы в ok()/fail(...),
- * т.к. статический метод с именем компонента record (success()) запрещён
- * и ломает авто-аксессор boolean success().
+ *  - price = buy_amount / sell_amount;
+ *  - статусы: OPEN → MATCHED / CANCELLED.
+ * В 1.2.2-a исполнение — all-or-nothing через escrow; частичные исполнения — в 1.2.2-b.
  */
 public final class ExchangeOrderService {
 
     public record CreateResult(boolean success, String orderId, String error) {
-        public static CreateResult ok(String orderId) {
-            return new CreateResult(true, orderId, null);
-        }
-
-        public static CreateResult fail(String error) {
-            return new CreateResult(false, null, error);
-        }
+        public static CreateResult ok(String id) { return new CreateResult(true, id, null); }
+        public static CreateResult fail(String err) { return new CreateResult(false, null, err); }
     }
 
     public record MatchResult(boolean success, String error) {
-        public static MatchResult ok() {
-            return new MatchResult(true, null);
-        }
-
-        public static MatchResult fail(String error) {
-            return new MatchResult(false, error);
-        }
+        public static MatchResult ok() { return new MatchResult(true, null); }
+        public static MatchResult fail(String err) { return new MatchResult(false, err); }
     }
 
     private final RaskolVault plugin;
@@ -82,8 +65,12 @@ public final class ExchangeOrderService {
         return createOrder(owner, nation, glb, buyCurrency, round2(amount * price), amount);
     }
 
-    private CreateResult createOrder(UUID owner, String nation, String sellCur, String buyCur,
-                                     double sellAmount, double buyAmount) {
+    /**
+     * Универсальное создание ордера (public с 1.2.2-a — вызывается из ExchangeGui).
+     * sellCur → buyCur, sellAmount единиц, buyAmount суммарно.
+     */
+    public CreateResult createOrder(UUID owner, String nation, String sellCur, String buyCur,
+                                    double sellAmount, double buyAmount) {
         if (!plugin.getTownyHook().isAvailable()
                 || !plugin.getTownyHook().isKing(owner, nation)) {
             return CreateResult.fail("только король нации может выставлять ордера");
@@ -137,10 +124,7 @@ public final class ExchangeOrderService {
         return MatchResult.ok();
     }
 
-    /**
-     * Исполнение ордера целиком: taker отдаёт buy_amount своей валюты владельцу,
-     * получает замороженную sell_amount из escrow.
-     */
+    /** Исполнение ордера целиком: taker отдаёт buy_amount, получает sell_amount из escrow. */
     public MatchResult takeOrder(String orderId, UUID taker) {
         ExchangeOrderRow order = ledger.exchangeOrderGet(orderId);
         if (order == null) {
@@ -171,7 +155,6 @@ public final class ExchangeOrderService {
         }
         // 2) замороженная sell-валюта уходит taker'у
         if (!escrow.release(orderId, taker)) {
-            // откат платежа
             wallets.withdraw(order.owner(), order.buyCurrency(), order.buyAmount(),
                     TransactionType.PAY, "exchange:take:rollback:" + orderId);
             wallets.deposit(taker, order.buyCurrency(), order.buyAmount(),
