@@ -1,13 +1,13 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.observability;
 
+import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.reserve.ReserveBank;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.Plugin;
 
 import java.util.Locale;
 import java.util.Map;
@@ -20,13 +20,13 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class InflationCheckpoint implements Runnable {
 
-    private final Plugin plugin;
+    private final RaskolVault plugin;
     private final ReserveBank reserveBank;
     private final CurrencyRegistry currencies;
     private final TownyHook townyHook;
     private final AtomicLong anomalies = new AtomicLong(0L);
 
-    public InflationCheckpoint(Plugin plugin, ReserveBank reserveBank,
+    public InflationCheckpoint(RaskolVault plugin, ReserveBank reserveBank,
                                CurrencyRegistry currencies, TownyHook townyHook) {
         this.plugin = plugin;
         this.reserveBank = reserveBank;
