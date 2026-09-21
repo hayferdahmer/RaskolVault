@@ -13,6 +13,7 @@ import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.gui.GuiListener;
+import dev.raskol.vault.gui.ReserveGui;
 import dev.raskol.vault.gui.WalletGui;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.LuckPermsHook;
@@ -48,10 +49,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.0-SNAPSHOT (межгосударственная биржа, банки, облигации):
- * + LuckPerms-хук для проверки прав
- * + публичный RaskolVaultAPI для плагинов-друзей (Market/Caravans/Charters/ESGUI)
- * + loadbefore RaskolMarket/RaskolCaravans/RaskolCharters в plugin.yml
+ * RaskolVault 1.2.1-SNAPSHOT: биржа королей (exchange_orders + escrow) + GUI ячеек резерва.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -161,7 +159,6 @@ public final class RaskolVault extends JavaPlugin {
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
         escrowService = new EscrowService(this, wallets, ledger);
 
-        // 1.2.0: LuckPerms-хук (права для API)
         luckPermsHook = new LuckPermsHook(this);
         if (luckPermsPresent && getConfig().getBoolean("hooks.luckperms.enabled", true)) {
             luckPermsHook.init();
@@ -183,13 +180,14 @@ public final class RaskolVault extends JavaPlugin {
         txCounter = new TxCounter(ledger);
         inflationCheckpoint = new InflationCheckpoint(this, reserveBank, currencies, townyHook);
 
-        // 1.2.0: публичный API — должен быть создан после всех хуков
         api = new RaskolVaultAPI(this);
 
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
         getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
         getServer().getPluginManager().registerEvents(new GuiListener(this), this);
+        // 1.2.1: GUI ячеек резерва (клик по слотам депозит/вывод/назад + чат-захват суммы)
+        getServer().getPluginManager().registerEvents(new ReserveGui(this), this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
@@ -244,6 +242,7 @@ public final class RaskolVault extends JavaPlugin {
                 int healed = wallets.reconcile();
                 int evicted = confirms.evictExpired();
                 WalletGui.CHAT_CAPTURE.clear();
+                ReserveGui.CHAT_CAPTURE.clear();
                 lastReconcileMillis = System.currentTimeMillis();
                 if (healed > 0) {
                     getLogger().warning("RaskolVault: сверка кэш↔леджер: вылечено расхождений: " + healed);
@@ -288,7 +287,7 @@ public final class RaskolVault extends JavaPlugin {
                 + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
                 + " · LuckPerms " + (luckPermsPresent ? "on" : "off") + "/" + (luckPermsHook.isAvailable() ? "hooked" : "off")
                 + " · PAPI " + (placeholderPresent ? "on" : "off")
-                + " · API ready (for RaskolMarket/Caravans/Charters)");
+                + " · Биржа королей активна (exchange_orders)");
     }
 
     @Override
@@ -340,8 +339,6 @@ public final class RaskolVault extends JavaPlugin {
         return plugin != null && plugin.isEnabled();
     }
 
-    // ============ Геттеры ============
-
     public SQLiteLedger getLedger() { return ledger; }
     public LedgerWriter getWriter() { return writer; }
     public MessagesConfig getMessages() { return messages; }
@@ -370,8 +367,6 @@ public final class RaskolVault extends JavaPlugin {
     public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
     public long getStartTimeMillis() { return startTimeMillis; }
     public long getLastReconcileMillis() { return lastReconcileMillis; }
-
-    /** 1.2.0: публичный API для плагинов-друзей. */
     public RaskolVaultAPI getAPI() { return api; }
 
     public boolean isCorePresent() { return corePresent; }
