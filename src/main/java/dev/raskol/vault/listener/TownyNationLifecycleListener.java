@@ -1,8 +1,8 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.listener;
 
-import com.palmergames.bukkit.towny.event.nation.NationDeleteEvent;
-import com.palmergames.bukkit.towny.event.nation.NationRenameEvent;
+import com.palmergames.bukkit.towny.event.DeleteNationEvent;
+import com.palmergames.bukkit.towny.event.RenameNationEvent;
 import com.palmergames.bukkit.towny.object.Nation;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
@@ -34,11 +34,11 @@ public final class TownyNationLifecycleListener implements Listener {
 
     public void register() {
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
-        plugin.getLogger().info("RaskolVault: подписан на NationRenameEvent + NationDeleteEvent");
+        plugin.getLogger().info("RaskolVault: подписан на RenameNationEvent + DeleteNationEvent");
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onRename(NationRenameEvent event) {
+    public void onRename(RenameNationEvent event) {
         Nation nation = event.getNation();
         if (nation == null) {
             return;
@@ -55,7 +55,7 @@ public final class TownyNationLifecycleListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onDelete(NationDeleteEvent event) {
+    public void onDelete(DeleteNationEvent event) {
         Nation nation = event.getNation();
         if (nation == null) {
             return;
