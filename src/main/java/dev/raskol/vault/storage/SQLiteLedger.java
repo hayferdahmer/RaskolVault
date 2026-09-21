@@ -5,7 +5,6 @@ import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
-import dev.raskol.vault.observability.TxPerMinuteCounter;
 import org.bukkit.plugin.Plugin;
 
 import java.io.File;
@@ -22,11 +21,12 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * SQLite-леджер (1.0.6: +renameNationId, +renameCurrency).
+ * SQLite-леджер (схема v2, 1.1.1): валюты, балансы, транзакции + таблица reserves.
+ * reserves(nation, amount, updated_at) — золотой резерв наций, независимый от Essentials.
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {
     }
@@ -51,7 +51,6 @@ public final class SQLiteLedger {
     private final File dbFile;
     private final ConnectionPool pool;
     private volatile Supplier<String> writerStats;
-    private volatile TxPerMinuteCounter txCounter;
 
     public SQLiteLedger(Plugin plugin, File dbFile, int poolSize,
                         String synchronous, long borrowTimeoutMillis) throws SQLException {
@@ -69,8 +68,8 @@ public final class SQLiteLedger {
         this.pool = new ConnectionPool(plugin, dbFile, poolSize, synchronous, borrowTimeoutMillis);
     }
 
-    public void attachTxCounter(TxPerMinuteCounter counter) {
-        this.txCounter = counter;
+    public void attachWriterStats(Supplier<String> stats) {
+        this.writerStats = stats;
     }
 
     public synchronized void init() throws SQLException {
@@ -134,13 +133,14 @@ public final class SQLiteLedger {
                     st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_uuid)");
                     st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_currency ON transactions(currency_id)");
                     st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)");
-                    st.execute("CREATE TABLE IF NOT EXISTS nations ("
-                            + "id TEXT PRIMARY KEY,"
-                            + "name TEXT NOT NULL,"
+                    // 1.1.1: золотой резерв наций
+                    st.execute("CREATE TABLE IF NOT EXISTS reserves ("
+                            + "nation TEXT PRIMARY KEY,"
+                            + "amount REAL NOT NULL DEFAULT 0,"
                             + "updated_at INTEGER NOT NULL)");
                     st.execute("PRAGMA user_version=" + SCHEMA_VERSION);
                 }
-                plugin.getLogger().info("SQLiteLedger: схема создана (v" + SCHEMA_VERSION + ")");
+                plugin.getLogger().info("SQLiteLedger: схема создана/обновлена до v" + SCHEMA_VERSION);
             } else if (version > SCHEMA_VERSION) {
                 plugin.getLogger().warning("SQLiteLedger: схема v" + version + " новее поддерживаемой v"
                         + SCHEMA_VERSION + " — откати jar или восстанови БД из бекапа");
@@ -213,113 +213,6 @@ public final class SQLiteLedger {
         }
     }
 
-    /** 1.0.6: переименование nation_id в таблице currencies (при Towny RenameNationEvent). */
-    public int renameNationId(String oldNation, String newNation) {
-        Connection c = pool.borrow();
-        boolean ok = false;
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE currencies SET nation_id=? WHERE nation_id=?")) {
-            ps.setString(1, newNation);
-            ps.setString(2, oldNation);
-            int affected = ps.executeUpdate();
-            ok = true;
-            return affected;
-        } catch (SQLException e) {
-            throw new LedgerException("Не удалось обновить nation_id: " + e.getMessage(), e);
-        } finally {
-            finish(c, ok);
-        }
-    }
-
-    /**
-     * 1.0.6: переименование валюты (атомарно: currencies + balances + transactions).
-     * Требует отключения FOREIGN KEY CASCADE или использования deferred FK (в SQLite по умолчанию deferred).
-     */
-    public void renameCurrency(String oldId, String newId) {
-        Connection c = pool.borrow();
-        boolean ok = false;
-        try {
-            c.setAutoCommit(false);
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE currencies SET id=? WHERE id=?")) {
-                ps.setString(1, newId);
-                ps.setString(2, oldId);
-                int n = ps.executeUpdate();
-                if (n == 0) {
-                    throw new SQLException("валюта '" + oldId + "' не найдена");
-                }
-            }
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE balances SET currency_id=? WHERE currency_id=?")) {
-                ps.setString(1, newId);
-                ps.setString(2, oldId);
-                ps.executeUpdate();
-            }
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE transactions SET currency_id=? WHERE currency_id=?")) {
-                ps.setString(1, newId);
-                ps.setString(2, oldId);
-                ps.executeUpdate();
-            }
-            c.commit();
-            ok = true;
-        } catch (SQLException e) {
-            rollbackQuiet(c);
-            throw new LedgerException("Не удалось переименовать валюту '" + oldId + "' → '" + newId + "': "
-                    + e.getMessage(), e);
-        } finally {
-            finish(c, ok);
-        }
-    }
-
-    public synchronized void migrateLegacyCurrencyIds(Map<String, String> mapping) {
-        if (mapping.isEmpty()) {
-            return;
-        }
-        Connection c = pool.borrow();
-        boolean ok = false;
-        try {
-            c.setAutoCommit(false);
-            for (Map.Entry<String, String> entry : mapping.entrySet()) {
-                String from = entry.getKey();
-                String to = entry.getValue();
-                if (from.equals(to)) {
-                    continue;
-                }
-                int bal;
-                int tx;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "UPDATE balances SET currency_id=? WHERE currency_id=?")) {
-                    ps.setString(1, to);
-                    ps.setString(2, from);
-                    bal = ps.executeUpdate();
-                }
-                try (PreparedStatement ps = c.prepareStatement(
-                        "UPDATE transactions SET currency_id=? WHERE currency_id=?")) {
-                    ps.setString(1, to);
-                    ps.setString(2, from);
-                    tx = ps.executeUpdate();
-                }
-                if (bal == 0 && tx == 0) {
-                    continue;
-                }
-                try (PreparedStatement ps = c.prepareStatement("DELETE FROM currencies WHERE id=?")) {
-                    ps.setString(1, from);
-                    ps.executeUpdate();
-                }
-                plugin.getLogger().info("RaskolVault: миграция '" + from + "' → '" + to
-                        + "' (балансов " + bal + ", транзакций " + tx + ")");
-            }
-            c.commit();
-            ok = true;
-        } catch (SQLException e) {
-            rollbackQuiet(c);
-            throw new LedgerException("Миграция ID валют провалена: " + e.getMessage(), e);
-        } finally {
-            finish(c, ok);
-        }
-    }
-
     // ---------- balances ----------
 
     public Map<UUID, Map<String, Double>> loadAllBalances() {
@@ -378,10 +271,6 @@ public final class SQLiteLedger {
             }
             c.commit();
             ok = true;
-            TxPerMinuteCounter counter = txCounter;
-            if (counter != null) {
-                counter.record(txs.size());
-            }
         } catch (SQLException e) {
             rollbackQuiet(c);
             throw new LedgerException("Атомарный коммит провален: " + e.getMessage(), e);
@@ -404,8 +293,7 @@ public final class SQLiteLedger {
                     ps.setDouble(5, b.expectedOld());
                     int affected = ps.executeUpdate();
                     if (affected == 0) {
-                        throw new SQLException("optimistic lock failed: " + b.owner() + "/" + b.currencyId()
-                                + " expected=" + b.expectedOld());
+                        throw new SQLException("optimistic lock failed: " + b.owner() + "/" + b.currencyId());
                     }
                 }
             }
@@ -414,10 +302,6 @@ public final class SQLiteLedger {
             }
             c.commit();
             ok = true;
-            TxPerMinuteCounter counter = txCounter;
-            if (counter != null) {
-                counter.record(txs.size());
-            }
         } catch (SQLException e) {
             rollbackQuiet(c);
             throw new LedgerException("Проверенный коммит отклонён: " + e.getMessage(), e);
@@ -443,46 +327,81 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- агрегаты инварианта (1.0.5) ----------
+    // ---------- reserves (1.1.1) ----------
 
-    public double sumBalances(String currencyId) {
+    public double reserveGet(String nation) {
         Connection c = pool.borrow();
         boolean ok = false;
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT COALESCE(SUM(amount),0) FROM balances WHERE currency_id=?")) {
-            ps.setString(1, currencyId);
+        try (PreparedStatement ps = c.prepareStatement("SELECT amount FROM reserves WHERE nation=?")) {
+            ps.setString(1, nation);
             try (ResultSet rs = ps.executeQuery()) {
                 ok = true;
                 return rs.next() ? rs.getDouble(1) : 0.0D;
             }
         } catch (SQLException e) {
-            throw new LedgerException("sumBalances failed: " + e.getMessage(), e);
+            throw new LedgerException("Не могу прочитать резерв " + nation + ": " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
     }
 
-    public double expectedSupply(String currencyId) {
+    /** delta>0 — кредит; delta<0 — дебет с проверкой достаточности (amount+delta>=0). */
+    public boolean reserveAdd(String nation, double delta) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            long now = System.currentTimeMillis();
+            int rows;
+            if (delta >= 0.0D) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO reserves(nation, amount, updated_at) VALUES(?,?,?) "
+                                + "ON CONFLICT(nation) DO UPDATE SET amount=amount+excluded.amount, updated_at=excluded.updated_at")) {
+                    ps.setString(1, nation);
+                    ps.setDouble(2, delta);
+                    ps.setLong(3, now);
+                    rows = ps.executeUpdate();
+                }
+            } else {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "UPDATE reserves SET amount=amount+?, updated_at=? WHERE nation=? AND amount+? >= 0")) {
+                    ps.setDouble(1, delta);
+                    ps.setLong(2, now);
+                    ps.setString(3, nation);
+                    ps.setDouble(4, delta);
+                    rows = ps.executeUpdate();
+                }
+            }
+            ok = true;
+            return rows > 0;
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу изменить резерв " + nation + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    public void reserveSet(String nation, double amount) {
+        if (amount < 0.0D) {
+            throw new LedgerException("Резерв не может быть отрицательным", null);
+        }
         Connection c = pool.borrow();
         boolean ok = false;
         try (PreparedStatement ps = c.prepareStatement(
-                "SELECT COALESCE(SUM(CASE "
-                        + "WHEN from_uuid IS NULL AND to_uuid IS NOT NULL THEN amount "
-                        + "WHEN from_uuid IS NOT NULL AND to_uuid IS NULL THEN -amount "
-                        + "ELSE 0 END),0) FROM transactions WHERE currency_id=?")) {
-            ps.setString(1, currencyId);
-            try (ResultSet rs = ps.executeQuery()) {
-                ok = true;
-                return rs.next() ? rs.getDouble(1) : 0.0D;
-            }
+                "INSERT INTO reserves(nation, amount, updated_at) VALUES(?,?,?) "
+                        + "ON CONFLICT(nation) DO UPDATE SET amount=excluded.amount, updated_at=excluded.updated_at")) {
+            ps.setString(1, nation);
+            ps.setDouble(2, amount);
+            ps.setLong(3, System.currentTimeMillis());
+            ps.executeUpdate();
+            ok = true;
         } catch (SQLException e) {
-            throw new LedgerException("expectedSupply failed: " + e.getMessage(), e);
+            throw new LedgerException("Не могу установить резерв " + nation + ": " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
     }
 
-    // ---------- аудит ----------
+    // ---------- аудит / статистика ----------
 
     public List<Transaction> queryTransactions(UUID owner, int limit) {
         List<Transaction> out = new ArrayList<>();
@@ -499,20 +418,17 @@ public final class SQLiteLedger {
                     String from = rs.getString(3);
                     String to = rs.getString(4);
                     out.add(new Transaction(
-                            rs.getLong(1),
-                            rs.getLong(2),
+                            rs.getLong(1), rs.getLong(2),
                             from == null ? null : UUID.fromString(from),
                             to == null ? null : UUID.fromString(to),
-                            rs.getString(5),
-                            rs.getDouble(6),
+                            rs.getString(5), rs.getDouble(6),
                             TransactionType.valueOf(rs.getString(7)),
-                            rs.getString(8),
-                            rs.getString(9)));
+                            rs.getString(8), rs.getString(9)));
                 }
             }
             ok = true;
         } catch (SQLException e) {
-            throw new LedgerException("queryTransactions failed: " + e.getMessage(), e);
+            throw new LedgerException("Не могу прочитать историю: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
@@ -535,7 +451,7 @@ public final class SQLiteLedger {
             ok = true;
             return rs.next() ? rs.getInt(1) : 0;
         } catch (SQLException e) {
-            throw new LedgerException("count failed: " + e.getMessage(), e);
+            throw new LedgerException("Не могу посчитать: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
@@ -553,7 +469,7 @@ public final class SQLiteLedger {
             ok = true;
             return checkpointed;
         } catch (SQLException e) {
-            plugin.getLogger().warning("RaskolVault: WAL checkpoint failed: " + e.getMessage());
+            plugin.getLogger().warning("RaskolVault: WAL checkpoint не удался: " + e.getMessage());
             return -1L;
         } finally {
             finish(c, ok);
@@ -574,10 +490,6 @@ public final class SQLiteLedger {
         }
     }
 
-    public void attachWriterStats(Supplier<String> stats) {
-        this.writerStats = stats;
-    }
-
     public String describeStats() {
         String base = "балансов " + countBalances()
                 + " · транзакций " + countTransactions()
@@ -587,12 +499,12 @@ public final class SQLiteLedger {
         return extra == null ? base : base + extra.get();
     }
 
-    public int poolWaiting() {
-        return pool.waitingCount();
-    }
-
     public int poolIdle() {
         return pool.idleCount();
+    }
+
+    public int poolWaiting() {
+        return pool.waitingCount();
     }
 
     public int poolSize() {
