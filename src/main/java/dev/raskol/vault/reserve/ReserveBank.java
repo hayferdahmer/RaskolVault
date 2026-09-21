@@ -13,21 +13,30 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.DoubleSupplier;
 
 /**
- * Валютный совет (1.1.2): резерв в таблице reserves; минт облагается сеньоражем
- * (часть эмиссии сжигается в никуда = антиинфляционный sink).
+ * Валютный совет (1.1.4): + TTL-кэш цен/покрытия/сапплая (5 с) —
+ * PAPI и GUI становятся O(1) при частых запросах.
  */
 public final class ReserveBank {
 
     public record Advice(String title, List<String> lore) {
     }
 
+    private static final long CACHE_TTL_MS = 5000L;
+
     private final RaskolVault plugin;
     private final WalletService wallets;
     private final CurrencyRegistry currencies;
     private final SQLiteLedger ledger;
+
+    // TTL-кэш: ключ → вычисленное значение, ключ → expiry (ms)
+    private final Map<String, Double> cacheValues = new ConcurrentHashMap<>();
+    private final Map<String, Long> cacheExpiry = new ConcurrentHashMap<>();
 
     public ReserveBank(RaskolVault plugin, WalletService wallets,
                        CurrencyRegistry currencies, SQLiteLedger ledger) {
@@ -35,6 +44,27 @@ public final class ReserveBank {
         this.wallets = wallets;
         this.currencies = currencies;
         this.ledger = ledger;
+    }
+
+    private double cached(String key, DoubleSupplier compute) {
+        long now = System.currentTimeMillis();
+        Long exp = cacheExpiry.get(key);
+        if (exp != null && now < exp) {
+            Double v = cacheValues.get(key);
+            if (v != null) {
+                return v;
+            }
+        }
+        double v = compute.getAsDouble();
+        cacheValues.put(key, v);
+        cacheExpiry.put(key, now + CACHE_TTL_MS);
+        return v;
+    }
+
+    /** Инвалидация кэша после мутаций резерва/паритета/налога. */
+    public void invalidateCache() {
+        cacheExpiry.clear();
+        cacheValues.clear();
     }
 
     public static UUID reserveUuid(String nation) {
@@ -48,19 +78,24 @@ public final class ReserveBank {
     }
 
     public double reserveOf(String nation) {
-        return ledger.reserveGet(nation);
+        return cached("res:" + nation, () -> ledger.reserveGet(nation));
     }
 
     public boolean reserveCredit(String nation, double gold) {
-        return gold <= 0.0D || ledger.reserveAdd(nation, gold);
+        boolean ok = gold <= 0.0D || ledger.reserveAdd(nation, gold);
+        if (ok) invalidateCache();
+        return ok;
     }
 
     public boolean reserveDebit(String nation, double gold) {
-        return gold <= 0.0D || ledger.reserveAdd(nation, -gold);
+        boolean ok = gold <= 0.0D || ledger.reserveAdd(nation, -gold);
+        if (ok) invalidateCache();
+        return ok;
     }
 
     public void reserveSet(String nation, double amount) {
         ledger.reserveSet(nation, amount);
+        invalidateCache();
     }
 
     public boolean depositToReserve(UUID player, String nation, double amount, String reason) {
@@ -78,6 +113,7 @@ public final class ReserveBank {
             wallets.deposit(player, glb, amount, TransactionType.PAY, "reserve:deposit:rollback");
             return false;
         }
+        invalidateCache();
         return true;
     }
 
@@ -93,10 +129,10 @@ public final class ReserveBank {
             ledger.reserveAdd(nation, amount);
             return false;
         }
+        invalidateCache();
         return true;
     }
 
-    /** Минт с сеньоражем: в казну идёт amount*(1-seigniorage), сеньораж сжигается в никуда. */
     public boolean mintToTreasury(String nation, Currency currency, double amount) {
         if (!(amount > 0.0D) || !canMint(nation, currency.id(), amount)) {
             return false;
@@ -111,6 +147,7 @@ public final class ReserveBank {
         if (fee > 0.0D) {
             wallets.withdraw(treasury, currency.id(), fee, TransactionType.BURN, "seigniorage:" + nation);
         }
+        invalidateCache();
         return true;
     }
 
@@ -118,8 +155,10 @@ public final class ReserveBank {
         if (!(amount > 0.0D)) {
             return false;
         }
-        return wallets.withdraw(treasuryUuid(nation), currency.id(), amount,
+        boolean ok = wallets.withdraw(treasuryUuid(nation), currency.id(), amount,
                 TransactionType.BURN, "burn:" + nation);
+        if (ok) invalidateCache();
+        return ok;
     }
 
     public double seigniorageRate() {
@@ -127,11 +166,13 @@ public final class ReserveBank {
     }
 
     public double supplyOf(String currencyId) {
-        double sum = 0.0D;
-        for (var row : wallets.cacheSnapshot().values()) {
-            sum += row.getOrDefault(currencyId, 0.0D);
-        }
-        return sum;
+        return cached("sup:" + currencyId, () -> {
+            double sum = 0.0D;
+            for (var row : wallets.cacheSnapshot().values()) {
+                sum += row.getOrDefault(currencyId, 0.0D);
+            }
+            return sum;
+        });
     }
 
     public double parityOf(String nation) {
@@ -162,20 +203,24 @@ public final class ReserveBank {
         if (currency.type() == CurrencyType.GLOBAL) {
             return 1.0D;
         }
-        double supply = supplyOf(currency.id());
-        double parity = parityOf(currency.nationId());
-        if (supply <= 0.0D) {
-            return parity;
-        }
-        return Math.min(parity, reserveOf(currency.nationId()) / supply);
+        return cached("price:" + currency.id(), () -> {
+            double supply = supplyOf(currency.id());
+            double parity = parityOf(currency.nationId());
+            if (supply <= 0.0D) {
+                return parity;
+            }
+            return Math.min(parity, reserveOf(currency.nationId()) / supply);
+        });
     }
 
     public double coverageOf(String nation, String currencyId) {
-        double supply = supplyOf(currencyId);
-        if (supply <= 0.0D) {
-            return 1.0D;
-        }
-        return reserveOf(nation) / (supply * parityOf(nation));
+        return cached("cov:" + nation + ":" + currencyId, () -> {
+            double supply = supplyOf(currencyId);
+            if (supply <= 0.0D) {
+                return 1.0D;
+            }
+            return reserveOf(nation) / (supply * parityOf(nation));
+        });
     }
 
     public boolean setParity(String nation, double value) {
@@ -184,6 +229,7 @@ public final class ReserveBank {
         }
         plugin.getConfig().set("reserve.parity." + nation.toLowerCase(Locale.ROOT), round2(value));
         plugin.saveConfig();
+        invalidateCache();
         return true;
     }
 
