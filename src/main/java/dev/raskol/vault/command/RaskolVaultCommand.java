@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — корневой роутер (1.2.2-a, фикс: openCodex(plugin, player, page)).
+ * /rv — роутер (1.2.2-b): /rv cabinet открывает Кабинет государя (CabinetGui).
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -89,12 +89,12 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             send(sender, "&cКабинет государя доступен только королю нации");
             return;
         }
-        plugin.getReserveGui().open(player, nation);
+        // 1.2.2-b: полноценный Кабинет с налогами/монетарной/отчётами
+        plugin.getCabinetGui().openHome(player, nation);
     }
 
     private void openGuide(CommandSender sender) {
         if (!(sender instanceof Player player)) { send(sender, "&cКодекс доступен только в игре"); return; }
-        // FIX 1.2.2-a: сигнатура openCodex(RaskolVault, Player, int)
         WalletGui.openCodex(plugin, player, 0);
     }
 
@@ -106,10 +106,10 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     }
 
     private void help(CommandSender sender) {
-        send(sender, "&6=== RaskolVault ===");
+        send(sender, "&6=== RaskolVault 1.2.2 ===");
         send(sender, "&f/rv wallet &7— GUI кошелька");
-        send(sender, "&f/rv exchange &7— GUI биржи (стакан, ордера)");
-        send(sender, "&f/rv cabinet &7— кабинет государя (короли)");
+        send(sender, "&f/rv exchange &7— GUI биржи (partial+matching)");
+        send(sender, "&f/rv cabinet &7— Кабинет государя (короли): резерв/монетарная/налоги/отчёты");
         send(sender, "&f/rv guide &7— кодекс правителя");
         send(sender, "&f/rv pay <ник> <валюта> <сумма> [причина]");
         send(sender, "&f/rv convert <из> <в> <сумма> &7→ &f/rv confirm");
