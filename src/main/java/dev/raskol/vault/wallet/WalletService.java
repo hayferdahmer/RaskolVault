@@ -12,6 +12,7 @@ import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.plugin.Plugin;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -133,9 +134,11 @@ public final class WalletService {
         double old = getBalance(uuid, currencyId);
         double neu = old + amount;
         setCache(uuid, currencyId, neu);
+        Transaction tx = new Transaction(
+                -1L, System.currentTimeMillis(), uuid, null, currencyId, amount, type, reason, null);
         writer.submit(() -> ledger.commitAbsolute(
-                java.util.List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu)),
-                java.util.List.of(Transaction.of(uuid, null, currencyId, amount, type, reason))), ok -> {
+                List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu)),
+                List.of(tx)), ok -> {
             if (!ok) {
                 setCache(uuid, currencyId, old);
             }
@@ -159,9 +162,11 @@ public final class WalletService {
         }
         double neu = old - amount;
         setCache(uuid, currencyId, neu);
+        Transaction tx = new Transaction(
+                -1L, System.currentTimeMillis(), uuid, null, currencyId, amount, type, reason, null);
         writer.submit(() -> ledger.commitAbsolute(
-                java.util.List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu)),
-                java.util.List.of(Transaction.of(uuid, null, currencyId, amount, type, reason))), ok -> {
+                List.of(new SQLiteLedger.AbsoluteBalance(uuid, currencyId, neu)),
+                List.of(tx)), ok -> {
             if (!ok) {
                 setCache(uuid, currencyId, old);
             }
@@ -193,11 +198,13 @@ public final class WalletService {
         double neuT = oldT + amount;
         setCache(from, currencyId, neuF);
         setCache(to, currencyId, neuT);
+        Transaction tx = new Transaction(
+                -1L, System.currentTimeMillis(), from, to, currencyId, amount, TransactionType.PAY, reason, null);
         writer.submit(() -> ledger.commitAbsolute(
-                java.util.List.of(
+                List.of(
                         new SQLiteLedger.AbsoluteBalance(from, currencyId, neuF),
                         new SQLiteLedger.AbsoluteBalance(to, currencyId, neuT)),
-                java.util.List.of(Transaction.of(from, to, currencyId, amount, TransactionType.PAY, reason))), ok -> {
+                List.of(tx)), ok -> {
             if (!ok) {
                 setCache(from, currencyId, oldF);
                 setCache(to, currencyId, oldT);
