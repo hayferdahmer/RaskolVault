@@ -15,9 +15,8 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Реестр валют. Источники: currencies.yml (приоритет) + merge из БД.
- * 1.1.0.2: добавлен disableNationCurrencies (нация удалена → валюты неторгуемые,
- * балансы игроков НЕ удаляются).
+ * Реестр валют. Источники: currencies.yml (приоритет) + merge из БД
+ * (валюты, созданные в рантайме, переживают рестарт).
  */
 public final class CurrencyRegistry {
 
@@ -75,6 +74,24 @@ public final class CurrencyRegistry {
             }
         }
         plugin.getLogger().info("RaskolVault: валют в реестре: " + byId.size() + " (global=" + this.globalId + ")");
+    }
+
+    /**
+     * Подтягивает из БД валюты, которых нет в currencies.yml
+     * (созданные авто-лушнером в рантайме). YML остаётся приоритетным источником.
+     */
+    public int mergeFromLedger(SQLiteLedger ledger) {
+        int added = 0;
+        for (Currency db : ledger.loadCurrencies()) {
+            if (!byId.containsKey(db.id())) {
+                byId.put(db.id(), db);
+                added++;
+            }
+        }
+        if (added > 0) {
+            plugin.getLogger().info("RaskolVault: из БД подтянуто валют: " + added);
+        }
+        return added;
     }
 
     public void syncToLedger(SQLiteLedger ledger) {
