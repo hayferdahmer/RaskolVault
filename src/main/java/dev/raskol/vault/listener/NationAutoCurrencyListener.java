@@ -1,7 +1,7 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.listener;
 
-import com.palmergames.bukkit.towny.event.nation.NewNationEvent;
+import com.palmergames.bukkit.towny.event.NewNationEvent;
 import com.palmergames.bukkit.towny.object.Nation;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
