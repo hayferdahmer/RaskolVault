@@ -1,8 +1,6 @@
 # RaskolVault 1.1.0 — валюты сервера «РАСКОЛ | ДВЕ КОРОНЫ»
-# ID валют = 3 буквы капсом. symbol = буквенный код (символы-глифы убраны).
-# icon — предмет GUI (этап 1.1.0-d).
-# ПРОВЕРЬ имена наций: /n list — nation-id должен совпадать с именем нации Towny
-# (регистр не важен). Если нации называются иначе — правь nation-id здесь.
+# ID валют = 3 буквы капсом. nation-id = ТОЧНОЕ имя нации Towny (кириллица!).
+# Сверь имена через /n list: если нация переименована — правь nation-id здесь.
 
 currencies:
   GLD:
@@ -18,7 +16,7 @@ currencies:
     symbol: 'RAS'
     icon: SUNFLOWER
     type: NATIONAL
-    nation-id: rassvet
+    nation-id: 'Рассвет'
     decimals: 2
     tradeable: true
 
@@ -27,6 +25,6 @@ currencies:
     symbol: 'VLR'
     icon: GOLDEN_HELMET
     type: NATIONAL
-    nation-id: valradis
+    nation-id: 'Вальрадис'
     decimals: 2
     tradeable: true
