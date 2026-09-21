@@ -1,27 +1,29 @@
 name: RaskolVault
-version: '1.2.0-SNAPSHOT'
+version: '1.2.1'
 main: dev.raskol.vault.RaskolVault
 api-version: '1.21'
 author: hayferdahmer
-description: 'Многовалютный экономический слой поверх EssentialsX: национальные и мировые валюты, курсы, комиссии, SQLite-аудит'
+description: 'Многовалютный экономический слой поверх EssentialsX: национальные валюты с золотым покрытием, биржа королей, escrow, SQLite-аудит'
 
-# 1.2.0: порядок загрузки — RaskolVault должен стартовать ПОСЛЕ зависимостей (чтобы хуки успели инициализироваться)
-# и ДО друзей (RaskolMarket/Caravans/Charters), чтобы они увидели наш Vault-провайдер при своём старте.
+# RaskolVault стартует ПОСЛЕ зависимостей и ДО плагинов-друзей
 softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI, spark]
 loadbefore: [RaskolMarket, RaskolCaravans, RaskolCharters, EconomyShopGUI, ChestShop]
 
 commands:
   rv:
     description: 'Команды RaskolVault'
-    usage: '/rv [help|wallet|cabinet|guide|version|debug]'
+    usage: '/rv [help|wallet|pay|convert|confirm|rates|exchange|nation|admin]'
     aliases: [raskolvault, wallet]
 
 permissions:
   raskolvault.use:
-    description: 'Базовые команды кошелька'
+    description: 'Базовые команды кошелька (balance, pay, wallet)'
     default: true
   raskolvault.convert:
     description: 'Обмен валют'
+    default: true
+  raskolvault.exchange:
+    description: 'Просмотр стакана биржи (ордера — только короли)'
     default: true
   raskolvault.admin:
     description: 'Все админские подкоманды'
@@ -40,10 +42,9 @@ permissions:
       raskolvault.admin.debug: true
       raskolvault.admin.backup: true
       raskolvault.admin.health: true
-  # 1.2.0: права для плагинов-друзей
   raskolvault.api.use:
-    description: 'Доступ к API RaskolVault для плагинов-друзей (RaskolMarket/Caravans/Charters)'
+    description: 'Доступ к публичному API для плагинов-друзей'
     default: true
   raskolvault.api.admin:
-    description: 'Админские операции через API (выдача/списание без лимитов)'
+    description: 'Админ-операции через API (без лимитов)'
     default: op
