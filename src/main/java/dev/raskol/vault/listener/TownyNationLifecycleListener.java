@@ -1,8 +1,8 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.listener;
 
-import com.palmergames.bukkit.towny.event.nation.DeleteNationEvent;
-import com.palmergames.bukkit.towny.event.nation.RenameNationEvent;
+import com.palmergames.bukkit.towny.event.nation.NationDeleteEvent;
+import com.palmergames.bukkit.towny.event.nation.NationRenameEvent;
 import com.palmergames.bukkit.towny.object.Nation;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
@@ -19,8 +19,6 @@ import java.io.File;
 
 /**
  * Слушатель переименования/удаления наций (1.2.0).
- * Переименование → обновляет nation_id валют в реестре + currencies.yml.
- * Удаление → tradeable=false для валют + сброс резерва нации в 0.
  */
 public final class TownyNationLifecycleListener implements Listener {
 
@@ -36,11 +34,11 @@ public final class TownyNationLifecycleListener implements Listener {
 
     public void register() {
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
-        plugin.getLogger().info("RaskolVault: подписан на RenameNationEvent + DeleteNationEvent");
+        plugin.getLogger().info("RaskolVault: подписан на NationRenameEvent + NationDeleteEvent");
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onRename(RenameNationEvent event) {
+    public void onRename(NationRenameEvent event) {
         Nation nation = event.getNation();
         if (nation == null) {
             return;
@@ -57,7 +55,7 @@ public final class TownyNationLifecycleListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onDelete(DeleteNationEvent event) {
+    public void onDelete(NationDeleteEvent event) {
         Nation nation = event.getNation();
         if (nation == null) {
             return;
@@ -67,8 +65,6 @@ public final class TownyNationLifecycleListener implements Listener {
             return;
         }
         int n = currencies.disableNationCurrencies(nationName);
-        // Сбрасываем резерв нации в 0 — иначе при пересоздании нации с тем же именем
-        // новый игрок унаследует старый резерв (дыра экономики)
         try {
             ledger.reserveSet(nationName, 0.0D);
         } catch (Exception e) {
@@ -81,7 +77,6 @@ public final class TownyNationLifecycleListener implements Listener {
                 + "Балансы игроков сохранены. Вернуть торговлю: /rv admin currency + tradeable");
     }
 
-    /** Перезаписывает currencies.yml из текущего состояния реестра (источник правды). */
     private void rewriteCurrenciesYml() {
         try {
             File file = new File(plugin.getDataFolder(), "currencies.yml");
