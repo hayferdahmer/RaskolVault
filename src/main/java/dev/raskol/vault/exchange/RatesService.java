@@ -1,88 +1,90 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.exchange;
 
+import dev.raskol.vault.RaskolVault;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.plugin.Plugin;
 
 import java.io.File;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Курсы обмена: rates.yml → immutable-карта.
- * Ключи нормализуются в lower-case; обратная пара не выводится автоматически —
- * задаётся явно (gold_denarius ≠ denarius_gold), это осознанный антиарбитражный ход.
+ * Курсы/комиссии/эмбарго из rates.yml (1.1.3).
+ * rates: статические пары (legacy, справочно); fees: комиссии пар; embargo: закрытые пары.
+ * Движок конвертов использует цены резерва (ReserveBank), fees/embargo — отсюда.
  */
 public final class RatesService {
 
-    private final Plugin plugin;
+    private final RaskolVault plugin;
     private final double defaultFee;
-    private Map<String, Double> rates = Map.of();
-    private Map<String, Double> pairFees = Map.of();
+    private final Map<String, Double> rates = new ConcurrentHashMap<>();
+    private final Map<String, Double> fees = new ConcurrentHashMap<>();
+    private final Set<String> embargo = ConcurrentHashMap.newKeySet();
 
-    public RatesService(Plugin plugin, double defaultFee) {
+    public RatesService(RaskolVault plugin, double defaultFee) {
         this.plugin = plugin;
-        this.defaultFee = Math.max(0.0D, Math.min(0.99D, defaultFee));
+        this.defaultFee = defaultFee;
     }
 
     public void load(File file) {
-        Map<String, Double> newRates = new LinkedHashMap<>();
-        Map<String, Double> newFees = new LinkedHashMap<>();
+        rates.clear();
+        fees.clear();
+        embargo.clear();
+        if (!file.exists()) {
+            plugin.getLogger().info("RaskolVault: rates.yml не найден — комиссии по умолчанию " + defaultFee);
+            return;
+        }
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
-        ConfigurationSection section = yaml.getConfigurationSection("rates");
-        if (section != null) {
-            for (String key : section.getKeys(false)) {
-                String normalized = key.toLowerCase(Locale.ROOT).trim();
-                if (!normalized.matches("[a-z0-9]+_[a-z0-9]+")) {
-                    plugin.getLogger().warning("RaskolVault: курс '" + key + "' пропущен: "
-                            + "ожидался формат <from>_<to>");
-                    continue;
-                }
-                double rate = section.getDouble(key, 0.0D);
-                if (!(rate > 0.0D)) {
-                    plugin.getLogger().warning("RaskolVault: курс '" + key + "' пропущен: некорректное значение " + rate);
-                    continue;
-                }
-                newRates.put(normalized, rate);
+        ConfigurationSection rs = yaml.getConfigurationSection("rates");
+        if (rs != null) {
+            for (String key : rs.getKeys(false)) {
+                rates.put(norm(key), rs.getDouble(key, 0.0D));
             }
         }
-        ConfigurationSection feesSection = yaml.getConfigurationSection("fees");
-        if (feesSection != null) {
-            for (String key : feesSection.getKeys(false)) {
-                String normalized = key.toLowerCase(Locale.ROOT).trim();
-                double fee = feesSection.getDouble(key, defaultFee);
-                newFees.put(normalized, Math.max(0.0D, Math.min(0.99D, fee)));
+        ConfigurationSection fs = yaml.getConfigurationSection("fees");
+        if (fs != null) {
+            for (String key : fs.getKeys(false)) {
+                fees.put(norm(key), fs.getDouble(key, defaultFee));
             }
         }
-        this.rates = Map.copyOf(newRates);
-        this.pairFees = Map.copyOf(newFees);
-        plugin.getLogger().info("RaskolVault: загружено курсов: " + this.rates.size()
-                + " · индивидуальных комиссий: " + this.pairFees.size()
-                + " · дефолтная комиссия: " + defaultFee);
+        for (String e : yaml.getStringList("embargo")) {
+            embargo.add(norm(e));
+        }
+        plugin.getLogger().info("RaskolVault: загружено курсов: " + rates.size()
+                + " · комиссий: " + fees.size() + " · эмбарго: " + embargo.size());
     }
 
-    public Optional<Double> rate(String from, String to) {
-        return Optional.ofNullable(rates.get(pairKey(from, to)));
+    private static String norm(String pair) {
+        return pair.toUpperCase(Locale.ROOT).replace("-", "_");
     }
 
-    public double fee(String from, String to) {
-        Double specific = pairFees.get(pairKey(from, to));
-        return specific != null ? specific : defaultFee;
+    private static String key(String from, String to) {
+        return from.toUpperCase(Locale.ROOT) + "_" + to.toUpperCase(Locale.ROOT);
+    }
+
+    /** Комиссия пары (база, сжигается). Дефолт, если пара не задана. */
+    public double feeFor(String from, String to) {
+        return fees.getOrDefault(key(from, to), defaultFee);
+    }
+
+    /** Эмбарго направленно-симметричное: закрыта пара в обе стороны. */
+    public boolean isEmbargoed(String from, String to) {
+        String k = key(from, to);
+        return embargo.contains(k) || embargo.contains(key(to, from));
+    }
+
+    public double staticRate(String from, String to) {
+        return rates.getOrDefault(key(from, to), 0.0D);
     }
 
     public Map<String, Double> allRates() {
-        return Collections.unmodifiableMap(rates);
+        return rates;
     }
 
     public double defaultFee() {
         return defaultFee;
-    }
-
-    private static String pairKey(String from, String to) {
-        return from.toLowerCase(Locale.ROOT) + "_" + to.toLowerCase(Locale.ROOT);
     }
 }
