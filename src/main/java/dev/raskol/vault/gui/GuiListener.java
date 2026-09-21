@@ -21,10 +21,9 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Обработчик GUI «Кошелёк» (1.1.0.2):
- * - InventoryDragEvent отменяется (предметы больше нельзя вытащить перетаскиванием);
- * - действия кабинета дают явную обратную связь (успех/отказ с причиной);
- * - добавлена страница советника.
+ * Обработчик GUI (1.1.1): ВСЕ переходы между GUI — на следующий тик (лечит глитч
+ * вытаскивания предметов при смене окна внутри InventoryClickEvent).
+ * Отказы кабинета дают честную причину.
  */
 public final class GuiListener implements Listener {
 
@@ -32,6 +31,10 @@ public final class GuiListener implements Listener {
 
     public GuiListener(RaskolVault plugin) {
         this.plugin = plugin;
+    }
+
+    private void later(Runnable r) {
+        Bukkit.getScheduler().runTask(plugin, r);
     }
 
     @EventHandler
@@ -54,22 +57,17 @@ public final class GuiListener implements Listener {
             case CONVERT_AMOUNT -> onAmount(player, holder, slot);
             case CONVERT_CONFIRM -> onConfirm(player, holder, slot);
             case RATES -> {
-                if (slot == 49) {
-                    WalletGui.openMain(plugin, player);
-                }
+                if (slot == 49) later(() -> WalletGui.openMain(plugin, player));
             }
             case HISTORY -> onHistory(player, holder, slot);
             case CABINET -> onCabinet(player, slot);
             case ADVISOR -> {
-                if (slot == 49) {
-                    WalletGui.openCabinet(plugin, player);
-                }
+                if (slot == 49) later(() -> WalletGui.openCabinet(plugin, player));
             }
             case CODEX -> onCodex(player, holder, slot);
         }
     }
 
-    /** ФИКС 1.1.0.2: перетаскивание предметов из GUI запрещено. */
     @EventHandler
     public void onDrag(InventoryDragEvent event) {
         if (event.getInventory().getHolder() instanceof WalletGuiHolder) {
@@ -93,9 +91,14 @@ public final class GuiListener implements Listener {
                     Map.of("value", event.getMessage())));
             return;
         }
+        if (!Double.isFinite(amount) || amount <= 0.0D) {
+            event.getPlayer().sendMessage(plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount",
+                    Map.of("value", event.getMessage())));
+            return;
+        }
         Player player = event.getPlayer();
-        Bukkit.getScheduler().runTask(plugin, () ->
-                WalletGui.openConvertConfirm(plugin, player, ctx[0], ctx[1], amount));
+        later(() -> WalletGui.openConvertConfirm(plugin, player, ctx[0], ctx[1], amount));
     }
 
     private void onMain(Player player, int slot) {
@@ -104,18 +107,19 @@ public final class GuiListener implements Listener {
                 int index = (slot - 10) / 2;
                 List<Currency> list = new ArrayList<>(plugin.getCurrencies().all());
                 if (index >= 0 && index < list.size()) {
-                    WalletGui.openConvertTo(plugin, player, list.get(index).id());
+                    String id = list.get(index).id();
+                    later(() -> WalletGui.openConvertTo(plugin, player, id));
                 }
             }
-            case 29 -> WalletGui.openConvertFrom(plugin, player);
-            case 31 -> WalletGui.openRates(plugin, player);
-            case 33 -> WalletGui.openHistory(plugin, player, 0);
+            case 29 -> later(() -> WalletGui.openConvertFrom(plugin, player));
+            case 31 -> later(() -> WalletGui.openRates(plugin, player));
+            case 33 -> later(() -> WalletGui.openHistory(plugin, player, 0));
             case 35 -> {
                 if (WalletGui.isKing(plugin, player)) {
-                    WalletGui.openCabinet(plugin, player);
+                    later(() -> WalletGui.openCabinet(plugin, player));
                 }
             }
-            case 40 -> WalletGui.openCodex(plugin, player, 0);
+            case 40 -> later(() -> WalletGui.openCodex(plugin, player, 0));
             case 49 -> player.closeInventory();
             default -> {
             }
@@ -124,7 +128,7 @@ public final class GuiListener implements Listener {
 
     private void onFrom(Player player, int slot) {
         if (slot == 22) {
-            WalletGui.openMain(plugin, player);
+            later(() -> WalletGui.openMain(plugin, player));
             return;
         }
         List<Currency> list = tradeable();
@@ -132,12 +136,13 @@ public final class GuiListener implements Listener {
         if (index < 0 || index >= list.size()) {
             return;
         }
-        WalletGui.openConvertTo(plugin, player, list.get(index).id());
+        String id = list.get(index).id();
+        later(() -> WalletGui.openConvertTo(plugin, player, id));
     }
 
     private void onTo(Player player, WalletGuiHolder holder, int slot) {
         if (slot == 22) {
-            WalletGui.openConvertFrom(plugin, player);
+            later(() -> WalletGui.openConvertFrom(plugin, player));
             return;
         }
         List<Currency> list = tradeableExcept(holder.fromId());
@@ -145,12 +150,13 @@ public final class GuiListener implements Listener {
         if (index < 0 || index >= list.size()) {
             return;
         }
-        WalletGui.openConvertAmount(plugin, player, holder.fromId(), list.get(index).id());
+        String id = list.get(index).id();
+        later(() -> WalletGui.openConvertAmount(plugin, player, holder.fromId(), id));
     }
 
     private void onAmount(Player player, WalletGuiHolder holder, int slot) {
         if (slot == 22) {
-            WalletGui.openConvertTo(plugin, player, holder.fromId());
+            later(() -> WalletGui.openConvertTo(plugin, player, holder.fromId()));
             return;
         }
         double balance = plugin.getWallets().getBalance(player.getUniqueId(), holder.fromId());
@@ -163,7 +169,8 @@ public final class GuiListener implements Listener {
             default -> null;
         };
         if (amount != null) {
-            WalletGui.openConvertConfirm(plugin, player, holder.fromId(), holder.toId(), amount);
+            double amt = amount;
+            later(() -> WalletGui.openConvertConfirm(plugin, player, holder.fromId(), holder.toId(), amt));
             return;
         }
         if (slot == 16) {
@@ -175,7 +182,7 @@ public final class GuiListener implements Listener {
 
     private void onConfirm(Player player, WalletGuiHolder holder, int slot) {
         if (slot == 11) {
-            WalletGui.openConvertAmount(plugin, player, holder.fromId(), holder.toId());
+            later(() -> WalletGui.openConvertAmount(plugin, player, holder.fromId(), holder.toId()));
             return;
         }
         if (slot != 15) {
@@ -189,9 +196,11 @@ public final class GuiListener implements Listener {
         var executed = plugin.getConvertEngine().execute(
                 player.getUniqueId(), holder.fromId(), holder.toId(), holder.amount());
         if (executed.isEmpty()) {
+            String reason = plugin.getConvertEngine().blockReason(
+                    player.getUniqueId(), holder.fromId(), holder.toId(), holder.amount());
             player.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.convert.generic",
-                    Map.of("reason", "курс или средства изменились",
+                    Map.of("reason", reason.isEmpty() ? "неизвестно" : reason,
                             "from", holder.fromId(), "to", holder.toId())));
             player.closeInventory();
             return;
@@ -203,14 +212,16 @@ public final class GuiListener implements Listener {
                 "amount", Formatter.withSymbol(q.net(),
                         to == null ? 2 : to.decimals(),
                         to == null ? q.toId() : to.symbol()))));
-        WalletGui.openMain(plugin, player);
+        later(() -> WalletGui.openMain(plugin, player));
     }
 
     private void onHistory(Player player, WalletGuiHolder holder, int slot) {
         if (slot == 45 && holder.pageIndex() > 0) {
-            WalletGui.openHistory(plugin, player, holder.pageIndex() - 1);
+            int p = holder.pageIndex() - 1;
+            later(() -> WalletGui.openHistory(plugin, player, p));
         } else if (slot == 53) {
-            WalletGui.openHistory(plugin, player, holder.pageIndex() + 1);
+            int p = holder.pageIndex() + 1;
+            later(() -> WalletGui.openHistory(plugin, player, p));
         } else if (slot == 49) {
             player.closeInventory();
         }
@@ -243,24 +254,16 @@ public final class GuiListener implements Listener {
                     "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 0%");
             case 25 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) + 0.005D)),
                     "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 5%");
-            case 29 -> feedback(player, bank.depositToReserve(player.getUniqueId(), nation, 100.0D, "gui"),
-                    "Внесено 100 GLD в резерв (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
-                    "недостаточно личного золота");
-            case 30 -> feedback(player, bank.depositToReserve(player.getUniqueId(), nation, 1000.0D, "gui"),
-                    "Внесено 1000 GLD в резерв (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
-                    "недостаточно личного золота");
-            case 31 -> feedback(player, bank.withdrawFromReserve(player.getUniqueId(), nation, 100.0D, "gui"),
-                    "Выведено 100 GLD из резерва (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
-                    "лимит 25% резерва в сутки или резерв пуст");
-            case 32 -> feedback(player, bank.withdrawFromReserve(player.getUniqueId(), nation, 1000.0D, "gui"),
-                    "Выведено 1000 GLD из резерва (резерв: " + Formatter.amount(bank.reserveOf(nation), 2) + ")",
-                    "лимит 25% резерва в сутки или резерв пуст");
+            case 29 -> depositFeedback(player, bank, nation, 100.0D);
+            case 30 -> depositFeedback(player, bank, nation, 1000.0D);
+            case 31 -> withdrawFeedback(player, bank, nation, 100.0D);
+            case 32 -> withdrawFeedback(player, bank, nation, 1000.0D);
             case 33 -> {
                 if (national == null) {
-                    feedback(player, false, "Минт невозможен: нет национальной валюты", "создай валюту нации");
+                    feedback(player, false, "", "нет национальной валюты");
                 } else if (!bank.canMint(nation, national.id(), 100.0D)) {
-                    feedback(player, false, "Минт отклонён: лимит покрытия",
-                            "лимит: " + Formatter.amount(bank.maxMint(nation, national.id()), 2) + " — пополняй резерв");
+                    feedback(player, false, "", "лимит покрытия: "
+                            + Formatter.amount(bank.maxMint(nation, national.id()), 2) + " — пополняй резерв");
                 } else {
                     feedback(player, plugin.getTreasury().deposit(nation, national.id(), 100.0D, "gui-mint"),
                             "Минт 100 " + national.id() + " в казну", "казна недоступна");
@@ -268,32 +271,63 @@ public final class GuiListener implements Listener {
             }
             case 34 -> {
                 if (national == null) {
-                    feedback(player, false, "Бёрн невозможен: нет национальной валюты", "создай валюту нации");
+                    feedback(player, false, "", "нет национальной валюты");
                 } else {
                     feedback(player, plugin.getTreasury().withdraw(nation, national.id(), 100.0D, "gui-burn"),
                             "Бёрн 100 " + national.id() + " из казны", "в казне меньше 100");
                 }
             }
             case 40 -> {
-                WalletGui.openAdvisor(plugin, player);
+                later(() -> WalletGui.openAdvisor(plugin, player));
                 refresh = false;
             }
             case 49 -> {
-                WalletGui.openMain(plugin, player);
+                later(() -> WalletGui.openMain(plugin, player));
                 refresh = false;
             }
             default -> refresh = false;
         }
         if (refresh) {
-            WalletGui.openCabinet(plugin, player);
+            later(() -> WalletGui.openCabinet(plugin, player));
         }
+    }
+
+    private void depositFeedback(Player player, ReserveBank bank, String nation, double amount) {
+        String glb = plugin.getCurrencies().globalId();
+        if (!plugin.getWallets().has(player.getUniqueId(), glb, amount)) {
+            feedback(player, false, "", "недостаточно личного золота ("
+                    + Formatter.amount(plugin.getWallets().getBalance(player.getUniqueId(), glb), 2) + " GLD)");
+            return;
+        }
+        feedback(player, bank.depositToReserve(player.getUniqueId(), nation, amount, "gui"),
+                "Внесено " + Formatter.amount(amount, 2) + " GLD в резерв (резерв: "
+                        + Formatter.amount(bank.reserveOf(nation), 2) + ")",
+                "резерв не принимает");
+    }
+
+    private void withdrawFeedback(Player player, ReserveBank bank, String nation, double amount) {
+        double reserve = bank.reserveOf(nation);
+        if (reserve + 1.0E-9D < amount) {
+            feedback(player, false, "", "резерв нации исчерпан (" + Formatter.amount(reserve, 2) + " GLD)");
+            return;
+        }
+        if (amount > bank.dailyWithdrawLimit(nation) + 1.0E-9D) {
+            feedback(player, false, "", "суточный лимит: " + Formatter.amount(bank.dailyWithdrawLimit(nation), 2) + " GLD");
+            return;
+        }
+        feedback(player, bank.withdrawFromReserve(player.getUniqueId(), nation, amount, "gui"),
+                "Выведено " + Formatter.amount(amount, 2) + " GLD (резерв: "
+                        + Formatter.amount(bank.reserveOf(nation), 2) + ")",
+                "операция отклонена");
     }
 
     private void onCodex(Player player, WalletGuiHolder holder, int slot) {
         if (slot == 18 && holder.pageIndex() > 0) {
-            WalletGui.openCodex(plugin, player, holder.pageIndex() - 1);
+            int p = holder.pageIndex() - 1;
+            later(() -> WalletGui.openCodex(plugin, player, p));
         } else if (slot == 26) {
-            WalletGui.openCodex(plugin, player, holder.pageIndex() + 1);
+            int p = holder.pageIndex() + 1;
+            later(() -> WalletGui.openCodex(plugin, player, p));
         } else if (slot == 22) {
             player.closeInventory();
         }
