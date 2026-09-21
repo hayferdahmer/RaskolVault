@@ -6,11 +6,12 @@
 
     <groupId>dev.raskol</groupId>
     <artifactId>raskol-vault</artifactId>
-    <version>1.2.0-SNAPSHOT</version>
+    <version>1.2.1</version>
     <packaging>jar</packaging>
 
     <name>RaskolVault</name>
     <description>Многовалютный экономический слой поверх EssentialsX для сервера «РАСКОЛ | ДВЕ КОРОНЫ»</description>
+    <url>https://github.com/hayferdahmer/RaskolVault</url>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
@@ -30,7 +31,6 @@
             <id>glaremasters</id>
             <url>https://repo.glaremasters.me/repository/towny/</url>
         </repository>
-        <!-- 1.2.0: LuckPerms API для интеграции с RaskolMarket/Caravans/Charters -->
         <repository>
             <id>luckperms</id>
             <url>https://repo.lucko.me/</url>
@@ -60,14 +60,12 @@
             <version>0.103.2.0</version>
             <scope>provided</scope>
         </dependency>
-        <!-- 1.2.0: LuckPerms API (публичное API для проверки прав из RaskolVault) -->
         <dependency>
             <groupId>net.luckperms</groupId>
             <artifactId>api</artifactId>
             <version>5.4</version>
             <scope>provided</scope>
         </dependency>
-        <!-- 1.2.0: Vault API явно (для RaskolCoreHook и прямой регистрации Economy Provider) -->
         <dependency>
             <groupId>com.github.MilkBowl</groupId>
             <artifactId>VaultAPI</artifactId>
