@@ -2,12 +2,18 @@
 package dev.raskol.vault.hook;
 
 import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.lang.reflect.Method;
 import java.util.UUID;
 
+/**
+ * Рефлексия-хук Towny (фикс 1.1.0.1): в Towny 0.103 нет Town.isKing();
+ * король нации = мэр её столицы (Nation.getCapital().getMayor()).
+ * Сравнение по UUID мэра, фолбэк — по имени оффлайн-игрока.
+ */
 public final class TownyHook {
 
     private final JavaPlugin plugin;
@@ -17,7 +23,8 @@ public final class TownyHook {
     private Method getTownMethod;
     private Method getNationMethod;
     private Method getNameMethod;
-    private Method isKingMethod;
+    private Method getCapitalMethod;
+    private Method getMayorMethod;
 
     public TownyHook(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -34,21 +41,17 @@ public final class TownyHook {
             Class<?> universeClass = Class.forName("com.palmergames.bukkit.towny.TownyUniverse");
             Method getInstance = universeClass.getMethod("getInstance");
             townyUniverse = getInstance.invoke(null);
-
             getResidentMethod = universeClass.getMethod("getResident", UUID.class);
-            
             Class<?> residentClass = Class.forName("com.palmergames.bukkit.towny.object.Resident");
             getTownMethod = residentClass.getMethod("getTownOrNull");
-            
             Class<?> townClass = Class.forName("com.palmergames.bukkit.towny.object.Town");
             getNationMethod = townClass.getMethod("getNationOrNull");
-            isKingMethod = townClass.getMethod("isKing");
-            
-            Class<?> nationClass = Class.forName("com.palmergames.bukkit.towny.object.Nation");
+            getMayorMethod = townClass.getMethod("getMayor");
+            Class<?> nationClass = getNationMethod.getReturnType();
+            getCapitalMethod = nationClass.getMethod("getCapital");
             getNameMethod = nationClass.getMethod("getName");
-
             available = true;
-            plugin.getLogger().info("RaskolVault: Towny-хук активен (через рефлексию)");
+            plugin.getLogger().info("RaskolVault: Towny-хук активен (рефлексия 0.103+: король = мэр столицы)");
         } catch (Exception e) {
             available = false;
             plugin.getLogger().warning("RaskolVault: Towny-хук не инициализирован: " + e.getMessage());
@@ -59,6 +62,7 @@ public final class TownyHook {
         return available;
     }
 
+    /** Имя нации игрока или null. */
     public String nationOf(UUID uuid) {
         if (!available || uuid == null) {
             return null;
@@ -82,13 +86,13 @@ public final class TownyHook {
         }
     }
 
-    /** 1.0.7: проверить, является ли игрок королём указанной нации. */
-    public boolean isKing(UUID uuid, String nationName) {
-        if (!available || uuid == null || nationName == null) {
+    /** true, если игрок — король указанной нации (мэр её столицы). */
+    public boolean isKing(UUID playerUuid, String nationName) {
+        if (!available || playerUuid == null || nationName == null) {
             return false;
         }
         try {
-            Object resident = getResidentMethod.invoke(townyUniverse, uuid);
+            Object resident = getResidentMethod.invoke(townyUniverse, playerUuid);
             if (resident == null) {
                 return false;
             }
@@ -96,18 +100,41 @@ public final class TownyHook {
             if (town == null) {
                 return false;
             }
-            Boolean isKing = (Boolean) isKingMethod.invoke(town);
-            if (!isKing) {
-                return false;
-            }
             Object nation = getNationMethod.invoke(town);
             if (nation == null) {
                 return false;
             }
-            String actualNation = (String) getNameMethod.invoke(nation);
-            return nationName.equals(actualNation);
+            String actual = (String) getNameMethod.invoke(nation);
+            if (actual == null || !nationName.equalsIgnoreCase(actual)) {
+                return false;
+            }
+            Object capital = getCapitalMethod.invoke(nation);
+            if (capital == null) {
+                return false;
+            }
+            Object mayor = getMayorMethod.invoke(capital);
+            if (mayor == null) {
+                return false;
+            }
+            UUID mayorUuid = extractUuid(mayor);
+            if (mayorUuid != null) {
+                return mayorUuid.equals(playerUuid);
+            }
+            String mayorName = (String) getNameMethod.invoke(mayor);
+            OfflinePlayer op = Bukkit.getOfflinePlayer(playerUuid);
+            return op.getName() != null && op.getName().equalsIgnoreCase(mayorName);
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    private UUID extractUuid(Object resident) {
+        try {
+            Method m = resident.getClass().getMethod("getUUID");
+            Object v = m.invoke(resident);
+            return v instanceof UUID u ? u : null;
+        } catch (Exception e) {
+            return null;
         }
     }
 }
