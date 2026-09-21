@@ -17,7 +17,6 @@ import java.util.Locale;
 /**
  * Авто-создание национальной валюты при NewNationEvent (1.2.0).
  * ID валюты = первые 3 буквы имени нации (uppercase) + цифровой суффикс при коллизиях.
- * Если нация в конфиге имеет явный маппинг — используем его.
  */
 public final class NationAutoCurrencyListener implements Listener {
 
@@ -49,14 +48,12 @@ public final class NationAutoCurrencyListener implements Listener {
         if (!plugin.getConfig().getBoolean("hooks.towny.auto-currency.enabled", true)) {
             return;
         }
-        // 1) Явный маппинг из конфига (приоритет)
         String explicit = plugin.getConfig().getString(
                 "hooks.towny.nation-currency." + nationName, "");
         if (explicit != null && !explicit.isBlank()) {
             createCurrencyIfAbsent(explicit.toUpperCase(Locale.ROOT), nationName);
             return;
         }
-        // 2) Автогенерация ID: первые 3 буквы имени (только буквы/цифры) + суффикс при коллизиях
         String base = sanitizeId(nationName);
         if (base.isEmpty()) {
             plugin.getLogger().warning("RaskolVault: имя нации '" + nationName
@@ -91,7 +88,6 @@ public final class NationAutoCurrencyListener implements Listener {
                 + " для нации " + nationName);
     }
 
-    /** Убирает пробелы/символы, оставляет только A-Z, 0-9, uppercase. */
     private String sanitizeId(String raw) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < raw.length(); i++) {
