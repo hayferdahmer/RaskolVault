@@ -7,6 +7,7 @@ import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.util.Formatter;
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -17,13 +18,10 @@ import org.bukkit.event.player.AsyncPlayerChatEvent;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
- * Обработчик GUI (1.1.1): ВСЕ переходы между GUI — на следующий тик (лечит глитч
- * вытаскивания предметов при смене окна внутри InventoryClickEvent).
- * Отказы кабинета дают честную причину.
+ * Обработчик GUI (FIX 1.1.1.1): трансляция &-кодов; переходы GUI на следующий тик.
  */
 public final class GuiListener implements Listener {
 
@@ -31,6 +29,14 @@ public final class GuiListener implements Listener {
 
     public GuiListener(RaskolVault plugin) {
         this.plugin = plugin;
+    }
+
+    private static String c(String s) {
+        return ChatColor.translateAlternateColorCodes('&', s);
+    }
+
+    private void send(Player p, String raw) {
+        p.sendMessage(c(raw));
     }
 
     private void later(Runnable r) {
@@ -86,15 +92,13 @@ public final class GuiListener implements Listener {
         try {
             amount = Double.parseDouble(event.getMessage().replace(",", ".").trim());
         } catch (NumberFormatException e) {
-            event.getPlayer().sendMessage(plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.invalid-amount",
-                    Map.of("value", event.getMessage())));
+            send(event.getPlayer(), plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", event.getMessage())));
             return;
         }
         if (!Double.isFinite(amount) || amount <= 0.0D) {
-            event.getPlayer().sendMessage(plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.invalid-amount",
-                    Map.of("value", event.getMessage())));
+            send(event.getPlayer(), plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", event.getMessage())));
             return;
         }
         Player player = event.getPlayer();
@@ -176,7 +180,7 @@ public final class GuiListener implements Listener {
         if (slot == 16) {
             WalletGui.CHAT_CAPTURE.put(player.getUniqueId(), new String[]{holder.fromId(), holder.toId()});
             player.closeInventory();
-            player.sendMessage(plugin.getMessages().prefix() + "&7Напиши сумму в чат:");
+            send(player, plugin.getMessages().prefix() + "&7Напиши сумму в чат:");
         }
     }
 
@@ -189,8 +193,7 @@ public final class GuiListener implements Listener {
             return;
         }
         if (!plugin.getRateLimiter().tryConsume(player.getUniqueId())) {
-            player.sendMessage(plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.rate-limited", null));
+            send(player, plugin.getMessages().prefix() + plugin.getMessages().get("error.rate-limited", null));
             return;
         }
         var executed = plugin.getConvertEngine().execute(
@@ -198,8 +201,7 @@ public final class GuiListener implements Listener {
         if (executed.isEmpty()) {
             String reason = plugin.getConvertEngine().blockReason(
                     player.getUniqueId(), holder.fromId(), holder.toId(), holder.amount());
-            player.sendMessage(plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.convert.generic",
+            send(player, plugin.getMessages().prefix() + plugin.getMessages().get("error.convert.generic",
                     Map.of("reason", reason.isEmpty() ? "неизвестно" : reason,
                             "from", holder.fromId(), "to", holder.toId())));
             player.closeInventory();
@@ -207,11 +209,8 @@ public final class GuiListener implements Listener {
         }
         var q = executed.get();
         Currency to = plugin.getCurrencies().get(q.toId()).orElse(null);
-        player.sendMessage(plugin.getMessages().prefix()
-                + plugin.getMessages().get("convert.done", Map.of(
-                "amount", Formatter.withSymbol(q.net(),
-                        to == null ? 2 : to.decimals(),
-                        to == null ? q.toId() : to.symbol()))));
+        send(player, plugin.getMessages().prefix() + plugin.getMessages().get("convert.done",
+                Map.of("amount", fmtSym(q.net(), to, q.toId()))));
         later(() -> WalletGui.openMain(plugin, player));
     }
 
@@ -239,21 +238,21 @@ public final class GuiListener implements Listener {
         }
         ReserveBank bank = plugin.getReserveBank();
         Currency national = null;
-        for (Currency c : plugin.getCurrencies().all()) {
-            if (c.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(c.nationId())) {
-                national = c;
+        for (Currency cur : plugin.getCurrencies().all()) {
+            if (cur.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(cur.nationId())) {
+                national = cur;
             }
         }
         boolean refresh = true;
         switch (slot) {
             case 19 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) - 0.10D)),
-                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 0.50");
+                    "Паритет: " + String.format(java.util.Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 0.50");
             case 21 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) + 0.10D)),
-                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 2.00");
+                    "Паритет: " + String.format(java.util.Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 2.00");
             case 23 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) - 0.005D)),
-                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 0%");
+                    "Налог: " + String.format(java.util.Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 0%");
             case 25 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) + 0.005D)),
-                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 5%");
+                    "Налог: " + String.format(java.util.Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 5%");
             case 29 -> depositFeedback(player, bank, nation, 100.0D);
             case 30 -> depositFeedback(player, bank, nation, 1000.0D);
             case 31 -> withdrawFeedback(player, bank, nation, 100.0D);
@@ -334,15 +333,14 @@ public final class GuiListener implements Listener {
     }
 
     private void feedback(Player player, boolean ok, String success, String failReason) {
-        player.sendMessage(plugin.getMessages().prefix()
-                + (ok ? "&a✔ " + success : "&c✖ Отказ: " + failReason));
+        send(player, plugin.getMessages().prefix() + (ok ? "&a✔ " + success : "&c✖ Отказ: " + failReason));
     }
 
     private List<Currency> tradeable() {
         List<Currency> list = new ArrayList<>();
-        for (Currency c : plugin.getCurrencies().all()) {
-            if (c.tradeable()) {
-                list.add(c);
+        for (Currency cur : plugin.getCurrencies().all()) {
+            if (cur.tradeable()) {
+                list.add(cur);
             }
         }
         return list;
@@ -350,9 +348,9 @@ public final class GuiListener implements Listener {
 
     private List<Currency> tradeableExcept(String exceptId) {
         List<Currency> list = new ArrayList<>();
-        for (Currency c : plugin.getCurrencies().all()) {
-            if (c.tradeable() && !c.id().equals(exceptId)) {
-                list.add(c);
+        for (Currency cur : plugin.getCurrencies().all()) {
+            if (cur.tradeable() && !cur.id().equals(exceptId)) {
+                list.add(cur);
             }
         }
         return list;
@@ -363,6 +361,13 @@ public final class GuiListener implements Listener {
             return -1;
         }
         return (slot - 10) / 2;
+    }
+
+    private String fmtSym(double value, Currency cur, String fallback) {
+        if (cur == null) {
+            return Formatter.amount(value, 2) + " " + fallback;
+        }
+        return Formatter.withSymbol(value, cur.decimals(), cur.symbol());
     }
 
     private static double round2(double v) {
