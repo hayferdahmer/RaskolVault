@@ -119,7 +119,7 @@ public final class ExchangeSubcommand {
             return;
         }
         var res = orders.createSellOrder(king.getUniqueId(), nation, args[2].toUpperCase(Locale.ROOT), amount, price);
-        send(sender, res.ok()
+        send(sender, res.success()
                 ? "&aОрдер создан: &f" + res.orderId().substring(0, 8)
                 : "&cОтказ: " + res.error());
     }
@@ -139,7 +139,7 @@ public final class ExchangeSubcommand {
             return;
         }
         var res = orders.createBuyOrder(king.getUniqueId(), nation, args[2].toUpperCase(Locale.ROOT), amount, price);
-        send(sender, res.ok()
+        send(sender, res.success()
                 ? "&aОрдер создан: &f" + res.orderId().substring(0, 8)
                 : "&cОтказ: " + res.error());
     }
@@ -154,7 +154,7 @@ public final class ExchangeSubcommand {
             return;
         }
         var res = orders.cancelOrder(resolveId(args[2]), player.getUniqueId());
-        send(sender, res.ok() ? "&aОрдер отменён, заморозка возвращена" : "&cОтказ: " + res.error());
+        send(sender, res.success() ? "&aОрдер отменён, заморозка возвращена" : "&cОтказ: " + res.error());
     }
 
     private void take(CommandSender sender, String[] args) {
@@ -165,7 +165,7 @@ public final class ExchangeSubcommand {
             return;
         }
         var res = orders.takeOrder(resolveId(args[2]), king.getUniqueId());
-        send(sender, res.ok() ? "&aОрдер исполнен целиком" : "&cОтказ: " + res.error());
+        send(sender, res.success() ? "&aОрдер исполнен целиком" : "&cОтказ: " + res.error());
     }
 
     private Player requireKing(CommandSender sender) {
