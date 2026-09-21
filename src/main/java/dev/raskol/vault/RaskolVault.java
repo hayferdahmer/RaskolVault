@@ -12,6 +12,7 @@ import dev.raskol.vault.escrow.EscrowService;
 import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
+import dev.raskol.vault.gui.ExchangeGui;
 import dev.raskol.vault.gui.GuiListener;
 import dev.raskol.vault.gui.ReserveGui;
 import dev.raskol.vault.gui.WalletGui;
@@ -49,15 +50,11 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.1-SNAPSHOT: биржа королей (exchange_orders + escrow) + GUI ячеек резерва.
+ * RaskolVault 1.2.1-SNAPSHOT (база для 1.2.2): + ExchangeGui (GUI биржи).
  */
 public final class RaskolVault extends JavaPlugin {
 
-    private boolean corePresent;
-    private boolean essentialsPresent;
-    private boolean townyPresent;
-    private boolean luckPermsPresent;
-    private boolean placeholderPresent;
+    private boolean corePresent, essentialsPresent, townyPresent, luckPermsPresent, placeholderPresent;
 
     private SQLiteLedger ledger;
     private LedgerWriter writer;
@@ -78,18 +75,16 @@ public final class RaskolVault extends JavaPlugin {
     private LoadSimulator loadSimulator;
     private RestoreService restoreService;
     private EscrowService escrowService;
-    private BukkitTask checkpointTask;
-    private BukkitTask inflationTask;
-    private BukkitTask reconcileTask;
-    private BukkitTask writerAlarmTask;
+    private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
     private ReserveBank reserveBank;
-    private RateLimiter rateLimiter;
-    private RateLimiter payLimiter;
+    private RateLimiter rateLimiter, payLimiter;
     private TxCounter txCounter;
     private InflationCheckpoint inflationCheckpoint;
     private RaskolVaultAPI api;
+    private ReserveGui reserveGui;
+    private ExchangeGui exchangeGui;
     private long startTimeMillis;
     private volatile long lastReconcileMillis;
 
@@ -110,7 +105,6 @@ public final class RaskolVault extends JavaPlugin {
         detectHooks();
 
         File dbFile = new File(getDataFolder(), getConfig().getString("storage.sqlite.file", "data/ledger.sqlite"));
-
         restoreService = new RestoreService(this);
         restoreService.maybeRestore(dbFile);
 
@@ -144,7 +138,6 @@ public final class RaskolVault extends JavaPlugin {
                 + " · applied " + writer.applied() + " · failed " + writer.failed());
 
         sparkHook = new SparkHook(this);
-        getLogger().info("RaskolVault: " + sparkHook.describe());
 
         wallets = new WalletService(this, ledger, writer, currencies, essentialsHook,
                 getConfig().getLong("storage.sqlite.borrow-timeout-ms", 5000), sparkHook);
@@ -160,23 +153,17 @@ public final class RaskolVault extends JavaPlugin {
         escrowService = new EscrowService(this, wallets, ledger);
 
         luckPermsHook = new LuckPermsHook(this);
-        if (luckPermsPresent && getConfig().getBoolean("hooks.luckperms.enabled", true)) {
-            luckPermsHook.init();
-        }
+        if (luckPermsPresent && getConfig().getBoolean("hooks.luckperms.enabled", true)) luckPermsHook.init();
 
         townyHook = new TownyHook(this);
-        if (townyPresent && getConfig().getBoolean("hooks.towny.enabled", true)) {
-            townyHook.init();
-        }
+        if (townyPresent && getConfig().getBoolean("hooks.towny.enabled", true)) townyHook.init();
 
         treasury = new NationTreasury(wallets);
 
-        rateLimiter = new RateLimiter(
-                getConfig().getDouble("safety.rate-limit.capacity", 5.0D),
-                getConfig().getDouble("safety.rate-limit.refill-per-second", 0.5D));
-        payLimiter = new RateLimiter(
-                getConfig().getDouble("safety.pay-rate-limit.capacity", 5.0D),
-                getConfig().getDouble("safety.pay-rate-limit.refill-per-second", 0.5D));
+        rateLimiter = new RateLimiter(getConfig().getDouble("safety.rate-limit.capacity", 5.0),
+                getConfig().getDouble("safety.rate-limit.refill-per-second", 0.5));
+        payLimiter = new RateLimiter(getConfig().getDouble("safety.pay-rate-limit.capacity", 5.0),
+                getConfig().getDouble("safety.pay-rate-limit.refill-per-second", 0.5));
         txCounter = new TxCounter(ledger);
         inflationCheckpoint = new InflationCheckpoint(this, reserveBank, currencies, townyHook);
 
@@ -186,14 +173,17 @@ public final class RaskolVault extends JavaPlugin {
         offlinePlayerRegistry.init();
         getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
         getServer().getPluginManager().registerEvents(new GuiListener(this), this);
-        // 1.2.1: GUI ячеек резерва (клик по слотам депозит/вывод/назад + чат-захват суммы)
-        getServer().getPluginManager().registerEvents(new ReserveGui(this), this);
+
+        // GUI: резерв (кабинет-заглушка) + биржа
+        reserveGui = new ReserveGui(this);
+        getServer().getPluginManager().registerEvents(reserveGui, this);
+        exchangeGui = new ExchangeGui(this);
+        getServer().getPluginManager().registerEvents(exchangeGui, this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
-            if (getConfig().getBoolean("hooks.towny.auto-create-national", true)) {
+            if (getConfig().getBoolean("hooks.towny.auto-create-national", true))
                 new NationAutoCurrencyListener(this, currencies, ledger).register();
-            }
         }
 
         if (corePresent && getConfig().getBoolean("hooks.raskolcore.register-as-provider", true)) {
@@ -219,52 +209,41 @@ public final class RaskolVault extends JavaPlugin {
 
         long checkpointMinutes = getConfig().getLong("storage.sqlite.checkpoint-interval-minutes", 5);
         if (checkpointMinutes > 0) {
-            long periodTicks = checkpointMinutes * 60L * 20L;
+            long period = checkpointMinutes * 60L * 20L;
             checkpointTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
                 long pages = ledger.checkpoint();
-                if (getConfig().getBoolean("general.debug", false)) {
+                if (getConfig().getBoolean("general.debug", false))
                     getLogger().info("RaskolVault: WAL checkpoint, страниц свёрнуто: " + pages);
-                }
-            }, periodTicks, periodTicks);
+            }, period, period);
         }
 
-        long inflationMinutes = getConfig().getLong("reserve.check-interval-minutes", 60L);
+        long inflationMinutes = getConfig().getLong("reserve.check-interval-minutes", 60);
         if (inflationMinutes > 0) {
-            long periodTicks = inflationMinutes * 60L * 20L;
-            inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this,
-                    inflationCheckpoint, periodTicks, periodTicks);
+            long period = inflationMinutes * 60L * 20L;
+            inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this, inflationCheckpoint, period, period);
         }
 
-        long reconcileMinutes = getConfig().getLong("storage.reconcile-interval-minutes", 30L);
+        long reconcileMinutes = getConfig().getLong("storage.reconcile-interval-minutes", 30);
         if (reconcileMinutes > 0) {
-            long periodTicks = reconcileMinutes * 60L * 20L;
+            long period = reconcileMinutes * 60L * 20L;
             reconcileTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
                 int healed = wallets.reconcile();
                 int evicted = confirms.evictExpired();
                 WalletGui.CHAT_CAPTURE.clear();
                 ReserveGui.CHAT_CAPTURE.clear();
                 lastReconcileMillis = System.currentTimeMillis();
-                if (healed > 0) {
-                    getLogger().warning("RaskolVault: сверка кэш↔леджер: вылечено расхождений: " + healed);
-                }
-                if (evicted > 0 && getConfig().getBoolean("general.debug", false)) {
-                    getLogger().info("RaskolVault: удалено просроченных подтверждений: " + evicted);
-                }
-            }, periodTicks, periodTicks);
+                if (healed > 0) getLogger().warning("RaskolVault: сверка кэш↔леджер: вылечено расхождений: " + healed);
+            }, period, period);
         }
 
-        long[] alarmState = new long[]{0};
+        long[] alarm = new long[]{0};
         writerAlarmTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
             int queue = writer.queueSize();
             long failed = writer.failed();
-            if (queue > 500) {
-                getLogger().warning("RaskolVault: ⚠ writer queue " + queue
-                        + " > 500 — возможно, леджер не успевает за нагрузкой");
-            }
-            if (failed > alarmState[0]) {
-                long delta = failed - alarmState[0];
-                getLogger().warning("RaskolVault: ⚠ writer failed +" + delta + " (итого " + failed + ")");
-                alarmState[0] = failed;
+            if (queue > 500) getLogger().warning("RaskolVault: ⚠ writer queue " + queue + " > 500");
+            if (failed > alarm[0]) {
+                getLogger().warning("RaskolVault: ⚠ writer failed +" + (failed - alarm[0]) + " (итого " + failed + ")");
+                alarm[0] = failed;
             }
         }, 600L, 600L);
 
@@ -282,46 +261,36 @@ public final class RaskolVault extends JavaPlugin {
 
         getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён"
                 + " · Paper/MC " + getServer().getVersion()
-                + " · Core " + (corePresent ? "on" : "off")
-                + " · Essentials " + (essentialsPresent ? "on" : "off")
-                + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
-                + " · LuckPerms " + (luckPermsPresent ? "on" : "off") + "/" + (luckPermsHook.isAvailable() ? "hooked" : "off")
-                + " · PAPI " + (placeholderPresent ? "on" : "off")
-                + " · Биржа королей активна (exchange_orders)");
+                + " · Towny " + (townyHook.isAvailable() ? "hooked" : "off")
+                + " · Биржа GUI активна");
     }
 
     @Override
     public void onDisable() {
-        if (writerAlarmTask != null) { writerAlarmTask.cancel(); writerAlarmTask = null; }
-        if (reconcileTask != null) { reconcileTask.cancel(); reconcileTask = null; }
-        if (inflationTask != null) { inflationTask.cancel(); inflationTask = null; }
-        if (checkpointTask != null) { checkpointTask.cancel(); checkpointTask = null; }
-        if (coreHook != null) { coreHook.shutdown(); }
-        if (confirms != null) { confirms.clear(); }
-        if (backups != null) { backups.stop(); }
-        if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) {
-            saveBalancesBackup();
-        }
-        if (writer != null) { writer.close(10000L); }
-        if (ledger != null) { ledger.close(); }
+        if (writerAlarmTask != null) writerAlarmTask.cancel();
+        if (reconcileTask != null) reconcileTask.cancel();
+        if (inflationTask != null) inflationTask.cancel();
+        if (checkpointTask != null) checkpointTask.cancel();
+        if (coreHook != null) coreHook.shutdown();
+        if (confirms != null) confirms.clear();
+        if (backups != null) backups.stop();
+        if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) saveBalancesBackup();
+        if (writer != null) writer.close(10000L);
+        if (ledger != null) ledger.close();
         getLogger().info("RaskolVault выключен");
     }
 
     private void saveResourceIfAbsent(String name) {
-        if (!new File(getDataFolder(), name).exists()) {
-            saveResource(name, false);
-        }
+        if (!new File(getDataFolder(), name).exists()) saveResource(name, false);
     }
 
     private void saveBalancesBackup() {
         File file = new File(getDataFolder(), getConfig().getString("storage.yaml-backup.file", "data/balances.yml"));
         YamlConfiguration yaml = new YamlConfiguration();
         ConfigurationSection root = yaml.createSection("balances");
-        for (Map.Entry<UUID, Map<String, Double>> entry : wallets.cacheSnapshot().entrySet()) {
-            ConfigurationSection row = root.createSection(entry.getKey().toString());
-            for (Map.Entry<String, Double> cell : entry.getValue().entrySet()) {
-                row.set(cell.getKey(), cell.getValue());
-            }
+        for (Map.Entry<UUID, Map<String, Double>> e : wallets.cacheSnapshot().entrySet()) {
+            ConfigurationSection row = root.createSection(e.getKey().toString());
+            for (Map.Entry<String, Double> cell : e.getValue().entrySet()) row.set(cell.getKey(), cell.getValue());
         }
         SafeStorage.saveAtomic(yaml, file, this);
     }
@@ -335,8 +304,8 @@ public final class RaskolVault extends JavaPlugin {
     }
 
     private boolean isPluginEnabled(String name) {
-        Plugin plugin = getServer().getPluginManager().getPlugin(name);
-        return plugin != null && plugin.isEnabled();
+        Plugin p = getServer().getPluginManager().getPlugin(name);
+        return p != null && p.isEnabled();
     }
 
     public SQLiteLedger getLedger() { return ledger; }
@@ -365,9 +334,11 @@ public final class RaskolVault extends JavaPlugin {
     public RateLimiter getPayRateLimiter() { return payLimiter; }
     public TxCounter getTxCounter() { return txCounter; }
     public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
+    public RaskolVaultAPI getAPI() { return api; }
+    public ReserveGui getReserveGui() { return reserveGui; }
+    public ExchangeGui getExchangeGui() { return exchangeGui; }
     public long getStartTimeMillis() { return startTimeMillis; }
     public long getLastReconcileMillis() { return lastReconcileMillis; }
-    public RaskolVaultAPI getAPI() { return api; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
