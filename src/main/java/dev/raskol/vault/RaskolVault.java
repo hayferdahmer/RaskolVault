@@ -4,8 +4,10 @@ package dev.raskol.vault;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
+import dev.raskol.vault.config.ConfigValidator;
 import dev.raskol.vault.config.MessagesConfig;
 import dev.raskol.vault.confirm.ConfirmManager;
+import dev.raskol.vault.escrow.EscrowService;
 import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
@@ -26,6 +28,7 @@ import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.safety.RateLimiter;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
+import dev.raskol.vault.storage.RestoreService;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.test.LoadSimulator;
@@ -43,8 +46,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.1.4: + uptime + алерты писателя (queue > 500 / failed > 0) +
- * lastReconcileMillis для health.
+ * RaskolVault 1.1.5 (RC): restore по флагу, конфиг-валидатор с клампами,
+ * escrow-примитив (фундамент 1.2.0), версия 1.1.5.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -70,6 +73,8 @@ public final class RaskolVault extends JavaPlugin {
     private OfflinePlayerRegistry offlinePlayerRegistry;
     private BackupService backups;
     private LoadSimulator loadSimulator;
+    private RestoreService restoreService;
+    private EscrowService escrowService;
     private BukkitTask checkpointTask;
     private BukkitTask inflationTask;
     private BukkitTask reconcileTask;
@@ -92,12 +97,21 @@ public final class RaskolVault extends JavaPlugin {
         saveResourceIfAbsent("messages.yml");
         saveResourceIfAbsent("rates.yml");
 
+        // 1.1.5: валидация конфига с клампами до создания компонентов
+        ConfigValidator validator = new ConfigValidator(this);
+        validator.report(validator.validate(getConfig()));
+
         messages = new MessagesConfig(this);
         messages.load(new File(getDataFolder(), getConfig().getString("messages.file", "messages.yml")));
 
         detectHooks();
 
         File dbFile = new File(getDataFolder(), getConfig().getString("storage.sqlite.file", "data/ledger.sqlite"));
+
+        // 1.1.5: restore по флагу ДО инициализации леджера
+        restoreService = new RestoreService(this);
+        restoreService.maybeRestore(dbFile);
+
         try {
             ledger = new SQLiteLedger(this, dbFile,
                     getConfig().getInt("storage.sqlite.pool-size", 5),
@@ -141,6 +155,7 @@ public final class RaskolVault extends JavaPlugin {
         convertEngine = new ConvertEngine(this, wallets, currencies, reserveBank);
         exchange = new ExchangeService(this, wallets, currencies, rates);
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
+        escrowService = new EscrowService(this, wallets, ledger);
 
         townyHook = new TownyHook(this);
         if (townyPresent && getConfig().getBoolean("hooks.towny.enabled", true)) {
@@ -226,9 +241,7 @@ public final class RaskolVault extends JavaPlugin {
             }, periodTicks, periodTicks);
         }
 
-        // 1.1.4: алерт писателя (каждые 30 сек: queue > 500 → WARN, failed растёт → WARN)
-        long lastFailed = 0;
-        long[] alarmState = new long[]{lastFailed};
+        long[] alarmState = new long[]{0};
         writerAlarmTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
             int queue = writer.queueSize();
             long failed = writer.failed();
@@ -350,6 +363,8 @@ public final class RaskolVault extends JavaPlugin {
     public OfflinePlayerRegistry getOfflinePlayerRegistry() { return offlinePlayerRegistry; }
     public BackupService getBackups() { return backups; }
     public LoadSimulator getLoadSimulator() { return loadSimulator; }
+    public RestoreService getRestoreService() { return restoreService; }
+    public EscrowService getEscrow() { return escrowService; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public SparkHook getSparkHook() { return sparkHook; }
     public ReserveBank getReserveBank() { return reserveBank; }
