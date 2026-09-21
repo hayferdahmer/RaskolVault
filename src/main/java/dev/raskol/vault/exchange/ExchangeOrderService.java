@@ -12,14 +12,12 @@ import dev.raskol.vault.tax.TaxService;
 import dev.raskol.vault.wallet.WalletService;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
- * Сервис ордеров межгосударственной биржи (1.2.2-b).
- * Новое:
- *  - частичные исполнения (takePartial: забирает min(remaining, доступная сумма));
- *  - авто-матчинг встречных ордеров (createOrder → matchCounterparty);
- *  - налоги на сделки через TaxService.
+ * Сервис ордеров биржи (1.2.2-b): частичные исполнения + авто-матчинг.
+ * + перегрузка takeOrder(orderId, taker) = полное исполнение (для ExchangeGui/ExchangeSubcommand).
  */
 public final class ExchangeOrderService {
 
@@ -57,11 +55,7 @@ public final class ExchangeOrderService {
         return createOrder(owner, nation, currencies.globalId(), buyCurrency, round2(amount * price), amount);
     }
 
-    /**
-     * Создание ордера + попытка авто-матчинга встречных.
-     * Если найден встречный по цене (sell↔buy, maker_price ≥ taker_price), исполняется
-     * автоматически (полностью или частично). Остаток размещается как OPEN-ордер.
-     */
+    /** Создание ордера + авто-матчинг встречных; остаток размещается как OPEN. */
     public CreateResult createOrder(UUID owner, String nation, String sellCur, String buyCur,
                                     double sellAmount, double buyAmount) {
         if (!plugin.getTownyHook().isAvailable()
@@ -75,24 +69,22 @@ public final class ExchangeOrderService {
         if (!sell.tradeable() || !buy.tradeable()) return CreateResult.fail("одна из валют неторгуемая");
         if (!(sellAmount > 0.0D) || !(buyAmount > 0.0D)) return CreateResult.fail("некорректная сумма");
 
-        // 1) авто-матчинг: ищем встречные (maker sells buyCur за sellCur, maker_price <= my price)
-        double myPrice = buyAmount / sellAmount; // buy per 1 sell
+        double myPrice = buyAmount / sellAmount;
         double filledSell = 0.0D;
         double filledBuy = 0.0D;
         List<ExchangeOrderRow> candidates = ledger.exchangeOrdersByStatus("OPEN", 500);
         for (ExchangeOrderRow c : candidates) {
             if (c.owner().equals(owner)) continue;
             if (!c.sellCurrency().equalsIgnoreCase(buy.id()) || !c.buyCurrency().equalsIgnoreCase(sell.id())) continue;
-            double makerPrice = c.price(); // buy per 1 sell (в их ордере: buyCurrency = my sellCur)
-            if (makerPrice > myPrice + 1e-9D) continue; // maker просит больше, чем я готов дать
-            double maxSellFromMaker = c.remaining(); // сколько sellCur я получу
-            double maxBuyFromMaker = maxSellFromMaker * makerPrice; // сколько buyCur maker возьмёт у меня
+            double makerPrice = c.price();
+            if (makerPrice > myPrice + 1e-9D) continue;
+            double maxSellFromMaker = c.remaining();
+            double maxBuyFromMaker = maxSellFromMaker * makerPrice;
             double wantSell = sellAmount - filledSell;
             double wantBuy = buyAmount - filledBuy;
             double takeSell = Math.min(maxSellFromMaker, wantSell);
             double takeBuy = Math.min(maxBuyFromMaker, wantBuy);
             if (!(takeSell > 0.0D) || !(takeBuy > 0.0D)) continue;
-            // пропорция по меньшей стороне
             double ratio = Math.min(takeSell / maxSellFromMaker, takeBuy / maxBuyFromMaker);
             double executedSell = round2(maxSellFromMaker * ratio);
             double executedBuy = round2(maxBuyFromMaker * ratio);
@@ -101,13 +93,11 @@ public final class ExchangeOrderService {
                 filledSell += executedSell;
                 filledBuy += executedBuy;
                 if (filledSell >= sellAmount - 1e-9D && filledBuy >= buyAmount - 1e-9D) {
-                    plugin.getLogger().info("RaskolVault: авто-матчинг исполнил ордер " + nation + " полностью (" + fmt(filledSell) + " " + sell.id() + ")");
                     return CreateResult.ok("auto-matched");
                 }
             }
         }
 
-        // 2) остаток размещается как OPEN-ордер
         double remainSell = round2(sellAmount - filledSell);
         double remainBuy = round2(buyAmount - filledBuy);
         if (!(remainSell > 0.0D) || !(remainBuy > 0.0D)) {
@@ -121,7 +111,7 @@ public final class ExchangeOrderService {
         double price = remainBuy / remainSell;
         long now = System.currentTimeMillis();
         try {
-            ledger.exchangeOrderInsert(new SQLiteLedger.ExchangeOrderRow(
+            ledger.exchangeOrderInsert(new ExchangeOrderRow(
                     orderId, owner, nation, sell.id(), buy.id(),
                     remainSell, remainBuy, price, remainSell, "OPEN", now, now));
         } catch (RuntimeException e) {
@@ -131,7 +121,7 @@ public final class ExchangeOrderService {
         return CreateResult.ok(orderId);
     }
 
-    /** Частичное исполнение существующего ордера (take). */
+    /** Частичное исполнение: taker забирает до requestedSellAmount из remaining. */
     public MatchResult takeOrder(String orderId, UUID taker, double requestedSellAmount) {
         ExchangeOrderRow order = ledger.exchangeOrderGet(orderId);
         if (order == null) return MatchResult.fail("ордер не найден");
@@ -150,14 +140,17 @@ public final class ExchangeOrderService {
         return executePartial(order, taker, takeSell, takeBuy);
     }
 
-    /** Полное исполнение (обёртка над takeOrder с amount = remaining). */
-    public MatchResult takeOrderFull(String orderId, UUID taker) {
+    /** ПЕРЕГРУЗКА (1.2.2-b): полное исполнение (весь remaining). */
+    public MatchResult takeOrder(String orderId, UUID taker) {
         ExchangeOrderRow order = ledger.exchangeOrderGet(orderId);
         if (order == null) return MatchResult.fail("ордер не найден");
         return takeOrder(orderId, taker, order.remaining());
     }
 
-    /** Отмена своего OPEN-ордера. */
+    public MatchResult takeOrderFull(String orderId, UUID taker) {
+        return takeOrder(orderId, taker);
+    }
+
     public MatchResult cancelOrder(String orderId, UUID owner) {
         ExchangeOrderRow order = ledger.exchangeOrderGet(orderId);
         if (order == null) return MatchResult.fail("ордер не найден");
@@ -168,9 +161,7 @@ public final class ExchangeOrderService {
         return MatchResult.ok(0.0D, 0.0D);
     }
 
-    // ---------- Внутреннее: атомарное исполнение куска ----------
     private MatchResult executePartial(ExchangeOrderRow order, UUID taker, double takeSell, double takeBuy) {
-        // 1) taker платит takeBuy buyCur владельцу
         if (!wallets.withdraw(taker, order.buyCurrency(), takeBuy, TransactionType.PAY, "exchange:take:" + order.id())) {
             return MatchResult.fail("недостаточно " + order.buyCurrency() + " для исполнения");
         }
@@ -178,13 +169,11 @@ public final class ExchangeOrderService {
             wallets.deposit(taker, order.buyCurrency(), takeBuy, TransactionType.PAY, "exchange:rollback:" + order.id());
             return MatchResult.fail("ошибка зачисления владельцу");
         }
-        // 2) замороженная sellCur уходит taker'у (частично)
         if (!escrow.releasePartial(order.id(), taker, takeSell)) {
             wallets.withdraw(order.owner(), order.buyCurrency(), takeBuy, TransactionType.PAY, "exchange:rollback:" + order.id());
             wallets.deposit(taker, order.buyCurrency(), takeBuy, TransactionType.PAY, "exchange:rollback:" + order.id());
             return MatchResult.fail("ошибка передачи заморозки");
         }
-        // 3) налог нации-продавца (если включён)
         TaxService tax = plugin.getTaxService();
         if (tax != null) {
             tax.collectExchange(order.nation(), order.buyCurrency(), takeBuy);
@@ -207,6 +196,7 @@ public final class ExchangeOrderService {
         return ledger.exchangeOrderGet(orderId);
     }
 
-    private static double round2(double v) { return Math.round(v * 100.0D) / 100.0D; }
-    private static String fmt(double v) { return String.format(java.util.Locale.ROOT, "%.2f", v); }
+    private static double round2(double v) {
+        return Math.round(v * 100.0D) / 100.0D;
+    }
 }
