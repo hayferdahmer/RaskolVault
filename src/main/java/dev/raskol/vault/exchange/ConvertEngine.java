@@ -9,16 +9,13 @@ import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.wallet.WalletService;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Конвертация (1.1.1): национальные валюты конвертируются ЧЕРЕЗ резерв нации.
- * national→GLD: резерв нации отдаёт золото (резерв -= goldOut); печать GLD закрыта.
- * GLD→national: резерв нации пополняется золотом (резерв += goldIn).
- * national→national: золото перетекает из резерва A в резерв B.
- * Гарды: цена ≤ 0 → пара закрыта; rate конечный и > 0; резерв достаточен.
+ * Конвертация через резерв (1.1.3): + эмбарго-проверка + комиссии пар из RatesService.
  */
 public final class ConvertEngine {
 
@@ -59,7 +56,6 @@ public final class ConvertEngine {
         return Double.isFinite(r) && r > 0.0D ? r : 0.0D;
     }
 
-    /** Человекочитаемая причина, почему конверт закрыт (пусто = всё ок). */
     public String blockReason(UUID owner, String fromId, String toId, double amount) {
         Currency from = currencies.get(fromId).orElse(null);
         Currency to = currencies.get(toId).orElse(null);
@@ -68,6 +64,9 @@ public final class ConvertEngine {
         }
         if (from.id().equals(to.id())) {
             return "нельзя менять валюту на саму себя";
+        }
+        if (plugin.getRates().isEmbargoed(from.id(), to.id())) {
+            return "эмбарго: пара " + from.id() + "↔" + to.id() + " закрыта политикой";
         }
         if (!(amount > 0.0D) || !Double.isFinite(amount)) {
             return "некорректная сумма";
@@ -103,7 +102,7 @@ public final class ConvertEngine {
         }
         Currency from = currencies.get(fromId).orElseThrow();
         Currency to = currencies.get(toId).orElseThrow();
-        double baseRate = plugin.getConfig().getDouble("exchange.default-fee", 0.02);
+        double baseRate = plugin.getRates().feeFor(fromId, toId);
         double taxRate = to.type() == CurrencyType.NATIONAL ? bank.taxOf(to.nationId()) : 0.0D;
         double feeBase = round2dec(amount * baseRate, from);
         double feeTax = round2dec(amount * taxRate, from);
@@ -117,58 +116,56 @@ public final class ConvertEngine {
                 to.type() == CurrencyType.NATIONAL ? to.nationId() : null, taxInTo, goldFlow));
     }
 
-    /** Исполняет конверт с компенсациями при любом сбое шага. */
     public Optional<Quote> execute(UUID owner, String fromId, String toId, double amount) {
         Optional<Quote> q = quote(owner, fromId, toId, amount);
         if (q.isEmpty()) {
             return q;
         }
         Quote quote = q.get();
-        Currency from = currencies.get(fromId).orElseThrow();
-        Currency to = currencies.get(toId).orElseThrow();
-        String glb = currencies.globalId();
-        String reason = "convert:" + fromId + "->" + toId;
-        boolean fromNat = from.type() != CurrencyType.GLOBAL;
-        boolean toNat = to.type() != CurrencyType.GLOBAL;
+        boolean fromNat = !fromId.equals(currencies.globalId());
+        boolean toNat = !toId.equals(currencies.globalId());
 
-        // 1) резервные движения
-        if (fromNat && !bank.reserveDebit(from.nationId(), quote.goldFlow())) {
+        if (fromNat && !bank.reserveDebit(fromNation(fromId), quote.goldFlow())) {
             return Optional.empty();
         }
-        if (toNat && !bank.reserveCredit(to.nationId(), quote.goldFlow())) {
-            if (fromNat) bank.reserveCredit(from.nationId(), quote.goldFlow());
+        if (toNat && !bank.reserveCredit(toNation(toId), quote.goldFlow())) {
+            if (fromNat) bank.reserveCredit(fromNation(fromId), quote.goldFlow());
             return Optional.empty();
         }
-        // 2) списание исходной валюты
-        if (!wallets.withdraw(owner, from.id(), amount, TransactionType.CONVERT, reason)) {
-            if (toNat) bank.reserveDebit(to.nationId(), quote.goldFlow());
-            if (fromNat) bank.reserveCredit(from.nationId(), quote.goldFlow());
+        if (!wallets.withdraw(owner, fromId, amount, TransactionType.CONVERT, "convert:" + fromId + "->" + toId)) {
+            if (toNat) bank.reserveDebit(toNation(toId), quote.goldFlow());
+            if (fromNat) bank.reserveCredit(fromNation(fromId), quote.goldFlow());
             return Optional.empty();
         }
-        // 3) начисление целевой валюты
-        if (!wallets.deposit(owner, to.id(), quote.net(), TransactionType.CONVERT, reason)) {
-            wallets.deposit(owner, from.id(), amount, TransactionType.CONVERT, reason + ":rollback");
-            if (toNat) bank.reserveDebit(to.nationId(), quote.goldFlow());
-            if (fromNat) bank.reserveCredit(from.nationId(), quote.goldFlow());
+        if (!wallets.deposit(owner, toId, quote.net(), TransactionType.CONVERT, "convert:" + fromId + "->" + toId)) {
+            wallets.deposit(owner, fromId, amount, TransactionType.CONVERT, "convert:rollback");
+            if (toNat) bank.reserveDebit(toNation(toId), quote.goldFlow());
+            if (fromNat) bank.reserveCredit(fromNation(fromId), quote.goldFlow());
             return Optional.empty();
         }
-        // 4) налог в казну нации-цели (не фатально)
         if (quote.taxNation() != null && quote.taxInTo() > 0.0D) {
-            if (!wallets.deposit(ReserveBank.reserveUuid(quote.taxNation()), to.id(), quote.taxInTo(),
+            if (!wallets.deposit(ReserveBank.treasuryUuid(quote.taxNation()), toId, quote.taxInTo(),
                     TransactionType.CONVERT, "convert:tax:" + quote.taxNation())) {
                 plugin.getLogger().warning("RaskolVault: налог конвертации в казну "
-                        + quote.taxNation() + " не зачислен (" + quote.taxInTo() + " " + to.id() + ")");
+                        + quote.taxNation() + " не зачислен (" + quote.taxInTo() + " " + toId + ")");
             }
         }
         return q;
     }
 
-    /** Золотовой эквивалент продаваемой суммы (после базовой комиссии). */
+    private String fromNation(String currencyId) {
+        return currencies.get(currencyId).map(Currency::nationId).orElse("");
+    }
+
+    private String toNation(String currencyId) {
+        return currencies.get(currencyId).map(Currency::nationId).orElse("");
+    }
+
     private double goldOutFor(Currency from, double amount) {
         if (from.type() == CurrencyType.GLOBAL) {
             return amount;
         }
-        double baseRate = plugin.getConfig().getDouble("exchange.default-fee", 0.02);
+        double baseRate = plugin.getRates().feeFor(from.id(), from.id());
         return (amount - amount * baseRate) * bank.priceOf(from);
     }
 
