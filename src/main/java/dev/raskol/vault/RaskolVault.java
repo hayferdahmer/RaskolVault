@@ -203,7 +203,6 @@ public final class RaskolVault extends JavaPlugin {
                     inflationCheckpoint, periodTicks, periodTicks);
         }
 
-        // 1.1.3: периодическая сверка кэш↔леджер + TTL-чистки confirm/чат-захватов
         long reconcileMinutes = getConfig().getLong("storage.reconcile-interval-minutes", 30L);
         if (reconcileMinutes > 0) {
             long periodTicks = reconcileMinutes * 60L * 20L;
