@@ -2,7 +2,6 @@
 package dev.raskol.vault;
 
 import dev.raskol.vault.api.currency.CurrencyRegistry;
-import dev.raskol.vault.arbitrage.ArbitrageSimulator;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.config.MessagesConfig;
@@ -10,6 +9,7 @@ import dev.raskol.vault.confirm.ConfirmManager;
 import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
+import dev.raskol.vault.gui.GuiListener;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
@@ -42,7 +42,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.1.1 — резерв в таблице reserves, конверты через резерв, GUI на след. тик.
+ * RaskolVault 1.1.1 — резерв в таблице reserves, конверты через резерв.
+ * FIX 1.1.1.1: зарегистрирован GuiListener (клики GUI теперь отменяются).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -128,7 +129,6 @@ public final class RaskolVault extends JavaPlugin {
         rates = new RatesService(this, getConfig().getDouble("exchange.default-fee", 0.02));
         rates.load(new File(getDataFolder(), getConfig().getString("exchange.rates-file", "rates.yml")));
 
-        // 1.1.1: ReserveBank получает ledger (резерв живёт в таблице reserves)
         reserveBank = new ReserveBank(this, wallets, currencies, ledger);
         convertEngine = new ConvertEngine(this, wallets, currencies, reserveBank);
         exchange = new ExchangeService(this, wallets, currencies, rates);
@@ -150,6 +150,9 @@ public final class RaskolVault extends JavaPlugin {
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
         getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
+
+        // FIX 1.1.1.1: GUI-слушатель обязан быть зарегистрирован, иначе клики не отменяются
+        getServer().getPluginManager().registerEvents(new GuiListener(this), this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
