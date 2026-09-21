@@ -10,6 +10,7 @@ import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.gui.GuiListener;
+import dev.raskol.vault.gui.WalletGui;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
@@ -42,8 +43,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.1.1 — резерв в таблице reserves, конверты через резерв.
- * FIX 1.1.1.1: зарегистрирован GuiListener (клики GUI теперь отменяются).
+ * RaskolVault 1.1.3: + pay-rate-limit + периодическая сверка кэш↔леджер + TTL-чистки.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -71,10 +71,12 @@ public final class RaskolVault extends JavaPlugin {
     private LoadSimulator loadSimulator;
     private BukkitTask checkpointTask;
     private BukkitTask inflationTask;
+    private BukkitTask reconcileTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
     private ReserveBank reserveBank;
     private RateLimiter rateLimiter;
+    private RateLimiter payLimiter;
     private TxCounter txCounter;
     private InflationCheckpoint inflationCheckpoint;
 
@@ -144,14 +146,15 @@ public final class RaskolVault extends JavaPlugin {
         rateLimiter = new RateLimiter(
                 getConfig().getDouble("safety.rate-limit.capacity", 5.0D),
                 getConfig().getDouble("safety.rate-limit.refill-per-second", 0.5D));
+        payLimiter = new RateLimiter(
+                getConfig().getDouble("safety.pay-rate-limit.capacity", 5.0D),
+                getConfig().getDouble("safety.pay-rate-limit.refill-per-second", 0.5D));
         txCounter = new TxCounter(ledger);
         inflationCheckpoint = new InflationCheckpoint(this, reserveBank, currencies, townyHook);
 
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
         getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
-
-        // FIX 1.1.1.1: GUI-слушатель обязан быть зарегистрирован, иначе клики не отменяются
         getServer().getPluginManager().registerEvents(new GuiListener(this), this);
 
         if (townyHook.isAvailable()) {
@@ -200,6 +203,23 @@ public final class RaskolVault extends JavaPlugin {
                     inflationCheckpoint, periodTicks, periodTicks);
         }
 
+        // 1.1.3: периодическая сверка кэш↔леджер + TTL-чистки confirm/чат-захватов
+        long reconcileMinutes = getConfig().getLong("storage.reconcile-interval-minutes", 30L);
+        if (reconcileMinutes > 0) {
+            long periodTicks = reconcileMinutes * 60L * 20L;
+            reconcileTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+                int healed = wallets.reconcile();
+                int evicted = confirms.evictExpired();
+                WalletGui.CHAT_CAPTURE.clear();
+                if (healed > 0) {
+                    getLogger().warning("RaskolVault: сверка кэш↔леджер: вылечено расхождений: " + healed);
+                }
+                if (evicted > 0 && getConfig().getBoolean("general.debug", false)) {
+                    getLogger().info("RaskolVault: удалено просроченных подтверждений: " + evicted);
+                }
+            }, periodTicks, periodTicks);
+        }
+
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
 
         convertSubcommand = new ConvertSubcommand(this);
@@ -215,15 +235,17 @@ public final class RaskolVault extends JavaPlugin {
         getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён"
                 + " · Paper/MC " + getServer().getVersion()
                 + " · Core " + (corePresent ? "on" : "off")
-                + " · CoreProvider " + (coreHook != null && coreHook.isRegistered() ? "registered" : "off")
                 + " · Essentials " + (essentialsPresent ? "on" : "off")
                 + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
-                + " · LP " + (luckPermsPresent ? "on" : "off")
                 + " · PAPI " + (placeholderPresent ? "on" : "off"));
     }
 
     @Override
     public void onDisable() {
+        if (reconcileTask != null) {
+            reconcileTask.cancel();
+            reconcileTask = null;
+        }
         if (inflationTask != null) {
             inflationTask.cancel();
             inflationTask = null;
@@ -305,6 +327,7 @@ public final class RaskolVault extends JavaPlugin {
     public SparkHook getSparkHook() { return sparkHook; }
     public ReserveBank getReserveBank() { return reserveBank; }
     public RateLimiter getRateLimiter() { return rateLimiter; }
+    public RateLimiter getPayRateLimiter() { return payLimiter; }
     public TxCounter getTxCounter() { return txCounter; }
     public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
 
