@@ -5,54 +5,101 @@ import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.currency.CurrencyType;
+import dev.raskol.vault.api.transaction.TransactionType;
+import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.UUID;
 
 /**
- * Валютный совет: резерв, паритет, налог, покрытие, цена + экономический советник.
- *
- * Модель: цена = min(паритет, резерв/эмиссия); покрытие = резерв/(эмиссия×паритет).
- * Покрытие < coverage-floor → кризис: цена падает до резерв/эмиссия автоматически.
- *
- * reserveUuid — static: чистая функция от имени нации (детерминированный UUID),
- * вызывается и из ConvertEngine без экземпляра банка.
+ * Валютный совет (1.1.1): резерв живёт в таблице reserves леджера, НЕ в Essentials.
+ * Депозит: списание GLD у игрока через Essentials → кредит строки резерва (компенсация при сбое).
+ * Вывод: дебет резерва → начисление GLD игроку (компенсация при сбое).
+ * Конверты национальных валют проходят через резерв (ConvertEngine) — печать GLD закрыта.
  */
 public final class ReserveBank {
 
-    /** Прогноз советника: заголовок + строки lore с вердиктом. */
     public record Advice(String title, List<String> lore) {
     }
 
     private final RaskolVault plugin;
     private final WalletService wallets;
     private final CurrencyRegistry currencies;
+    private final SQLiteLedger ledger;
 
-    public ReserveBank(RaskolVault plugin, WalletService wallets, CurrencyRegistry currencies) {
+    public ReserveBank(RaskolVault plugin, WalletService wallets,
+                       CurrencyRegistry currencies, SQLiteLedger ledger) {
         this.plugin = plugin;
         this.wallets = wallets;
         this.currencies = currencies;
+        this.ledger = ledger;
     }
 
-    /** Детерминированный UUID резерва нации (хранит GLD как обычный кошелёк). */
+    /** Детерминированный UUID резерва нации (для аудита транзакций). */
     public static UUID reserveUuid(String nation) {
         return UUID.nameUUIDFromBytes(
                 ("reserve:" + nation.toLowerCase(Locale.ROOT)).getBytes(StandardCharsets.UTF_8));
     }
 
     public double reserveOf(String nation) {
-        return wallets.getBalance(reserveUuid(nation), currencies.globalId());
+        return ledger.reserveGet(nation);
+    }
+
+    public boolean reserveCredit(String nation, double gold) {
+        return gold <= 0.0D || ledger.reserveAdd(nation, gold);
+    }
+
+    public boolean reserveDebit(String nation, double gold) {
+        return gold <= 0.0D || ledger.reserveAdd(nation, -gold);
+    }
+
+    public void reserveSet(String nation, double amount) {
+        ledger.reserveSet(nation, amount);
+    }
+
+    /** Депозит личного золота игрока в резерв нации. */
+    public boolean depositToReserve(UUID player, String nation, double amount, String reason) {
+        if (!(amount > 0.0D)) {
+            return false;
+        }
+        String glb = currencies.globalId();
+        if (!wallets.has(player, glb, amount)) {
+            return false;
+        }
+        if (!wallets.withdraw(player, glb, amount, TransactionType.PAY, "reserve:deposit:" + reason)) {
+            return false;
+        }
+        if (!ledger.reserveAdd(nation, amount)) {
+            wallets.deposit(player, glb, amount, TransactionType.PAY, "reserve:deposit:rollback");
+            return false;
+        }
+        return true;
+    }
+
+    /** Вывод золота из резерва нации в личное золото игрока (суточный лимит). */
+    public boolean withdrawFromReserve(UUID player, String nation, double amount, String reason) {
+        if (!(amount > 0.0D) || amount > dailyWithdrawLimit(nation) + 1.0E-9D) {
+            return false;
+        }
+        if (!ledger.reserveAdd(nation, -amount)) {
+            return false;
+        }
+        String glb = currencies.globalId();
+        if (!wallets.deposit(player, glb, amount, TransactionType.PAY, "reserve:withdraw:" + reason)) {
+            ledger.reserveAdd(nation, amount);
+            return false;
+        }
+        return true;
     }
 
     public double supplyOf(String currencyId) {
         double sum = 0.0D;
-        for (Map.Entry<UUID, Map<String, Double>> row : wallets.cacheSnapshot().entrySet()) {
-            sum += row.getValue().getOrDefault(currencyId, 0.0D);
+        for (var row : wallets.cacheSnapshot().values()) {
+            sum += row.getOrDefault(currencyId, 0.0D);
         }
         return sum;
     }
@@ -132,25 +179,8 @@ public final class ReserveBank {
         return reserveOf(nation) * plugin.getConfig().getDouble("reserve.withdraw-daily-share", 0.25D);
     }
 
-    public boolean depositToReserve(UUID from, String nation, double amount, String reason) {
-        if (!(amount > 0.0D)) {
-            return false;
-        }
-        return wallets.transfer(from, reserveUuid(nation), currencies.globalId(), amount,
-                "reserve:deposit:" + reason);
-    }
-
-    public boolean withdrawFromReserve(UUID to, String nation, double amount, String reason) {
-        if (!(amount > 0.0D) || amount > dailyWithdrawLimit(nation) + 1.0E-9D) {
-            return false;
-        }
-        return wallets.transfer(reserveUuid(nation), to, currencies.globalId(), amount,
-                "reserve:withdraw:" + reason);
-    }
-
     // ---------- ЭКОНОМИЧЕСКИЙ СОВЕТНИК ----------
 
-    /** Шесть прогнозов «что будет, если» для кабинета правителя. */
     public List<Advice> advise(String nation) {
         List<Advice> out = new ArrayList<>();
         Currency national = nationalOf(nation);
@@ -261,12 +291,8 @@ public final class ReserveBank {
     }
 
     private String covColor(double cov) {
-        if (cov >= 1.0D) {
-            return "&a";
-        }
-        if (cov >= coverageFloor()) {
-            return "&e";
-        }
+        if (cov >= 1.0D) return "&a";
+        if (cov >= coverageFloor()) return "&e";
         return "&c";
     }
 
