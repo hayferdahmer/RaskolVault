@@ -10,12 +10,13 @@ import java.util.UUID;
  * Holder GUI-страниц кошелька. Несёт тип страницы и контекст (валюты конверта,
  * номер страницы истории/кодекса), чтобы GuiListener маршрутизировал клики
  * без сравнения заголовков инвентаря.
+ * 1.1.0.2: добавлена страница ADVISOR (экономический советник).
  */
 public final class WalletGuiHolder implements InventoryHolder {
 
     public enum Page {
         MAIN, CONVERT_FROM, CONVERT_TO, CONVERT_AMOUNT, CONVERT_CONFIRM,
-        RATES, HISTORY, CABINET, CODEX
+        RATES, HISTORY, CABINET, CODEX, ADVISOR
     }
 
     private final UUID owner;
