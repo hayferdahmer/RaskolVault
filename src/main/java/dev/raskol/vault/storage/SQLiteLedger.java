@@ -22,12 +22,11 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * SQLite-леджер (schema v2, 1.1.5): v1-таблицы + reserves + escrow +
- * stub-таблицы 1.2.0 (bank_accounts, bonds, shares, auction_lots).
+ * SQLite-леджер (schema v3, 1.2.1): v2-таблицы + exchange_orders (биржа королей).
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {
     }
@@ -36,6 +35,15 @@ public final class SQLiteLedger {
     }
 
     public record EscrowRow(String ticket, UUID owner, String currencyId, double amount) {
+    }
+
+    public record ExchangeOrderRow(
+            String id, UUID owner, String nation,
+            String sellCurrency, String buyCurrency,
+            double sellAmount, double buyAmount, double price,
+            double remaining, String status,
+            long createdAt, long updatedAt
+    ) {
     }
 
     private static final String INSERT_TX =
@@ -176,11 +184,29 @@ public final class SQLiteLedger {
                         + "min_bid REAL NOT NULL,"
                         + "ends_at INTEGER NOT NULL,"
                         + "status TEXT NOT NULL)");
+                // v3: exchange_orders (1.2.1 — биржа королей)
+                st.execute("CREATE TABLE IF NOT EXISTS exchange_orders ("
+                        + "id TEXT PRIMARY KEY,"
+                        + "owner TEXT NOT NULL,"
+                        + "nation TEXT NOT NULL,"
+                        + "sell_currency TEXT NOT NULL,"
+                        + "buy_currency TEXT NOT NULL,"
+                        + "sell_amount REAL NOT NULL,"
+                        + "buy_amount REAL NOT NULL,"
+                        + "price REAL NOT NULL,"
+                        + "remaining REAL NOT NULL,"
+                        + "status TEXT NOT NULL CHECK (status IN ('OPEN','MATCHED','CANCELLED')),"
+                        + "created_at INTEGER NOT NULL,"
+                        + "updated_at INTEGER NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_exchange_orders_status ON exchange_orders(status)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_exchange_orders_nation ON exchange_orders(nation)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_exchange_orders_owner ON exchange_orders(owner)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_exchange_orders_pair ON exchange_orders(sell_currency, buy_currency, status)");
                 if (version < SCHEMA_VERSION) {
                     st.execute("PRAGMA user_version=" + SCHEMA_VERSION);
                 }
             }
-            plugin.getLogger().info("SQLiteLedger: схема v" + SCHEMA_VERSION + " готова");
+            plugin.getLogger().info("SQLiteLedger: схема v" + SCHEMA_VERSION + " готова (биржа королей)");
             ok = true;
         } finally {
             finish(c, ok);
@@ -488,6 +514,141 @@ public final class SQLiteLedger {
         } finally {
             finish(c, ok);
         }
+    }
+
+    // ---------- exchange_orders (v3, 1.2.1) ----------
+
+    public void exchangeOrderInsert(ExchangeOrderRow order) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO exchange_orders(id, owner, nation, sell_currency, buy_currency, "
+                        + "sell_amount, buy_amount, price, remaining, status, created_at, updated_at) "
+                        + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")) {
+            ps.setString(1, order.id());
+            ps.setString(2, order.owner().toString());
+            ps.setString(3, order.nation());
+            ps.setString(4, order.sellCurrency());
+            ps.setString(5, order.buyCurrency());
+            ps.setDouble(6, order.sellAmount());
+            ps.setDouble(7, order.buyAmount());
+            ps.setDouble(8, order.price());
+            ps.setDouble(9, order.remaining());
+            ps.setString(10, order.status());
+            ps.setLong(11, order.createdAt());
+            ps.setLong(12, order.updatedAt());
+            ps.executeUpdate();
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу вставить ордер биржи " + order.id() + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    public boolean exchangeOrderUpdateRemaining(String orderId, double newRemaining, String newStatus) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE exchange_orders SET remaining=?, status=?, updated_at=? WHERE id=?")) {
+            ps.setDouble(1, newRemaining);
+            ps.setString(2, newStatus);
+            ps.setLong(3, System.currentTimeMillis());
+            ps.setString(4, orderId);
+            int rows = ps.executeUpdate();
+            ok = true;
+            return rows > 0;
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу обновить ордер " + orderId + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    public ExchangeOrderRow exchangeOrderGet(String orderId) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT id, owner, nation, sell_currency, buy_currency, sell_amount, buy_amount, "
+                        + "price, remaining, status, created_at, updated_at FROM exchange_orders WHERE id=?")) {
+            ps.setString(1, orderId);
+            try (ResultSet rs = ps.executeQuery()) {
+                ok = true;
+                if (!rs.next()) {
+                    return null;
+                }
+                return new ExchangeOrderRow(
+                        rs.getString(1), UUID.fromString(rs.getString(2)), rs.getString(3),
+                        rs.getString(4), rs.getString(5),
+                        rs.getDouble(6), rs.getDouble(7), rs.getDouble(8),
+                        rs.getDouble(9), rs.getString(10),
+                        rs.getLong(11), rs.getLong(12)
+                );
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу прочитать ордер " + orderId + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    public List<ExchangeOrderRow> exchangeOrdersByStatus(String status, int limit) {
+        List<ExchangeOrderRow> out = new ArrayList<>();
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT id, owner, nation, sell_currency, buy_currency, sell_amount, buy_amount, "
+                        + "price, remaining, status, created_at, updated_at "
+                        + "FROM exchange_orders WHERE status=? ORDER BY created_at DESC LIMIT ?")) {
+            ps.setString(1, status);
+            ps.setInt(2, Math.max(1, limit));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new ExchangeOrderRow(
+                            rs.getString(1), UUID.fromString(rs.getString(2)), rs.getString(3),
+                            rs.getString(4), rs.getString(5),
+                            rs.getDouble(6), rs.getDouble(7), rs.getDouble(8),
+                            rs.getDouble(9), rs.getString(10),
+                            rs.getLong(11), rs.getLong(12)
+                    ));
+                }
+            }
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу прочитать ордера по статусу " + status + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+        return out;
+    }
+
+    public List<ExchangeOrderRow> exchangeOrdersByOwner(UUID owner) {
+        List<ExchangeOrderRow> out = new ArrayList<>();
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT id, owner, nation, sell_currency, buy_currency, sell_amount, buy_amount, "
+                        + "price, remaining, status, created_at, updated_at "
+                        + "FROM exchange_orders WHERE owner=? ORDER BY created_at DESC")) {
+            ps.setString(1, owner.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new ExchangeOrderRow(
+                            rs.getString(1), UUID.fromString(rs.getString(2)), rs.getString(3),
+                            rs.getString(4), rs.getString(5),
+                            rs.getDouble(6), rs.getDouble(7), rs.getDouble(8),
+                            rs.getDouble(9), rs.getString(10),
+                            rs.getLong(11), rs.getLong(12)
+                    ));
+                }
+            }
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу прочитать ордера владельца " + owner + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+        return out;
     }
 
     // ---------- аудит / статистика ----------
