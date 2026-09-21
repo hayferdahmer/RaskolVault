@@ -10,7 +10,6 @@ import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -19,8 +18,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.DoubleSupplier;
 
 /**
- * Валютный совет (1.1.4): + TTL-кэш цен/покрытия/сапплая (5 с) —
- * PAPI и GUI становятся O(1) при частых запросах.
+ * Валютный совет (1.2.2-b): + перегрузки mint(nation, currencyId, amount, reason)
+ * и setParity(nation, value, reason) для CabinetGui.
  */
 public final class ReserveBank {
 
@@ -34,7 +33,6 @@ public final class ReserveBank {
     private final CurrencyRegistry currencies;
     private final SQLiteLedger ledger;
 
-    // TTL-кэш: ключ → вычисленное значение, ключ → expiry (ms)
     private final Map<String, Double> cacheValues = new ConcurrentHashMap<>();
     private final Map<String, Long> cacheExpiry = new ConcurrentHashMap<>();
 
@@ -51,9 +49,7 @@ public final class ReserveBank {
         Long exp = cacheExpiry.get(key);
         if (exp != null && now < exp) {
             Double v = cacheValues.get(key);
-            if (v != null) {
-                return v;
-            }
+            if (v != null) return v;
         }
         double v = compute.getAsDouble();
         cacheValues.put(key, v);
@@ -61,7 +57,6 @@ public final class ReserveBank {
         return v;
     }
 
-    /** Инвалидация кэша после мутаций резерва/паритета/налога. */
     public void invalidateCache() {
         cacheExpiry.clear();
         cacheValues.clear();
@@ -99,13 +94,9 @@ public final class ReserveBank {
     }
 
     public boolean depositToReserve(UUID player, String nation, double amount, String reason) {
-        if (!(amount > 0.0D)) {
-            return false;
-        }
+        if (!(amount > 0.0D)) return false;
         String glb = currencies.globalId();
-        if (!wallets.has(player, glb, amount)) {
-            return false;
-        }
+        if (!wallets.has(player, glb, amount)) return false;
         if (!wallets.withdraw(player, glb, amount, TransactionType.PAY, "reserve:deposit:" + reason)) {
             return false;
         }
@@ -118,12 +109,8 @@ public final class ReserveBank {
     }
 
     public boolean withdrawFromReserve(UUID player, String nation, double amount, String reason) {
-        if (!(amount > 0.0D) || amount > dailyWithdrawLimit(nation) + 1.0E-9D) {
-            return false;
-        }
-        if (!ledger.reserveAdd(nation, -amount)) {
-            return false;
-        }
+        if (!(amount > 0.0D) || amount > dailyWithdrawLimit(nation) + 1.0E-9D) return false;
+        if (!ledger.reserveAdd(nation, -amount)) return false;
         String glb = currencies.globalId();
         if (!wallets.deposit(player, glb, amount, TransactionType.PAY, "reserve:withdraw:" + reason)) {
             ledger.reserveAdd(nation, amount);
@@ -133,10 +120,9 @@ public final class ReserveBank {
         return true;
     }
 
+    /** Эмиссия в казну с сеньоражем (базовая форма). */
     public boolean mintToTreasury(String nation, Currency currency, double amount) {
-        if (!(amount > 0.0D) || !canMint(nation, currency.id(), amount)) {
-            return false;
-        }
+        if (!(amount > 0.0D) || !canMint(nation, currency.id(), amount)) return false;
         double seigniorage = seigniorageRate();
         double fee = round2dec(amount * seigniorage, currency);
         double net = round2dec(amount - fee, currency);
@@ -151,10 +137,15 @@ public final class ReserveBank {
         return true;
     }
 
+    /** ПЕРЕГРУЗКА (1.2.2-b) для CabinetGui: mint(nation, currencyId, amount, reason). */
+    public boolean mint(String nation, String currencyId, double amount, String reason) {
+        Currency cur = currencies.get(currencyId).orElse(null);
+        if (cur == null) return false;
+        return mintToTreasury(nation, cur, amount);
+    }
+
     public boolean burnFromTreasury(String nation, Currency currency, double amount) {
-        if (!(amount > 0.0D)) {
-            return false;
-        }
+        if (!(amount > 0.0D)) return false;
         boolean ok = wallets.withdraw(treasuryUuid(nation), currency.id(), amount,
                 TransactionType.BURN, "burn:" + nation);
         if (ok) invalidateCache();
@@ -200,15 +191,11 @@ public final class ReserveBank {
     }
 
     public double priceOf(Currency currency) {
-        if (currency.type() == CurrencyType.GLOBAL) {
-            return 1.0D;
-        }
+        if (currency.type() == CurrencyType.GLOBAL) return 1.0D;
         return cached("price:" + currency.id(), () -> {
             double supply = supplyOf(currency.id());
             double parity = parityOf(currency.nationId());
-            if (supply <= 0.0D) {
-                return parity;
-            }
+            if (supply <= 0.0D) return parity;
             return Math.min(parity, reserveOf(currency.nationId()) / supply);
         });
     }
@@ -216,27 +203,26 @@ public final class ReserveBank {
     public double coverageOf(String nation, String currencyId) {
         return cached("cov:" + nation + ":" + currencyId, () -> {
             double supply = supplyOf(currencyId);
-            if (supply <= 0.0D) {
-                return 1.0D;
-            }
+            if (supply <= 0.0D) return 1.0D;
             return reserveOf(nation) / (supply * parityOf(nation));
         });
     }
 
     public boolean setParity(String nation, double value) {
-        if (value < parityMin() || value > parityMax()) {
-            return false;
-        }
+        if (value < parityMin() || value > parityMax()) return false;
         plugin.getConfig().set("reserve.parity." + nation.toLowerCase(Locale.ROOT), round2(value));
         plugin.saveConfig();
         invalidateCache();
         return true;
     }
 
+    /** ПЕРЕГРУЗКА (1.2.2-b) для CabinetGui: setParity(nation, value, reason). reason игнорируется (логирование на стороне GUI). */
+    public boolean setParity(String nation, double value, String reason) {
+        return setParity(nation, value);
+    }
+
     public boolean setTax(String nation, double value) {
-        if (value < 0.0D || value > taxMax()) {
-            return false;
-        }
+        if (value < 0.0D || value > taxMax()) return false;
         plugin.getConfig().set("reserve.tax." + nation.toLowerCase(Locale.ROOT), round4(value));
         plugin.saveConfig();
         return true;
