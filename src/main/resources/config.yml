@@ -1,4 +1,4 @@
-# RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX
+# RaskolVault 1.1.2 — многовалютный экономический слой поверх EssentialsX
 # «РАСКОЛ | ДВЕ КОРОНЫ»
 
 general:
@@ -30,11 +30,6 @@ hooks:
   towny:
     enabled: true
     auto-create-national: true
-    # Карта «имя нации Towny (кириллица) → ID валюты» для авто-создания.
-    # Нации вне карты пропускаются с warning.
-    nation-currency:
-      Рассвет: RAS
-      Вальрадис: VLR
   luckperms:
     enabled: true
   raskolcore:
@@ -51,6 +46,11 @@ reserve:
   withdraw-daily-share: 0.25
   check-interval-minutes: 60
   file: nations.yml
+  # 1.1.2: сеньораж — доля эмиссии, сжигаемая в никуда при минте (антиинфляционный sink)
+  seigniorage: 0.02
+  bulletin:
+    enabled: true
+    interval-minutes: 10080   # 7 дней
 
 safety:
   rate-limit:
