@@ -18,10 +18,11 @@ import org.bukkit.event.player.AsyncPlayerChatEvent;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * Обработчик GUI (FIX 1.1.1.1): трансляция &-кодов; переходы GUI на следующий тик.
+ * Обработчик GUI (1.1.2): кошелёк без кабинета/кодекса; кабинет с книгами механики.
  */
 public final class GuiListener implements Listener {
 
@@ -67,10 +68,9 @@ public final class GuiListener implements Listener {
             }
             case HISTORY -> onHistory(player, holder, slot);
             case CABINET -> onCabinet(player, slot);
-            case ADVISOR -> {
-                if (slot == 49) later(() -> WalletGui.openCabinet(plugin, player));
-            }
             case CODEX -> onCodex(player, holder, slot);
+            default -> {
+            }
         }
     }
 
@@ -118,12 +118,6 @@ public final class GuiListener implements Listener {
             case 29 -> later(() -> WalletGui.openConvertFrom(plugin, player));
             case 31 -> later(() -> WalletGui.openRates(plugin, player));
             case 33 -> later(() -> WalletGui.openHistory(plugin, player, 0));
-            case 35 -> {
-                if (WalletGui.isKing(plugin, player)) {
-                    later(() -> WalletGui.openCabinet(plugin, player));
-                }
-            }
-            case 40 -> later(() -> WalletGui.openCodex(plugin, player, 0));
             case 49 -> player.closeInventory();
             default -> {
             }
@@ -246,13 +240,13 @@ public final class GuiListener implements Listener {
         boolean refresh = true;
         switch (slot) {
             case 19 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) - 0.10D)),
-                    "Паритет: " + String.format(java.util.Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 0.50");
+                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 0.50");
             case 21 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) + 0.10D)),
-                    "Паритет: " + String.format(java.util.Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 2.00");
+                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 2.00");
             case 23 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) - 0.005D)),
-                    "Налог: " + String.format(java.util.Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 0%");
+                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 0%");
             case 25 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) + 0.005D)),
-                    "Налог: " + String.format(java.util.Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 5%");
+                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 5%");
             case 29 -> depositFeedback(player, bank, nation, 100.0D);
             case 30 -> depositFeedback(player, bank, nation, 1000.0D);
             case 31 -> withdrawFeedback(player, bank, nation, 100.0D);
@@ -264,23 +258,35 @@ public final class GuiListener implements Listener {
                     feedback(player, false, "", "лимит покрытия: "
                             + Formatter.amount(bank.maxMint(nation, national.id()), 2) + " — пополняй резерв");
                 } else {
-                    feedback(player, plugin.getTreasury().deposit(nation, national.id(), 100.0D, "gui-mint"),
-                            "Минт 100 " + national.id() + " в казну", "казна недоступна");
+                    feedback(player, bank.mintToTreasury(nation, national, 100.0D),
+                            "Минт 100 " + national.id() + " в казну (минус сеньораж)", "казна недоступна");
                 }
             }
             case 34 -> {
                 if (national == null) {
                     feedback(player, false, "", "нет национальной валюты");
                 } else {
-                    feedback(player, plugin.getTreasury().withdraw(nation, national.id(), 100.0D, "gui-burn"),
+                    feedback(player, bank.burnFromTreasury(nation, national, 100.0D),
                             "Бёрн 100 " + national.id() + " из казны", "в казне меньше 100");
                 }
             }
-            case 40 -> {
-                later(() -> WalletGui.openAdvisor(plugin, player));
+            case 45 -> {
+                later(() -> WalletGui.openCodex(plugin, player, 0));
                 refresh = false;
             }
-            case 49 -> {
+            case 46 -> {
+                later(() -> WalletGui.openCodex(plugin, player, 1));
+                refresh = false;
+            }
+            case 47 -> {
+                later(() -> WalletGui.openCodex(plugin, player, 3));
+                refresh = false;
+            }
+            case 48 -> {
+                later(() -> WalletGui.openCodex(plugin, player, 4));
+                refresh = false;
+            }
+            case 53 -> {
                 later(() -> WalletGui.openMain(plugin, player));
                 refresh = false;
             }
