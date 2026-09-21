@@ -10,7 +10,7 @@ softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI, sp
 commands:
   rv:
     description: 'Команды RaskolVault'
-    usage: '/rv [help|wallet|version|debug]'
+    usage: '/rv [help|wallet|cabinet|guide|version|debug]'
     aliases: [raskolvault, wallet]
 
 permissions:
