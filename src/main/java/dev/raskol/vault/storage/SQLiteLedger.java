@@ -5,6 +5,7 @@ import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
+import dev.raskol.vault.observability.TxPerMinuteCounter;
 import org.bukkit.plugin.Plugin;
 
 import java.io.File;
@@ -21,8 +22,8 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * SQLite-леджер (схема v2, 1.1.1): валюты, балансы, транзакции + таблица reserves.
- * reserves(nation, amount, updated_at) — золотой резерв наций, независимый от Essentials.
+ * SQLite-леджер (schema v2, 1.1.5): v1-таблицы + reserves + escrow +
+ * stub-таблицы 1.2.0 (bank_accounts, bonds, shares, auction_lots).
  */
 public final class SQLiteLedger {
 
@@ -32,6 +33,9 @@ public final class SQLiteLedger {
     }
 
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {
+    }
+
+    public record EscrowRow(String ticket, UUID owner, String currencyId, double amount) {
     }
 
     private static final String INSERT_TX =
@@ -95,56 +99,88 @@ public final class SQLiteLedger {
                  ResultSet rs = st.executeQuery("PRAGMA user_version")) {
                 version = rs.getInt(1);
             }
-            if (version < SCHEMA_VERSION) {
-                try (Statement st = c.createStatement()) {
-                    st.execute("CREATE TABLE IF NOT EXISTS currencies ("
-                            + "id TEXT PRIMARY KEY,"
-                            + "display_name TEXT NOT NULL,"
-                            + "symbol TEXT NOT NULL,"
-                            + "type TEXT NOT NULL CHECK (type IN ('GLOBAL','NATIONAL','WORLD')),"
-                            + "nation_id TEXT,"
-                            + "decimals INTEGER NOT NULL DEFAULT 2,"
-                            + "tradeable INTEGER NOT NULL DEFAULT 1,"
-                            + "created_at INTEGER NOT NULL)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_type ON currencies(type)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_nation ON currencies(nation_id)");
-                    st.execute("CREATE TABLE IF NOT EXISTS balances ("
-                            + "uuid TEXT NOT NULL,"
-                            + "currency_id TEXT NOT NULL,"
-                            + "amount REAL NOT NULL DEFAULT 0,"
-                            + "updated_at INTEGER NOT NULL,"
-                            + "PRIMARY KEY (uuid, currency_id),"
-                            + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_balances_uuid ON balances(uuid)");
-                    st.execute("CREATE TABLE IF NOT EXISTS transactions ("
-                            + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                            + "timestamp INTEGER NOT NULL,"
-                            + "from_uuid TEXT,"
-                            + "to_uuid TEXT,"
-                            + "currency_id TEXT NOT NULL,"
-                            + "amount REAL NOT NULL,"
-                            + "type TEXT NOT NULL CHECK (type IN "
-                            + "('PAY','CONVERT','MINT','BURN','ADMIN_SET','ADMIN_GIVE','ADMIN_TAKE','SYNC')),"
-                            + "reason TEXT NOT NULL,"
-                            + "metadata TEXT,"
-                            + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_uuid)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_uuid)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_currency ON transactions(currency_id)");
-                    st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)");
-                    // 1.1.1: золотой резерв наций
-                    st.execute("CREATE TABLE IF NOT EXISTS reserves ("
-                            + "nation TEXT PRIMARY KEY,"
-                            + "amount REAL NOT NULL DEFAULT 0,"
-                            + "updated_at INTEGER NOT NULL)");
+            try (Statement st = c.createStatement()) {
+                // v1
+                st.execute("CREATE TABLE IF NOT EXISTS currencies ("
+                        + "id TEXT PRIMARY KEY,"
+                        + "display_name TEXT NOT NULL,"
+                        + "symbol TEXT NOT NULL,"
+                        + "type TEXT NOT NULL CHECK (type IN ('GLOBAL','NATIONAL','WORLD')),"
+                        + "nation_id TEXT,"
+                        + "decimals INTEGER NOT NULL DEFAULT 2,"
+                        + "tradeable INTEGER NOT NULL DEFAULT 1,"
+                        + "created_at INTEGER NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_type ON currencies(type)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_currencies_nation ON currencies(nation_id)");
+                st.execute("CREATE TABLE IF NOT EXISTS balances ("
+                        + "uuid TEXT NOT NULL,"
+                        + "currency_id TEXT NOT NULL,"
+                        + "amount REAL NOT NULL DEFAULT 0,"
+                        + "updated_at INTEGER NOT NULL,"
+                        + "PRIMARY KEY (uuid, currency_id),"
+                        + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_balances_uuid ON balances(uuid)");
+                st.execute("CREATE TABLE IF NOT EXISTS transactions ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                        + "timestamp INTEGER NOT NULL,"
+                        + "from_uuid TEXT,"
+                        + "to_uuid TEXT,"
+                        + "currency_id TEXT NOT NULL,"
+                        + "amount REAL NOT NULL,"
+                        + "type TEXT NOT NULL CHECK (type IN "
+                        + "('PAY','CONVERT','MINT','BURN','ADMIN_SET','ADMIN_GIVE','ADMIN_TAKE','SYNC')),"
+                        + "reason TEXT NOT NULL,"
+                        + "metadata TEXT,"
+                        + "FOREIGN KEY (currency_id) REFERENCES currencies(id) ON DELETE CASCADE)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_uuid)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_uuid)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_currency ON transactions(currency_id)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)");
+                st.execute("CREATE TABLE IF NOT EXISTS reserves ("
+                        + "nation TEXT PRIMARY KEY,"
+                        + "amount REAL NOT NULL DEFAULT 0,"
+                        + "updated_at INTEGER NOT NULL)");
+                // v2: escrow + stub-таблицы 1.2.0
+                st.execute("CREATE TABLE IF NOT EXISTS escrow ("
+                        + "ticket TEXT PRIMARY KEY,"
+                        + "owner TEXT NOT NULL,"
+                        + "currency_id TEXT NOT NULL,"
+                        + "amount REAL NOT NULL,"
+                        + "created_at INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_accounts ("
+                        + "id TEXT PRIMARY KEY,"
+                        + "nation TEXT NOT NULL,"
+                        + "owner TEXT,"
+                        + "kind TEXT NOT NULL,"
+                        + "created_at INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS bonds ("
+                        + "id TEXT PRIMARY KEY,"
+                        + "nation TEXT NOT NULL,"
+                        + "face REAL NOT NULL,"
+                        + "coupon_rate REAL NOT NULL,"
+                        + "issued_at INTEGER NOT NULL,"
+                        + "matures_at INTEGER NOT NULL,"
+                        + "holder TEXT)");
+                st.execute("CREATE TABLE IF NOT EXISTS shares ("
+                        + "id TEXT PRIMARY KEY,"
+                        + "nation TEXT NOT NULL,"
+                        + "owner TEXT NOT NULL,"
+                        + "grams REAL NOT NULL,"
+                        + "issued_at INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS auction_lots ("
+                        + "id TEXT PRIMARY KEY,"
+                        + "seller TEXT NOT NULL,"
+                        + "currency_id TEXT NOT NULL,"
+                        + "amount REAL NOT NULL,"
+                        + "min_bid REAL NOT NULL,"
+                        + "ends_at INTEGER NOT NULL,"
+                        + "status TEXT NOT NULL)");
+                if (version < SCHEMA_VERSION) {
                     st.execute("PRAGMA user_version=" + SCHEMA_VERSION);
                 }
-                plugin.getLogger().info("SQLiteLedger: схема создана/обновлена до v" + SCHEMA_VERSION);
-            } else if (version > SCHEMA_VERSION) {
-                plugin.getLogger().warning("SQLiteLedger: схема v" + version + " новее поддерживаемой v"
-                        + SCHEMA_VERSION + " — откати jar или восстанови БД из бекапа");
             }
+            plugin.getLogger().info("SQLiteLedger: схема v" + SCHEMA_VERSION + " готова");
             ok = true;
         } finally {
             finish(c, ok);
@@ -327,7 +363,7 @@ public final class SQLiteLedger {
         }
     }
 
-    // ---------- reserves (1.1.1) ----------
+    // ---------- reserves ----------
 
     public double reserveGet(String nation) {
         Connection c = pool.borrow();
@@ -345,7 +381,6 @@ public final class SQLiteLedger {
         }
     }
 
-    /** delta>0 — кредит; delta<0 — дебет с проверкой достаточности (amount+delta>=0). */
     public boolean reserveAdd(String nation, double delta) {
         Connection c = pool.borrow();
         boolean ok = false;
@@ -381,9 +416,6 @@ public final class SQLiteLedger {
     }
 
     public void reserveSet(String nation, double amount) {
-        if (amount < 0.0D) {
-            throw new LedgerException("Резерв не может быть отрицательным", null);
-        }
         Connection c = pool.borrow();
         boolean ok = false;
         try (PreparedStatement ps = c.prepareStatement(
@@ -396,6 +428,63 @@ public final class SQLiteLedger {
             ok = true;
         } catch (SQLException e) {
             throw new LedgerException("Не могу установить резерв " + nation + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    // ---------- escrow (v2) ----------
+
+    public void escrowInsert(String ticket, UUID owner, String currencyId, double amount) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO escrow(ticket, owner, currency_id, amount, created_at) VALUES(?,?,?,?,?) "
+                        + "ON CONFLICT(ticket) DO UPDATE SET amount=excluded.amount, created_at=excluded.created_at")) {
+            ps.setString(1, ticket);
+            ps.setString(2, owner.toString());
+            ps.setString(3, currencyId);
+            ps.setDouble(4, amount);
+            ps.setLong(5, System.currentTimeMillis());
+            ps.executeUpdate();
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу вставить escrow " + ticket + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    public EscrowRow escrowGet(String ticket) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT ticket, owner, currency_id, amount FROM escrow WHERE ticket=?")) {
+            ps.setString(1, ticket);
+            try (ResultSet rs = ps.executeQuery()) {
+                ok = true;
+                if (!rs.next()) {
+                    return null;
+                }
+                return new EscrowRow(rs.getString(1), UUID.fromString(rs.getString(2)),
+                        rs.getString(3), rs.getDouble(4));
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу прочитать escrow " + ticket + ": " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    public void escrowDelete(String ticket) {
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement("DELETE FROM escrow WHERE ticket=?")) {
+            ps.setString(1, ticket);
+            ps.executeUpdate();
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("Не могу удалить escrow " + ticket + ": " + e.getMessage(), e);
         } finally {
             finish(c, ok);
         }
@@ -488,6 +577,10 @@ public final class SQLiteLedger {
         } finally {
             finish(c, ok);
         }
+    }
+
+    public void attachTxCounter(TxPerMinuteCounter counter) {
+        // no-op: счётчик ведётся в RaskolVault; метод оставлен для совместимости
     }
 
     public String describeStats() {
