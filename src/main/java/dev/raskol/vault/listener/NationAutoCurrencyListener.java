@@ -15,12 +15,10 @@ import java.lang.reflect.Method;
 import java.util.Locale;
 
 /**
- * Авто-создание национальной валюты при создании нации Towny (1.0.6: через рефлексию).
- *
- * Подписка на NewNationEvent по имени класса. При создании нации:
- * - создаёт валюту <NATION>_DEN (например, ROME_DEN) с типом NATIONAL;
- * - nation_id = имя нации;
- * - decimals=2, tradeable=true, symbol=⚜.
+ * Авто-создание национальной валюты при NewNationEvent (фикс 1.1.0.1).
+ * Имена наций кириллические, поэтому ID валюты берётся из карты
+ * hooks.towny.nation-currency («Рассвет: RAS», «Вальрадис: VLR»).
+ * Нация вне карты — пропускаем с warning (никаких кириллических ID-валют).
  */
 public final class NationAutoCurrencyListener implements Listener {
 
@@ -52,33 +50,39 @@ public final class NationAutoCurrencyListener implements Listener {
         try {
             Method getNation = event.getClass().getMethod("getNation");
             Object nation = getNation.invoke(event);
-            Method getName = nation.getClass().getMethod("getName");
-            String nationName = (String) getName.invoke(nation);
-            if (nationName == null || nationName.isEmpty()) {
+            if (nation == null) {
                 return;
             }
-            String currencyId = nationName.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "") + "_DEN";
-            if (currencyId.length() > 16) {
-                currencyId = currencyId.substring(0, 16);
+            Method getName = nation.getClass().getMethod("getName");
+            String nationName = (String) getName.invoke(nation);
+            if (nationName == null || nationName.isBlank()) {
+                return;
             }
+            String currencyId = plugin.getConfig()
+                    .getString("hooks.towny.nation-currency." + nationName, "");
+            if (currencyId.isBlank()) {
+                plugin.getLogger().warning("RaskolVault: нация '" + nationName
+                        + "' вне карты hooks.towny.nation-currency — валюта не создана автоматически");
+                return;
+            }
+            currencyId = currencyId.toUpperCase(Locale.ROOT);
             if (currencies.get(currencyId).isPresent()) {
                 return;
             }
             Currency newCurrency = new Currency(
                     currencyId,
-                    "Денарий " + nationName,
-                    "⚜",
+                    "Динар " + nationName,
+                    currencyId,
                     CurrencyType.NATIONAL,
                     nationName,
                     2,
-                    true
-            );
-            currencies.all().add(newCurrency);
+                    true);
+            currencies.addCurrency(newCurrency);
             ledger.upsertCurrency(newCurrency);
             plugin.getLogger().info("RaskolVault: создана национальная валюта " + currencyId
                     + " для нации " + nationName);
         } catch (Exception e) {
-            plugin.getLogger().warning("RaskolVault: ошибка в onNewNation: " + e.getMessage());
+            plugin.getLogger().warning("RaskolVault: авто-создание валюты провалено: " + e.getMessage());
         }
     }
 }
