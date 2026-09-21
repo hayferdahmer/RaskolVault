@@ -3,13 +3,13 @@ package dev.raskol.vault.command.sub;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
-import dev.raskol.vault.api.currency.CurrencyType;
+import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 
 import java.util.Locale;
 
 /**
- * /rv rates — цены Валютного совета и матрица курсов (1.1.0-b).
+ * /rv rates (1.2.2-a): FIX — весь вывод прогоняется через транслятор &-кодов.
  */
 public final class RatesSubcommand {
 
@@ -19,29 +19,33 @@ public final class RatesSubcommand {
         this.plugin = plugin;
     }
 
+    private String c(String s) {
+        return ChatColor.translateAlternateColorCodes('&', s);
+    }
+
+    private void send(CommandSender s, String raw) {
+        s.sendMessage(c(raw));
+    }
+
     public void execute(CommandSender sender) {
-        String prefix = plugin.getMessages().prefix();
-        sender.sendMessage(prefix + plugin.getMessages().get("rates.header",
-                java.util.Map.of("fee", String.format(Locale.ROOT, "%.1f%%",
-                        plugin.getConfig().getDouble("exchange.default-fee", 0.02) * 100.0D))));
-        for (Currency c : plugin.getCurrencies().all()) {
-            double price = plugin.getReserveBank().priceOf(c);
-            String line = "&7 " + c.id() + " " + c.symbol() + ": &f" + String.format(Locale.ROOT, "%.4f", price) + " GLD";
-            if (c.type() == CurrencyType.NATIONAL && c.nationId() != null) {
-                double coverage = plugin.getReserveBank().coverageOf(c.nationId(), c.id());
-                line += " &7· покрытие &f" + String.format(Locale.ROOT, "%.0f%%", coverage * 100.0D)
-                        + " · налог &f" + String.format(Locale.ROOT, "%.1f%%", plugin.getReserveBank().taxOf(c.nationId()) * 100.0D);
+        send(sender, "&6=== Курсы валют (золотой эквивалент) ===");
+        for (Currency cur : plugin.getCurrencies().all()) {
+            double price = plugin.getReserveBank().priceOf(cur);
+            String line = "&7 " + cur.id() + " &f" + String.format(Locale.ROOT, "%.4f", price) + " GLD";
+            if (cur.type() == dev.raskol.vault.api.currency.CurrencyType.NATIONAL && cur.nationId() != null) {
+                double cov = plugin.getReserveBank().coverageOf(cur.nationId(), cur.id());
+                double tax = plugin.getReserveBank().taxOf(cur.nationId());
+                line += " &7· покрытие &f" + String.format(Locale.ROOT, "%.0f%%", cov * 100.0)
+                        + " &7· налог &f" + String.format(Locale.ROOT, "%.1f%%", tax * 100.0);
             }
-            sender.sendMessage(line);
+            send(sender, line);
         }
-        sender.sendMessage(prefix + "&7Курсы пар:");
+        send(sender, "&6=== Курсы пар ===");
         for (Currency a : plugin.getCurrencies().all()) {
             for (Currency b : plugin.getCurrencies().all()) {
-                if (a.id().equals(b.id())) {
-                    continue;
-                }
-                double rate = plugin.getConvertEngine().rate(a.id(), b.id());
-                sender.sendMessage("&7 " + a.id() + " → " + b.id() + ": &f" + String.format(Locale.ROOT, "%.4f", rate));
+                if (a.id().equals(b.id())) continue;
+                double r = plugin.getConvertEngine().rate(a.id(), b.id());
+                send(sender, "&7 " + a.id() + " → " + b.id() + ": &f" + String.format(Locale.ROOT, "%.4f", r));
             }
         }
     }
