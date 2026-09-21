@@ -7,17 +7,21 @@ import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.wallet.WalletService;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
- * Валютный совет: резерв, паритет, налог, покрытие, цена.
- * 1.1.0.2: экономический советник — прогнозы «что будет, если».
+ * Валютный совет: резерв, паритет, налог, покрытие, цена + экономический советник.
  *
  * Модель: цена = min(паритет, резерв/эмиссия); покрытие = резерв/(эмиссия×паритет).
  * Покрытие < coverage-floor → кризис: цена падает до резерв/эмиссия автоматически.
+ *
+ * reserveUuid — static: чистая функция от имени нации (детерминированный UUID),
+ * вызывается и из ConvertEngine без экземпляра банка.
  */
 public final class ReserveBank {
 
@@ -35,8 +39,10 @@ public final class ReserveBank {
         this.currencies = currencies;
     }
 
-    public UUID reserveUuid(String nation) {
-        return UUID.nameUUIDFromBytes(("reserve:" + nation.toLowerCase(Locale.ROOT)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    /** Детерминированный UUID резерва нации (хранит GLD как обычный кошелёк). */
+    public static UUID reserveUuid(String nation) {
+        return UUID.nameUUIDFromBytes(
+                ("reserve:" + nation.toLowerCase(Locale.ROOT)).getBytes(StandardCharsets.UTF_8));
     }
 
     public double reserveOf(String nation) {
@@ -130,17 +136,19 @@ public final class ReserveBank {
         if (!(amount > 0.0D)) {
             return false;
         }
-        return wallets.transfer(from, reserveUuid(nation), currencies.globalId(), amount, "reserve:deposit:" + reason);
+        return wallets.transfer(from, reserveUuid(nation), currencies.globalId(), amount,
+                "reserve:deposit:" + reason);
     }
 
     public boolean withdrawFromReserve(UUID to, String nation, double amount, String reason) {
         if (!(amount > 0.0D) || amount > dailyWithdrawLimit(nation) + 1.0E-9D) {
             return false;
         }
-        return wallets.transfer(reserveUuid(nation), to, currencies.globalId(), amount, "reserve:withdraw:" + reason);
+        return wallets.transfer(reserveUuid(nation), to, currencies.globalId(), amount,
+                "reserve:withdraw:" + reason);
     }
 
-    // ---------- ЭКОНОМИЧЕСКИЙ СОВЕТНИК (1.1.0.2) ----------
+    // ---------- ЭКОНОМИЧЕСКИЙ СОВЕТНИК ----------
 
     /** Шесть прогнозов «что будет, если» для кабинета правителя. */
     public List<Advice> advise(String nation) {
@@ -158,11 +166,9 @@ public final class ReserveBank {
         double price = priceAt(R, S, P);
         double cov = S <= 0.0D ? 1.0D : R / (S * P);
 
-        // 1. Депозит +1000 GLD
         double R2 = R + 1000.0D;
         out.add(adviceReserve("&6Депозит +1000 GLD", R, R2, S, P, cov, true));
 
-        // 2. Вывод −1000 GLD (или весь резерв, если меньше)
         double amt = Math.min(1000.0D, R);
         if (R <= 0.0D) {
             out.add(new Advice("&cВывод −1000 GLD",
@@ -171,19 +177,15 @@ public final class ReserveBank {
             out.add(adviceReserve("&cВывод −" + fmt0(amt) + " GLD", R, R - amt, S, P, cov, false));
         }
 
-        // 3. Паритет +0.10
         double P2 = Math.min(parityMax(), round2(P + 0.10D));
         out.add(adviceParity("&6Паритет → " + fmt2(P2), P2, R, S, P, cov));
 
-        // 4. Паритет −0.10
         double P3 = Math.max(parityMin(), round2(P - 0.10D));
         out.add(adviceParity("&cПаритет → " + fmt2(P3), P3, R, S, P, cov));
 
-        // 5. Налог +0.5%
         double T2 = Math.min(taxMax(), round4(T + 0.005D));
         out.add(adviceTax("&6Налог → " + fmtPct(T2), T2, price, T));
 
-        // 6. Налог −0.5%
         double T3 = Math.max(0.0D, round4(T - 0.005D));
         out.add(adviceTax("&cНалог → " + fmtPct(T3), T3, price, T));
 
@@ -259,8 +261,12 @@ public final class ReserveBank {
     }
 
     private String covColor(double cov) {
-        if (cov >= 1.0D) return "&a";
-        if (cov >= coverageFloor()) return "&e";
+        if (cov >= 1.0D) {
+            return "&a";
+        }
+        if (cov >= coverageFloor()) {
+            return "&e";
+        }
         return "&c";
     }
 
