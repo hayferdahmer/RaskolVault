@@ -5,10 +5,10 @@ import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.command.sub.AdminSubcommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
-import dev.raskol.vault.command.sub.PaySubcommand;
-import dev.raskol.vault.command.sub.RatesSubcommand;
+import dev.raskol.vault.command.sub.NationBankSubcommand;
 import dev.raskol.vault.gui.WalletGui;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
+import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -22,25 +22,28 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — корневой роутер (фикс 1.1.0.1): таб-комплит ранговый и без дублей GUI.
- * База: wallet, pay, convert, confirm, nation, help, version.
- * Король: + cabinet, guide. Админ: + admin.
- * /rv rates и /rv bank работают набором, но из таба убраны (дубли GUI).
+ * /rv — корневой роутер (FIX 1.1.1.1): трансляция &-кодов; маршруты wallet/cabinet/guide/bank.
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
     private final RaskolVault plugin;
-    private final PaySubcommand paySubcommand;
     private final ConvertSubcommand convertSubcommand;
-    private final RatesSubcommand ratesSubcommand;
     private final AdminSubcommand adminSubcommand;
+    private final NationBankSubcommand nationBank;
 
     public RaskolVaultCommand(RaskolVault plugin, ConvertSubcommand convertSubcommand) {
         this.plugin = plugin;
         this.convertSubcommand = convertSubcommand;
-        this.paySubcommand = new PaySubcommand(plugin);
-        this.ratesSubcommand = new RatesSubcommand(plugin);
         this.adminSubcommand = new AdminSubcommand(plugin);
+        this.nationBank = new NationBankSubcommand(plugin);
+    }
+
+    private static String c(String s) {
+        return ChatColor.translateAlternateColorCodes('&', s);
+    }
+
+    private void send(CommandSender s, String raw) {
+        s.sendMessage(c(raw));
     }
 
     @Override
@@ -52,90 +55,21 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         String op = args[0].toLowerCase(Locale.ROOT);
         switch (op) {
             case "help", "?" -> help(sender);
-            case "version" -> sender.sendMessage(prefix() + "&fRaskolVault &6" + plugin.getPluginMeta().getVersion());
+            case "version" -> send(sender, plugin.getMessages().prefix() + "&fRaskolVault &6" + plugin.getPluginMeta().getVersion());
             case "wallet" -> openWallet(sender);
             case "cabinet" -> openCabinet(sender);
             case "guide" -> openGuide(sender);
-            case "balance" -> redirectBalance(sender, args);
-            case "pay" -> paySubcommand.execute(sender, args);
+            case "balance" -> adminSubcommand.execute(sender, prepend("balance", args));
+            case "pay" -> pay(sender, args);
             case "convert" -> convertSubcommand.execute(sender, args);
             case "confirm" -> confirm(sender);
-            case "rates" -> ratesSubcommand.execute(sender);
-            case "bank" -> adminSubcommand.execute(sender, prepend("bank", args));
+            case "rates" -> rates(sender);
+            case "bank" -> nationBank.execute(sender, args);
             case "nation" -> adminSubcommand.execute(sender, prepend("nation", args));
             case "admin" -> adminSubcommand.execute(sender, args);
-            default -> sender.sendMessage(prefix() + "&7Неизвестная команда. &f/rv help");
+            default -> help(sender);
         }
         return true;
-    }
-
-    private void openWallet(CommandSender sender) {
-        if (!(sender instanceof Player player)) {
-            sender.sendMessage(prefix() + "&cКошелёк — только в игре");
-            return;
-        }
-        if (!player.hasPermission("raskolvault.use")) {
-            sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
-            return;
-        }
-        WalletGui.openMain(plugin, player);
-    }
-
-    private void openCabinet(CommandSender sender) {
-        if (!(sender instanceof Player player)) {
-            sender.sendMessage(prefix() + "&cКабинет — только в игре");
-            return;
-        }
-        if (!WalletGui.isKing(plugin, player)) {
-            sender.sendMessage(prefix() + plugin.getMessages().get("bank.not-king", null));
-            return;
-        }
-        WalletGui.openCabinet(plugin, player);
-    }
-
-    private void openGuide(CommandSender sender) {
-        if (!(sender instanceof Player player)) {
-            sender.sendMessage(prefix() + "&cКодекс — только в игре");
-            return;
-        }
-        WalletGui.openCodex(plugin, player, 0);
-    }
-
-    private void redirectBalance(CommandSender sender, String[] args) {
-        if (!sender.hasPermission("raskolvault.admin.view")) {
-            sender.sendMessage(prefix() + plugin.getMessages().get("error.balance-admin-only", null));
-            return;
-        }
-        adminSubcommand.execute(sender, prepend("balance", args));
-    }
-
-    private void confirm(CommandSender sender) {
-        if (!(sender instanceof Player player)) {
-            sender.sendMessage(prefix() + plugin.getMessages().get("error.console-cannot-convert", null));
-            return;
-        }
-        var pending = plugin.getConfirms().take(player.getUniqueId());
-        if (pending.isEmpty()) {
-            sender.sendMessage(prefix() + plugin.getMessages().get("confirm.none", null));
-            return;
-        }
-        convertSubcommand.runConfirmed(player, pending.get(), sender);
-    }
-
-    private void help(CommandSender sender) {
-        sender.sendMessage(prefix() + "&6=== RaskolVault ===");
-        sender.sendMessage("&f /rv wallet &7— GUI кошелька (балансы, конверт, курсы, история)");
-        sender.sendMessage("&f /rv pay <ник> <валюта> <сумма> [причина]");
-        sender.sendMessage("&f /rv convert <из> <в> <сумма> &7→ &f/rv confirm");
-        sender.sendMessage("&f /rv nation &7— твоя нация и казна");
-        if (sender instanceof Player p && WalletGui.isKing(plugin, p)) {
-            sender.sendMessage("&f /rv cabinet &7— кабинет правителя");
-            sender.sendMessage("&f /rv guide &7— кодекс правителя");
-        }
-        if (sender.hasPermission("raskolvault.admin")) {
-            sender.sendMessage("&f /rv admin … &7— админ-блок (balance, give, take, audit, …)");
-            sender.sendMessage("&f /rv rates · /rv bank &7— служебные (дубли GUI)");
-        }
     }
 
     private String[] prepend(String sub, String[] args) {
@@ -147,19 +81,84 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         return out;
     }
 
-    private String prefix() {
-        return plugin.getMessages().prefix();
+    private void openWallet(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            send(sender, plugin.getMessages().prefix() + "&cКошелёк — только в игре");
+            return;
+        }
+        if (!player.hasPermission("raskolvault.use")) {
+            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        WalletGui.openMain(plugin, player);
+    }
+
+    private void openCabinet(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            send(sender, plugin.getMessages().prefix() + "&cКабинет — только в игре");
+            return;
+        }
+        if (!WalletGui.isKing(plugin, player)) {
+            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("bank.not-king", null));
+            return;
+        }
+        WalletGui.openCabinet(plugin, player);
+    }
+
+    private void openGuide(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            send(sender, plugin.getMessages().prefix() + "&cКодекс — только в игре");
+            return;
+        }
+        WalletGui.openCodex(plugin, player, 0);
+    }
+
+    private void pay(CommandSender sender, String[] args) {
+        // Делегируем в PaySubcommand через plugin (он зарегистрирован отдельно)
+        plugin.getPaySubcommand().execute(sender, args);
+    }
+
+    private void confirm(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.console-cannot-convert", null));
+            return;
+        }
+        var pending = plugin.getConfirms().take(player.getUniqueId());
+        if (pending.isEmpty()) {
+            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("confirm.none", null));
+            return;
+        }
+        convertSubcommand.runConfirmed(player, pending.get(), sender);
+    }
+
+    private void rates(CommandSender sender) {
+        send(sender, plugin.getMessages().prefix() + "&6Курсы валют:");
+        for (Currency a : plugin.getCurrencies().all()) {
+            for (Currency b : plugin.getCurrencies().all()) {
+                if (a.id().equals(b.id())) continue;
+                double r = plugin.getConvertEngine().rate(a.id(), b.id());
+                send(sender, "&7 " + a.id() + " → " + b.id() + ": &f" + String.format(Locale.ROOT, "%.4f", r));
+            }
+        }
+    }
+
+    private void help(CommandSender sender) {
+        send(sender, plugin.getMessages().prefix() + "&6=== RaskolVault ===");
+        send(sender, "&f /rv wallet &7— GUI кошелька");
+        send(sender, "&f /rv pay <ник> <валюта> <сумма> [причина]");
+        send(sender, "&f /rv convert <из> <в> <сумма> &7→ &f/rv confirm");
+        send(sender, "&f /rv rates &7— курсы");
+        send(sender, "&f /rv bank &7— банк нации");
+        if (sender.hasPermission("raskolvault.admin")) {
+            send(sender, "&f /rv admin … &7— админ-блок");
+        }
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(Arrays.asList(
-                    "wallet", "pay", "convert", "confirm", "nation", "help", "version"));
-            if (sender instanceof Player p && WalletGui.isKing(plugin, p)) {
-                subs.add("cabinet");
-                subs.add("guide");
-            }
+                    "help", "version", "wallet", "cabinet", "guide", "convert", "confirm", "rates", "bank", "nation", "pay"));
             if (sender.hasPermission("raskolvault.admin")) {
                 subs.add("admin");
             }
@@ -173,14 +172,12 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 case "pay" -> {
                     return offline == null ? Collections.emptyList() : offline.matchNames(args[1], 50);
                 }
-                case "convert" -> currencyTab(args[1]);
+                case "convert", "rates" -> currencyTab(args[1]);
                 case "bank" -> filter(Arrays.asList("info", "deposit", "withdraw", "parity", "tax"), args[1]);
                 case "admin" -> {
-                    if (!sender.hasPermission("raskolvault.admin")) {
-                        return Collections.emptyList();
-                    }
+                    if (!sender.hasPermission("raskolvault.admin")) return Collections.emptyList();
                     return filter(Arrays.asList("health", "balance", "give", "take", "set", "mint", "burn",
-                            "currency", "simulate", "simulate-load", "stress", "audit", "reload", "backup", "restore"), args[1]);
+                            "reserve", "currency", "simulate-load", "audit", "reload", "backup", "restore"), args[1]);
                 }
                 default -> {
                     return Collections.emptyList();
@@ -196,12 +193,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                             || sub.equals("audit") || sub.equals("balance")) {
                         return offline == null ? Collections.emptyList() : offline.matchNames(args[2], 50);
                     }
-                    if (sub.equals("mint") || sub.equals("burn")) {
-                        return currencyTab(args[2]);
-                    }
-                    if (sub.equals("currency")) {
-                        return filter(Arrays.asList("list", "rename", "create", "remove"), args[2]);
-                    }
+                    if (sub.equals("mint") || sub.equals("burn")) return currencyTab(args[2]);
+                    if (sub.equals("currency")) return filter(Arrays.asList("list", "rename", "create", "remove"), args[2]);
                     return Collections.emptyList();
                 }
                 default -> {
@@ -211,9 +204,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 4 && op.equals("admin")) {
             String sub = args[1].toLowerCase(Locale.ROOT);
-            if (sub.equals("give") || sub.equals("take") || sub.equals("set")) {
-                return currencyTab(args[3]);
-            }
+            if (sub.equals("give") || sub.equals("take") || sub.equals("set")) return currencyTab(args[3]);
         }
         return Collections.emptyList();
     }
