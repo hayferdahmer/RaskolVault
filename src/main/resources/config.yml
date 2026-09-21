@@ -15,33 +15,10 @@ global-currency:
 
 exchange:
   enabled: true
-  # Базовая комиссия конвертации (сжигается). Налог нации-цели добавляется сверху.
   default-fee: 0.02
   require-confirm: true
   confirm-timeout-seconds: 30
   rates-file: rates.yml
-
-# 1.1.0-b: Валютный совет (золотое покрытие национальных валют)
-reserve:
-  # Минимальное допустимое покрытие резервом. Ниже — кризис: цена падает до резерв/эмиссия.
-  coverage-floor: 0.5
-  # Границы паритета (официального курса нации к золоту).
-  parity-min: 0.5
-  parity-max: 2.0
-  # Максимальный налог конвертации в валюту нации (доля от суммы).
-  tax-max: 0.05
-  # Доля резерва, которую король может вывести за сутки.
-  withdraw-daily-share: 0.25
-  # Период кризисного чекпоинта покрытия, минут.
-  check-interval-minutes: 60
-  # Файл паритета/налога наций.
-  file: nations.yml
-
-# 1.1.0-b: rate-limit конвертаций на игрока (token bucket)
-safety:
-  rate-limit:
-    capacity: 5.0
-    refill-per-second: 0.5
 
 auto-convert:
   enabled: false
@@ -53,6 +30,11 @@ hooks:
   towny:
     enabled: true
     auto-create-national: true
+    # Карта «имя нации Towny (кириллица) → ID валюты» для авто-создания.
+    # Нации вне карты пропускаются с warning.
+    nation-currency:
+      Рассвет: RAS
+      Вальрадис: VLR
   luckperms:
     enabled: true
   raskolcore:
@@ -60,6 +42,20 @@ hooks:
     register-as-provider: true
   placeholderapi:
     enabled: true
+
+reserve:
+  coverage-floor: 0.5
+  parity-min: 0.5
+  parity-max: 2.0
+  tax-max: 0.05
+  withdraw-daily-share: 0.25
+  check-interval-minutes: 60
+  file: nations.yml
+
+safety:
+  rate-limit:
+    capacity: 5.0
+    refill-per-second: 0.5
 
 storage:
   sqlite:
