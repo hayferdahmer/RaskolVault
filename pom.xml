@@ -6,7 +6,7 @@
 
     <groupId>dev.raskol</groupId>
     <artifactId>raskol-vault</artifactId>
-    <version>1.1.5</version>
+    <version>1.2.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>RaskolVault</name>
@@ -26,10 +26,18 @@
             <id>placeholderapi</id>
             <url>https://repo.extendedclip.com/content/repositories/placeholderapi/</url>
         </repository>
-        <!-- 1.2.0: официальный Nexus Towny (glaremasters) -->
         <repository>
             <id>glaremasters</id>
             <url>https://repo.glaremasters.me/repository/towny/</url>
+        </repository>
+        <!-- 1.2.0: LuckPerms API для интеграции с RaskolMarket/Caravans/Charters -->
+        <repository>
+            <id>luckperms</id>
+            <url>https://repo.lucko.me/</url>
+        </repository>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
         </repository>
     </repositories>
 
@@ -46,11 +54,24 @@
             <version>2.11.6</version>
             <scope>provided</scope>
         </dependency>
-        <!-- 1.2.0: Towny API напрямую с официального Nexus -->
         <dependency>
             <groupId>com.palmergames.bukkit.towny</groupId>
             <artifactId>towny</artifactId>
             <version>0.103.2.0</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- 1.2.0: LuckPerms API (публичное API для проверки прав из RaskolVault) -->
+        <dependency>
+            <groupId>net.luckperms</groupId>
+            <artifactId>api</artifactId>
+            <version>5.4</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- 1.2.0: Vault API явно (для RaskolCoreHook и прямой регистрации Economy Provider) -->
+        <dependency>
+            <groupId>com.github.MilkBowl</groupId>
+            <artifactId>VaultAPI</artifactId>
+            <version>1.7.1</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
