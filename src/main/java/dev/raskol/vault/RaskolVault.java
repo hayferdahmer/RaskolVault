@@ -9,15 +9,16 @@ import dev.raskol.vault.confirm.ConfirmManager;
 import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
+import dev.raskol.vault.gui.GuiListener;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
+import dev.raskol.vault.hook.SparkHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.listener.TownyNationLifecycleListener;
 import dev.raskol.vault.nation.NationTreasury;
 import dev.raskol.vault.observability.InflationCheckpoint;
-import dev.raskol.vault.observability.SparkHook;
 import dev.raskol.vault.observability.TxCounter;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
 import dev.raskol.vault.reserve.ReserveBank;
@@ -42,9 +43,7 @@ import java.util.UUID;
 
 /**
  * RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX.
- * 1.1.0-b: Валютный совет (резерв/паритет/налог/интервенции), tx/min, rate-limit,
- * кризисный чекпоинт покрытия.
- * Fix: импорт SparkHook из dev.raskol.vault.observability (фактическое место класса).
+ * 1.1.0-c: GUI «Кошелёк» (WalletGui + GuiListener).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -141,7 +140,6 @@ public final class RaskolVault extends JavaPlugin {
 
         treasury = new NationTreasury(wallets);
 
-        // 1.1.0-b: Валютный совет
         reserveBank = new ReserveBank(this, wallets, currencies);
         convertEngine = new ConvertEngine(this, wallets, currencies, reserveBank);
         rateLimiter = new RateLimiter(
@@ -157,6 +155,9 @@ public final class RaskolVault extends JavaPlugin {
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
         getServer().getPluginManager().registerEvents(offlinePlayerRegistry, this);
+
+        // 1.1.0-c: GUI кошелька
+        getServer().getPluginManager().registerEvents(new GuiListener(this), this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
