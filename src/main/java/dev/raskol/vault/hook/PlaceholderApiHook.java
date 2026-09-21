@@ -15,11 +15,7 @@ import java.util.Locale;
 
 /**
  * PAPI-экспаншн RaskolVault.
- * Используются ТОЛЬКО геттеры, которые реально есть в RaskolVault:
- * getWriter(), getLedger(), getWallets(), getCurrencies(), getRates(),
- * getTreasury(), getTownyHook().
- * Плейсхолдеры tx_per_min / inflation_anomalies / rate_limited вернутся в 1.1.0-b
- * вместе с системами TxCounter / InflationCheckpoint / RateLimiter.
+ * 1.1.0-d: добавлены плейсхолдеры курсов/покрытия/цены.
  */
 public final class PlaceholderApiHook extends PlaceholderExpansion {
 
@@ -78,6 +74,43 @@ public final class PlaceholderApiHook extends PlaceholderExpansion {
                 return Integer.toString(plugin.getRates().allRates().size());
             default:
                 break;
+        }
+
+        // Плейсхолдеры курсов: %raskolvault_rate_<from>_<to>%
+        if (lower.startsWith("rate_")) {
+            String[] parts = lower.substring(5).split("_");
+            if (parts.length == 2) {
+                String from = parts[0].toUpperCase(Locale.ROOT);
+                String to = parts[1].toUpperCase(Locale.ROOT);
+                double rate = plugin.getConvertEngine().rate(from, to);
+                return String.format(Locale.ROOT, "%.4f", rate);
+            }
+        }
+
+        // Плейсхолдеры цены: %raskolvault_price_<currency>%
+        if (lower.startsWith("price_")) {
+            String id = lower.substring(6).toUpperCase(Locale.ROOT);
+            Currency currency = plugin.getCurrencies().get(id).orElse(null);
+            if (currency == null) {
+                return "?";
+            }
+            return String.format(Locale.ROOT, "%.4f", plugin.getReserveBank().priceOf(currency));
+        }
+
+        // Плейсхолдеры покрытия: %raskolvault_coverage_<nation>%
+        if (lower.startsWith("coverage_")) {
+            String nation = lower.substring(9);
+            Currency national = null;
+            for (Currency c : plugin.getCurrencies().all()) {
+                if (c.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(c.nationId())) {
+                    national = c;
+                }
+            }
+            if (national == null) {
+                return "?";
+            }
+            double coverage = plugin.getReserveBank().coverageOf(nation, national.id());
+            return String.format(Locale.ROOT, "%.1f%%", coverage * 100.0D);
         }
 
         if (player == null) {
