@@ -21,6 +21,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * /rv admin … (1.1.1): добавлен `reserve set/add <нация> <сумма>`.
+ */
 public final class AdminSubcommand {
 
     private final RaskolVault plugin;
@@ -44,6 +47,7 @@ public final class AdminSubcommand {
             case "set" -> mutate(sender, args, "set");
             case "mint" -> treasuryOp(sender, args, true);
             case "burn" -> treasuryOp(sender, args, false);
+            case "reserve" -> reserveOp(sender, args);
             case "currency" -> new CurrencySubcommand(plugin).execute(sender, prependAdmin(args));
             case "simulate" -> simulate(sender);
             case "simulate-load" -> simulateLoad(sender, args);
@@ -63,8 +67,47 @@ public final class AdminSubcommand {
     private void help(CommandSender sender) {
         sender.sendMessage(prefix() + "&6=== RaskolVault admin ===");
         sender.sendMessage("&f balance <ник> · give|take|set <ник> <валюта> <сумма>");
-        sender.sendMessage("&f mint|burn <валюта> <сумма> · currency list|rename|create|remove");
-        sender.sendMessage("&f audit <ник> [лимит] · health · reload · backup · restore <файл>");
+        sender.sendMessage("&f mint|burn <валюта> <сумма> · reserve set|add <нация> <сумма>");
+        sender.sendMessage("&f currency list|rename|create|remove · audit <ник> [лимит]");
+        sender.sendMessage("&f health · reload · backup · restore <файл> · simulate-load [игроки] [tx]");
+    }
+
+    private void reserveOp(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("raskolvault.admin")) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        if (args.length < 4) {
+            sender.sendMessage(prefix() + "&f/rv admin reserve set|add <нация> <сумма>");
+            return;
+        }
+        String mode = args[1].toLowerCase(Locale.ROOT);
+        String nation = args[2];
+        double amount;
+        try {
+            amount = Double.parseDouble(args[3]);
+        } catch (NumberFormatException e) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
+            return;
+        }
+        if (!Double.isFinite(amount) || amount < 0.0D) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[3])));
+            return;
+        }
+        var bank = plugin.getReserveBank();
+        if (mode.equals("set")) {
+            bank.reserveSet(nation, amount);
+            sender.sendMessage(prefix() + "&aРезерв " + nation + " установлен: "
+                    + Formatter.amount(amount, 2) + " GLD");
+        } else if (mode.equals("add")) {
+            boolean ok = bank.reserveCredit(nation, amount);
+            sender.sendMessage(prefix() + (ok
+                    ? "&aРезерв " + nation + " пополнен на " + Formatter.amount(amount, 2)
+                    + " (итого " + Formatter.amount(bank.reserveOf(nation), 2) + ")"
+                    : "&c✖ Резерв не пополнен"));
+        } else {
+            sender.sendMessage(prefix() + "&f/rv admin reserve set|add <нация> <сумма>");
+        }
     }
 
     private void health(CommandSender sender) {
@@ -73,7 +116,6 @@ public final class AdminSubcommand {
             return;
         }
         sender.sendMessage(prefix() + "&6╔══ RaskolVault Health ══╗");
-
         String tps1 = "-", tps5 = "-", tps15 = "-";
         try {
             double[] tps = Bukkit.getTPS();
@@ -86,40 +128,22 @@ public final class AdminSubcommand {
         }
         sender.sendMessage("&7 TPS (1/5/15m): &f" + tps1 + " / " + tps5 + " / " + tps15);
         sender.sendMessage("&7 Online: &f" + Bukkit.getOnlinePlayers().size() + "/" + Bukkit.getMaxPlayers());
-
         Runtime rt = Runtime.getRuntime();
         long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L);
         long maxMb = rt.maxMemory() / (1024L * 1024L);
         sender.sendMessage("&7 JVM memory: &f" + usedMb + " / " + maxMb + " MB");
-
         sender.sendMessage("&7 SQLite pool: &f" + plugin.getLedger().poolIdle()
                 + " idle / " + plugin.getLedger().poolSize() + " total"
                 + " · wait " + plugin.getLedger().poolWaiting());
-
         sender.sendMessage("&7 Writer: &fqueue " + plugin.getWriter().queueSize()
                 + " · applied " + plugin.getWriter().applied()
                 + " · failed " + (plugin.getWriter().failed() == 0 ? "&a0&r" : "&c" + plugin.getWriter().failed()));
-
         sender.sendMessage("&7 Cache: &frows " + plugin.getWallets().cachedRows()
                 + " · hit-rate &e" + String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate()) + "%&r"
                 + " · H/M " + plugin.getWallets().cacheHits() + "/" + plugin.getWallets().cacheMisses());
-
-        File wal = new File(plugin.getLedger().dbFile().getAbsolutePath() + "-wal");
-        long walMb = wal.exists() ? wal.length() / (1024L * 1024L) : -1L;
-        sender.sendMessage("&7 WAL size: &f" + (walMb < 0 ? "—" : walMb + " MB"));
-
-        long lastTs = plugin.getLedger().lastTransactionTimestamp();
-        if (lastTs > 0) {
-            String formatted = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date(lastTs));
-            long agoSec = (System.currentTimeMillis() - lastTs) / 1000L;
-            sender.sendMessage("&7 Last tx: &f" + formatted + " &7(" + agoSec + "s ago)");
-        } else {
-            sender.sendMessage("&7 Last tx: &8(none)");
-        }
-
-        sender.sendMessage("&7 Offline-registry: &f"
-                + (plugin.getOfflinePlayerRegistry() == null ? "null" : plugin.getOfflinePlayerRegistry().size()));
-
+        sender.sendMessage("&7 Tx/min (60s): &f" + plugin.getTxCounter().perMinute());
+        sender.sendMessage("&7 Last tx: &f" + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+                .format(new Date(plugin.getLedger().lastTransactionTimestamp())));
         sender.sendMessage(prefix() + "&6╚═════════════════════════╝");
     }
 
@@ -155,22 +179,28 @@ public final class AdminSubcommand {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.towny-unavailable", null));
             return;
         }
-        String nationId = plugin.getTownyHook().nationOf(player.getUniqueId());
-        if (nationId == null) {
+        String nation = plugin.getTownyHook().nationOf(player.getUniqueId());
+        if (nation == null) {
             sender.sendMessage(prefix() + plugin.getMessages().get("nation.not-in-nation", null));
             return;
         }
-        sender.sendMessage(prefix() + plugin.getMessages().get("nation.header", Map.of("nation", nationId)));
-        boolean isKing = plugin.getTownyHook().isKing(player.getUniqueId(), nationId);
-        sender.sendMessage(prefix() + "&7 Роль: &f" + (isKing ? "Король" : "Резидент"));
-        Currency national = plugin.getCurrencies().get(nationId).orElse(null);
-        if (national != null && national.type() == dev.raskol.vault.api.currency.CurrencyType.NATIONAL) {
-            double treasury = plugin.getTreasury().balance(nationId, national.id());
-            sender.sendMessage(prefix() + "&7 Казна: &f"
-                    + Formatter.withSymbol(treasury, national.decimals(), national.symbol()));
-        } else {
-            sender.sendMessage(prefix() + "&7 Валюта нации не создана");
+        var bank = plugin.getReserveBank();
+        Currency national = null;
+        for (Currency c : plugin.getCurrencies().all()) {
+            if (c.type() == dev.raskol.vault.api.currency.CurrencyType.NATIONAL
+                    && nation.equalsIgnoreCase(c.nationId())) {
+                national = c;
+            }
         }
+        sender.sendMessage(prefix() + plugin.getMessages().get("nation.header", Map.of("nation", nation)));
+        sender.sendMessage("&7 Резерв: &f" + Formatter.amount(bank.reserveOf(nation), 2) + " GLD");
+        if (national != null) {
+            sender.sendMessage("&7 Покрытие: &f"
+                    + String.format(Locale.ROOT, "%.1f%%", bank.coverageOf(nation, national.id()) * 100.0D));
+            sender.sendMessage("&7 Цена: &f" + String.format(Locale.ROOT, "%.4f", bank.priceOf(national)) + " GLD");
+        }
+        sender.sendMessage("&7 Паритет: &f" + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation))
+                + " &7· Налог: &f" + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D));
     }
 
     private void mutate(CommandSender sender, String[] args, String kind) {
@@ -269,7 +299,9 @@ public final class AdminSubcommand {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
             return;
         }
-        sender.sendMessage(prefix() + "&7Арбитражный сканер отключён в 1.1.0-a");
+        int loops = plugin.getArbitrage().scan().size();
+        sender.sendMessage(prefix() + "&7Арбитражных петель: &f" + loops);
+        plugin.getArbitrage().logReport();
     }
 
     private void simulateLoad(CommandSender sender, String[] args) {
@@ -280,12 +312,8 @@ public final class AdminSubcommand {
         int players = 50;
         int txs = 5000;
         try {
-            if (args.length >= 2) {
-                players = Integer.parseInt(args[1]);
-            }
-            if (args.length >= 3) {
-                txs = Integer.parseInt(args[2]);
-            }
+            if (args.length >= 2) players = Integer.parseInt(args[1]);
+            if (args.length >= 3) txs = Integer.parseInt(args[2]);
         } catch (NumberFormatException e) {
             sender.sendMessage(prefix() + "&cНеверный формат числа");
             return;
@@ -299,7 +327,7 @@ public final class AdminSubcommand {
             sender.sendMessage(prefix() + plugin.getMessages().get("error.no-permission", null));
             return;
         }
-        sender.sendMessage(prefix() + "&7Стресс с ботами — этап 1.1.0-d (Citizens). Сейчас: /rv admin simulate-load");
+        sender.sendMessage(prefix() + "&7Стресс с ботами — см. /rv admin simulate-load");
     }
 
     private void audit(CommandSender sender, String[] args) {
@@ -318,9 +346,7 @@ public final class AdminSubcommand {
         }
         int limit = 10;
         try {
-            if (args.length >= 3) {
-                limit = Integer.parseInt(args[2]);
-            }
+            if (args.length >= 3) limit = Integer.parseInt(args[2]);
         } catch (NumberFormatException ignored) {
         }
         List<Transaction> history;
