@@ -1,12 +1,13 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.exchange;
 
+import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
+import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.wallet.WalletService;
-import org.bukkit.plugin.Plugin;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -34,12 +35,12 @@ public final class ConvertEngine {
     ) {
     }
 
-    private final Plugin plugin;
+    private final RaskolVault plugin;
     private final WalletService wallets;
     private final CurrencyRegistry currencies;
     private final ReserveBank reserveBank;
 
-    public ConvertEngine(Plugin plugin, WalletService wallets,
+    public ConvertEngine(RaskolVault plugin, WalletService wallets,
                          CurrencyRegistry currencies, ReserveBank reserveBank) {
         this.plugin = plugin;
         this.wallets = wallets;
