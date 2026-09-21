@@ -5,6 +5,7 @@ import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.api.transaction.Transaction;
+import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.util.Formatter;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -24,13 +25,11 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * GUI «Кошелёк» (1.1.0-d): строгая тема (чёрное стекло + золото),
- * страницы: кошелёк, конверт-мастер, курсы, история, кабинет короля, кодекс.
- * Улучшенный визуал: разделители, лучшие иконки, цветовая схема.
+ * GUI «Кошелёк» (1.1.0.2): строгая тема, кабинет правителя с обратной связью
+ * и страницей «Экономический советник».
  */
 public final class WalletGui {
 
-    /** Захват чата для ввода своей суммы: UUID -> {fromId, toId}. */
     public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>();
 
     private static final String TITLE_MAIN = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Кошелёк &8▌");
@@ -42,9 +41,9 @@ public final class WalletGui {
     private static final String TITLE_HISTORY = ChatColor.translateAlternateColorCodes('&', "&8▌&6 История &8▌");
     private static final String TITLE_CABINET = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Кабинет правителя &8▌");
     private static final String TITLE_CODEX = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Кодекс правителя &8▌");
+    private static final String TITLE_ADVISOR = ChatColor.translateAlternateColorCodes('&', "&8▌&6 Экономический советник &8▌");
 
     private static final ItemStack PANE = item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of());
-    private static final ItemStack DIVIDER = item(Material.GRAY_STAINED_GLASS_PANE, "&8|", List.of());
 
     public static final List<String[]> CODEX_PAGES = List.of(
             new String[]{
@@ -101,8 +100,6 @@ public final class WalletGui {
         WalletGuiHolder holder = WalletGuiHolder.of(player.getUniqueId(), WalletGuiHolder.Page.MAIN);
         Inventory inv = Bukkit.createInventory(holder, 54, TITLE_MAIN);
         border(inv);
-        
-        // Валюты (строка 10-16, шаг 2)
         int slot = 10;
         for (Currency c : plugin.getCurrencies().all()) {
             double bal = plugin.getWallets().getBalance(player.getUniqueId(), c.id());
@@ -113,23 +110,18 @@ public final class WalletGui {
                             "&7Нажми для конвертации")));
             slot += 2;
         }
-        
-        // Разделитель
-        inv.setItem(19, DIVIDER);
-        
-        // Действия (строка 29-35)
-        inv.setItem(29, item(Material.EMERALD, "&aКонверт", List.of("&7Обменять одну валюту на другую", "&7Нажми для выбора")));
+        inv.setItem(19, item(Material.GRAY_STAINED_GLASS_PANE, "&8|", List.of()));
+        inv.setItem(29, item(Material.EMERALD, "&aКонверт", List.of("&7Обменять одну валюту на другую")));
         inv.setItem(31, item(Material.MAP, "&6Курсы", List.of("&7Матрица курсов и комиссий")));
         inv.setItem(33, item(Material.CLOCK, "&bИстория", List.of("&7Твои последние транзакции")));
-        
         if (isKing(plugin, player)) {
-            inv.setItem(35, item(Material.GOLDEN_CHESTPLATE, "&6Кабинет правителя", List.of("&7Резерв, паритет, налог, интервенции", "&7Нажми для управления")));
+            inv.setItem(35, item(Material.GOLDEN_CHESTPLATE, "&6Кабинет правителя",
+                    List.of("&7Резерв, паритет, налог, интервенции", "&7Нажми для управления")));
         } else {
-            inv.setItem(35, item(Material.GRAY_STAINED_GLASS_PANE, "&8Кабинет правителя", List.of("&7Доступно только королю нации")));
+            inv.setItem(35, item(Material.GRAY_STAINED_GLASS_PANE, "&8Кабинет правителя",
+                    List.of("&7Доступно только королю нации")));
         }
-        
-        // Нижняя строка
-        inv.setItem(40, item(Material.WRITABLE_BOOK, "&6Кодекс правителя", List.of("&7Инструкции по управлению валютой", "&7Нажми для чтения")));
+        inv.setItem(40, item(Material.WRITABLE_BOOK, "&6Кодекс правителя", List.of("&7Инструкции по управлению валютой")));
         inv.setItem(49, item(Material.BARRIER, "&cЗакрыть", List.of()));
         player.openInventory(inv);
     }
@@ -142,8 +134,7 @@ public final class WalletGui {
         for (Currency c : plugin.getCurrencies().all()) {
             double bal = plugin.getWallets().getBalance(player.getUniqueId(), c.id());
             inv.setItem(slot, item(iconOf(c.id()), "&6" + c.displayName(),
-                    List.of("&7Баланс: &f" + Formatter.amount(bal, c.decimals()) + " " + c.id(),
-                            "&7Нажми для выбора")));
+                    List.of("&7Баланс: &f" + Formatter.amount(bal, c.decimals()) + " " + c.id())));
             slot += 2;
         }
         inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
@@ -161,8 +152,7 @@ public final class WalletGui {
             }
             inv.setItem(slot, item(iconOf(c.id()), "&6" + c.displayName(),
                     List.of("&7Курс: &f" + String.format(Locale.ROOT, "%.4f",
-                            plugin.getConvertEngine().rate(fromId, c.id())),
-                            "&7Нажми для выбора")));
+                            plugin.getConvertEngine().rate(fromId, c.id())))));
             slot += 2;
         }
         inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
@@ -179,7 +169,7 @@ public final class WalletGui {
         inv.setItem(12, item(Material.GOLD_NUGGET, "&664 " + fromId, List.of("&7Нажми для выбора")));
         inv.setItem(13, item(Material.GOLD_NUGGET, "&6100 " + fromId, List.of("&7Нажми для выбора")));
         inv.setItem(14, item(Material.GOLD_BLOCK, "&6Весь баланс",
-                List.of("&7" + Formatter.amount(bal, 2) + " " + fromId, "&7Нажми для выбора")));
+                List.of("&7" + Formatter.amount(bal, 2) + " " + fromId)));
         inv.setItem(16, item(Material.PAPER, "&bВвести свою сумму", List.of("&7Напиши число в чат")));
         inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
         player.openInventory(inv);
@@ -283,34 +273,70 @@ public final class WalletGui {
         WalletGuiHolder holder = WalletGuiHolder.of(player.getUniqueId(), WalletGuiHolder.Page.CABINET);
         Inventory inv = Bukkit.createInventory(holder, 54, TITLE_CABINET);
         border(inv);
+        ReserveBank bank = plugin.getReserveBank();
         Currency national = nationalOf(plugin, nation);
-        double reserve = plugin.getReserveBank().reserveOf(nation);
-        double coverage = national == null ? 1.0D : plugin.getReserveBank().coverageOf(nation, national.id());
-        double price = national == null ? 1.0D : plugin.getReserveBank().priceOf(national);
-        double parity = plugin.getReserveBank().parityOf(nation);
-        double tax = plugin.getReserveBank().taxOf(nation);
-        
-        // Статистика (строка 10-16)
-        inv.setItem(10, item(Material.GOLD_BLOCK, "&6Резерв", List.of("&f" + Formatter.amount(reserve, 2) + " GLD")));
-        inv.setItem(13, item(coverage >= 1.0D ? Material.LIME_CONCRETE : (coverage >= 0.5D ? Material.YELLOW_CONCRETE : Material.RED_CONCRETE),
-                "&6Покрытие", List.of("&f" + String.format(Locale.ROOT, "%.1f%%", coverage * 100.0D))));
-        inv.setItem(16, item(Material.GOLD_INGOT, "&6Цена валюты", List.of("&f" + String.format(Locale.ROOT, "%.4f", price) + " GLD")));
-        
-        // Паритет и налог (строка 19-25)
-        inv.setItem(19, item(Material.RED_STAINED_GLASS_PANE, "&cПаритет -0.10", List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.2f", parity))));
-        inv.setItem(21, item(Material.LIME_STAINED_GLASS_PANE, "&aПаритет +0.10", List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.2f", parity))));
-        inv.setItem(23, item(Material.RED_STAINED_GLASS_PANE, "&cНалог -0.5%", List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.1f%%", tax * 100.0D))));
-        inv.setItem(25, item(Material.LIME_STAINED_GLASS_PANE, "&aНалог +0.5%", List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.1f%%", tax * 100.0D))));
-        
-        // Интервенции (строка 29-34)
-        inv.setItem(29, item(Material.GOLD_NUGGET, "&6Депозит 100 GLD", List.of("&7Личное золото → резерв")));
-        inv.setItem(30, item(Material.GOLD_BLOCK, "&6Депозит 1000 GLD", List.of("&7Личное золото → резерв")));
-        inv.setItem(31, item(Material.GOLD_NUGGET, "&cВывод 100 GLD", List.of("&7Резерв → личное золото (лимит 25%/сут)")));
-        inv.setItem(32, item(Material.GOLD_BLOCK, "&cВывод 1000 GLD", List.of("&7Резерв → личное золото (лимит 25%/сут)")));
-        inv.setItem(33, item(Material.SUNFLOWER, "&aМинт 100", List.of("&7Эмиссия в казну (лимит покрытия)")));
-        inv.setItem(34, item(Material.WITHER_ROSE, "&cБёрн 100", List.of("&7Сжечь эмиссию из казны")));
-        
+        double reserve = bank.reserveOf(nation);
+        double coverage = national == null ? 1.0D : bank.coverageOf(nation, national.id());
+        double price = national == null ? 1.0D : bank.priceOf(national);
+        double parity = bank.parityOf(nation);
+        double tax = bank.taxOf(nation);
+
+        inv.setItem(10, item(Material.GOLD_BLOCK, "&6Резерв",
+                List.of("&f" + Formatter.amount(reserve, 2) + " GLD",
+                        "&7Твоё личное золото, внесённое депозитом")));
+        inv.setItem(13, item(coverage >= 1.0D ? Material.LIME_CONCRETE : (coverage >= bank.coverageFloor() ? Material.YELLOW_CONCRETE : Material.RED_CONCRETE),
+                "&6Покрытие",
+                List.of("&f" + String.format(Locale.ROOT, "%.1f%%", coverage * 100.0D),
+                        coverage >= 1.0D ? "&aВалюта торгуется по паритету" : "&eЦену держит резерв")));
+        inv.setItem(16, item(Material.GOLD_INGOT, "&6Цена валюты",
+                List.of("&f" + String.format(Locale.ROOT, "%.4f", price) + " GLD")));
+
+        inv.setItem(19, item(Material.RED_STAINED_GLASS_PANE, "&cПаритет −0.10",
+                List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.2f", parity))));
+        inv.setItem(21, item(Material.LIME_STAINED_GLASS_PANE, "&aПаритет +0.10",
+                List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.2f", parity))));
+        inv.setItem(23, item(Material.RED_STAINED_GLASS_PANE, "&cНалог −0.5%",
+                List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.1f%%", tax * 100.0D))));
+        inv.setItem(25, item(Material.LIME_STAINED_GLASS_PANE, "&aНалог +0.5%",
+                List.of("&7Сейчас: &f" + String.format(Locale.ROOT, "%.1f%%", tax * 100.0D))));
+
+        inv.setItem(29, item(Material.GOLD_NUGGET, "&6Депозит 100 GLD",
+                List.of("&7Личное золото → резерв", "&7Курс крепнет")));
+        inv.setItem(30, item(Material.GOLD_BLOCK, "&6Депозит 1000 GLD",
+                List.of("&7Личное золото → резерв", "&7Курс крепнет")));
+        inv.setItem(31, item(Material.GOLD_NUGGET, "&cВывод 100 GLD",
+                List.of("&7Резерв → личное золото", "&7Лимит 25% резерва в сутки")));
+        inv.setItem(32, item(Material.GOLD_BLOCK, "&cВывод 1000 GLD",
+                List.of("&7Резерв → личное золото", "&7Лимит 25% резерва в сутки")));
+        inv.setItem(33, item(Material.SUNFLOWER, "&aМинт 100",
+                List.of("&7Эмиссия в казну", "&7Лимит: &f" + Formatter.amount(national == null ? 0 : bank.maxMint(nation, national.id()), 2))));
+        inv.setItem(34, item(Material.WITHER_ROSE, "&cБёрн 100",
+                List.of("&7Сжечь эмиссию из казны", "&7Курс крепнет")));
+
+        inv.setItem(40, item(Material.WRITABLE_BOOK, "&6Экономический советник",
+                List.of("&7Прогнозы: что будет, если изменить", "&7резерв / паритет / налог", "&7Нажми, чтобы открыть")));
         inv.setItem(49, item(Material.ARROW, "&7Назад", List.of()));
+        player.openInventory(inv);
+    }
+
+    public static void openAdvisor(RaskolVault plugin, Player player) {
+        if (!isKing(plugin, player)) {
+            return;
+        }
+        String nation = plugin.getTownyHook().nationOf(player.getUniqueId());
+        if (nation == null) {
+            return;
+        }
+        WalletGuiHolder holder = WalletGuiHolder.of(player.getUniqueId(), WalletGuiHolder.Page.ADVISOR);
+        Inventory inv = Bukkit.createInventory(holder, 54, TITLE_ADVISOR);
+        border(inv);
+        List<ReserveBank.Advice> advice = plugin.getReserveBank().advise(nation);
+        int[] slots = {10, 12, 14, 19, 21, 23};
+        for (int i = 0; i < advice.size() && i < slots.length; i++) {
+            ReserveBank.Advice a = advice.get(i);
+            inv.setItem(slots[i], item(Material.PAPER, a.title(), a.lore()));
+        }
+        inv.setItem(49, item(Material.ARROW, "&7Назад в кабинет", List.of()));
         player.openInventory(inv);
     }
 
