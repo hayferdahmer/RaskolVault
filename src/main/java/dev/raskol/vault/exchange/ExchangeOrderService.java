@@ -28,14 +28,16 @@ import java.util.UUID;
  */
 public final class ExchangeOrderService {
 
-    public record CreateResult(boolean ok, String orderId, String error) {
-        public static CreateResult ok(String id) { return new CreateResult(true, id, null); }
-        public static CreateResult fail(String err) { return new CreateResult(false, null, err); }
+    // FIX: переименованы ok()/fail() → success()/failure() во избежание
+    // конфликта с автоматическим аксессором поля `ok` в record.
+    public record CreateResult(boolean success, String orderId, String error) {
+        public static CreateResult success(String id) { return new CreateResult(true, id, null); }
+        public static CreateResult failure(String err) { return new CreateResult(false, null, err); }
     }
 
-    public record MatchResult(boolean ok, String error) {
-        public static MatchResult ok() { return new MatchResult(true, null); }
-        public static MatchResult fail(String err) { return new MatchResult(false, err); }
+    public record MatchResult(boolean success, String error) {
+        public static MatchResult success() { return new MatchResult(true, null); }
+        public static MatchResult failure(String err) { return new MatchResult(false, err); }
     }
 
     private final RaskolVault plugin;
@@ -72,26 +74,26 @@ public final class ExchangeOrderService {
                                      double sellAmount, double buyAmount) {
         if (!plugin.getTownyHook().isAvailable()
                 || !plugin.getTownyHook().isKing(owner, nation)) {
-            return CreateResult.fail("только король нации может выставлять ордера");
+            return CreateResult.failure("только король нации может выставлять ордера");
         }
         Currency sell = currencies.get(sellCur).orElse(null);
         Currency buy = currencies.get(buyCur).orElse(null);
         if (sell == null || buy == null) {
-            return CreateResult.fail("валюта не найдена");
+            return CreateResult.failure("валюта не найдена");
         }
         if (sell.id().equals(buy.id())) {
-            return CreateResult.fail("нельзя торговать валюту за саму себя");
+            return CreateResult.failure("нельзя торговать валюту за саму себя");
         }
         if (!sell.tradeable() || !buy.tradeable()) {
-            return CreateResult.fail("одна из валют неторгуемая");
+            return CreateResult.failure("одна из валют неторгуемая");
         }
         if (!(sellAmount > 0.0D) || !(buyAmount > 0.0D)) {
-            return CreateResult.fail("некорректная сумма");
+            return CreateResult.failure("некорректная сумма");
         }
         String orderId = UUID.randomUUID().toString();
         // Заморозка продаваемой валюты в escrow (билет = id ордера)
         if (!escrow.hold(owner, sell.id(), sellAmount, orderId)) {
-            return CreateResult.fail("недостаточно средств для заморозки");
+            return CreateResult.failure("недостаточно средств для заморозки");
         }
         double price = buyAmount / sellAmount;
         long now = System.currentTimeMillis();
@@ -101,26 +103,26 @@ public final class ExchangeOrderService {
                     sellAmount, buyAmount, price, sellAmount, "OPEN", now, now));
         } catch (RuntimeException e) {
             escrow.refund(orderId);
-            return CreateResult.fail("ошибка БД: " + e.getMessage());
+            return CreateResult.failure("ошибка БД: " + e.getMessage());
         }
-        return CreateResult.ok(orderId);
+        return CreateResult.success(orderId);
     }
 
     /** Отмена своего OPEN-ордера: возврат заморозки. */
     public MatchResult cancelOrder(String orderId, UUID owner) {
         ExchangeOrderRow order = ledger.exchangeOrderGet(orderId);
         if (order == null) {
-            return MatchResult.fail("ордер не найден");
+            return MatchResult.failure("ордер не найден");
         }
         if (!order.owner().equals(owner)) {
-            return MatchResult.fail("это не ваш ордер");
+            return MatchResult.failure("это не ваш ордер");
         }
         if (!"OPEN".equals(order.status())) {
-            return MatchResult.fail("ордер уже закрыт");
+            return MatchResult.failure("ордер уже закрыт");
         }
         escrow.refund(orderId);
         ledger.exchangeOrderUpdateRemaining(orderId, 0.0D, "CANCELLED");
-        return MatchResult.ok();
+        return MatchResult.success();
     }
 
     /**
@@ -130,29 +132,29 @@ public final class ExchangeOrderService {
     public MatchResult takeOrder(String orderId, UUID taker) {
         ExchangeOrderRow order = ledger.exchangeOrderGet(orderId);
         if (order == null) {
-            return MatchResult.fail("ордер не найден");
+            return MatchResult.failure("ордер не найден");
         }
         if (!"OPEN".equals(order.status())) {
-            return MatchResult.fail("ордер уже закрыт");
+            return MatchResult.failure("ордер уже закрыт");
         }
         if (order.owner().equals(taker)) {
-            return MatchResult.fail("нельзя забрать собственный ордер");
+            return MatchResult.failure("нельзя забрать собственный ордер");
         }
         if (!plugin.getTownyHook().isAvailable()
                 || !plugin.getTownyHook().isKing(taker,
                 plugin.getTownyHook().nationOf(taker) == null ? "" : plugin.getTownyHook().nationOf(taker))) {
-            return MatchResult.fail("только короли наций могут забирать ордера (временное ограничение)");
+            return MatchResult.failure("только короли наций могут забирать ордера (временное ограничение)");
         }
         // 1) taker платит buy_amount владельцу
         if (!wallets.withdraw(taker, order.buyCurrency(), order.buyAmount(),
                 TransactionType.PAY, "exchange:take:" + orderId)) {
-            return MatchResult.fail("недостаточно " + order.buyCurrency() + " для исполнения");
+            return MatchResult.failure("недостаточно " + order.buyCurrency() + " для исполнения");
         }
         if (!wallets.deposit(order.owner(), order.buyCurrency(), order.buyAmount(),
                 TransactionType.PAY, "exchange:take:" + orderId)) {
             wallets.deposit(taker, order.buyCurrency(), order.buyAmount(),
                     TransactionType.PAY, "exchange:take:rollback:" + orderId);
-            return MatchResult.fail("ошибка зачисления владельцу");
+            return MatchResult.failure("ошибка зачисления владельцу");
         }
         // 2) замороженная sell-валюта уходит taker'у
         if (!escrow.release(orderId, taker)) {
@@ -161,10 +163,10 @@ public final class ExchangeOrderService {
                     TransactionType.PAY, "exchange:take:rollback:" + orderId);
             wallets.deposit(taker, order.buyCurrency(), order.buyAmount(),
                     TransactionType.PAY, "exchange:take:rollback:" + orderId);
-            return MatchResult.fail("ошибка передачи заморозки");
+            return MatchResult.failure("ошибка передачи заморозки");
         }
         ledger.exchangeOrderUpdateRemaining(orderId, 0.0D, "MATCHED");
-        return MatchResult.ok();
+        return MatchResult.success();
     }
 
     public List<ExchangeOrderRow> openOrders(int limit) {
