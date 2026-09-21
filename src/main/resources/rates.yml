@@ -1,14 +1,19 @@
-# RaskolVault 1.1.0 — статические курсы (до этапа 1.1.0-c, где курсы
-# начнут выводиться из цен золотого покрытия).
-# Ключ: <from>_<to> в нижнем регистре. Значение: единиц TO за 1 FROM.
+# RaskolVault rates.yml (1.1.3)
+# rates: статические пары (справочно; движок использует цены резерва)
+# fees: комиссии пар (база, сжигается). Дефолт = exchange.default-fee.
+# embargo: закрытые пары (симметрично, обе стороны). Пример: - RAS_VLR
 
 rates:
-  gld_ras: 2.0
-  ras_gld: 0.45
-  gld_vlr: 1.5
-  vlr_gld: 0.6
-  ras_vlr: 0.75
-  vlr_ras: 1.25
+  GLD_RAS: 2.0
+  GLD_VLR: 2.0
+  RAS_VLR: 1.0
 
-# Индивидуальные комиссии пар (доля от суммы). Пусто = default-fee из config.yml.
-fees: {}
+fees:
+  RAS_VLR: 0.02
+  GLD_RAS: 0.02
+  GLD_VLR: 0.02
+
+embargo: []
+# Пример закрытия пары:
+# embargo:
+#   - RAS_VLR
