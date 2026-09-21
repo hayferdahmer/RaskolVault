@@ -23,7 +23,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * /rv admin … (1.1.2): минт/бёрн через ReserveBank (минт с сеньоражем).
+ * /rv admin … (1.1.4): расширенный health (uptime, tx/s, queue, cache-hit,
+ * последняя сверка, статус бэкапа).
  */
 public final class AdminSubcommand {
 
@@ -79,58 +80,97 @@ public final class AdminSubcommand {
         send(sender, "&f health · reload · backup · restore <файл> · simulate-load [игроки] [tx]");
     }
 
-    private void treasuryOp(CommandSender sender, String[] args, boolean mint) {
-        String perm = mint ? "raskolvault.admin.mint" : "raskolvault.admin.burn";
-        if (!sender.hasPermission(perm)) {
+    private void health(CommandSender sender) {
+        if (!sender.hasPermission("raskolvault.admin.health")) {
             send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
             return;
         }
-        if (args.length < 3) {
-            send(sender, plugin.getMessages().prefix()
-                    + "&f/rv admin " + (mint ? "mint" : "burn") + " <валюта> <сумма>");
-            return;
-        }
-        Currency currency = plugin.getCurrencies().get(args[1]).orElse(null);
-        if (currency == null) {
-            send(sender, plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[1])));
-            return;
-        }
-        if (currency.type() != dev.raskol.vault.api.currency.CurrencyType.NATIONAL) {
-            send(sender, plugin.getMessages().prefix() + "&cТолько национальные валюты (NATIONAL)");
-            return;
-        }
-        double amount;
+        send(sender, plugin.getMessages().prefix() + "&6╔══ RaskolVault Health (1.1.4) ══╗");
+
+        // TPS
+        String tps1 = "-", tps5 = "-", tps15 = "-";
         try {
-            amount = Double.parseDouble(args[2]);
-        } catch (NumberFormatException e) {
-            send(sender, plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
-            return;
+            double[] tps = Bukkit.getTPS();
+            if (tps != null && tps.length >= 3) {
+                tps1 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[0]));
+                tps5 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[1]));
+                tps15 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[2]));
+            }
+        } catch (Throwable ignored) {
         }
-        if (!(amount > 0.0D)) {
-            send(sender, plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
-            return;
-        }
-        String nation = currency.nationId();
-        var bank = plugin.getReserveBank();
-        boolean ok = mint
-                ? bank.mintToTreasury(nation, currency, amount)
-                : bank.burnFromTreasury(nation, currency, amount);
-        if (ok && mint) {
-            double fee = amount * bank.seigniorageRate();
-            send(sender, plugin.getMessages().prefix() + "&aМинт &f"
-                    + Formatter.amount(amount, currency.decimals()) + " " + currency.id()
-                    + " &7в казну " + nation + " &7(сеньораж сожжён: &f"
-                    + Formatter.amount(fee, currency.decimals()) + "&7)");
-        } else if (ok) {
-            send(sender, plugin.getMessages().prefix() + "&aБёрн &f"
-                    + Formatter.amount(amount, currency.decimals()) + " " + currency.id()
-                    + " &7из казны " + nation);
+        send(sender, "&7 TPS (1/5/15m): &f" + tps1 + " / " + tps5 + " / " + tps15);
+        send(sender, "&7 Online: &f" + Bukkit.getOnlinePlayers().size() + "/" + Bukkit.getMaxPlayers());
+
+        // Uptime
+        long uptimeSeconds = (System.currentTimeMillis() - plugin.getStartTimeMillis()) / 1000L;
+        send(sender, "&7 Uptime: &f" + formatUptime(uptimeSeconds));
+
+        // JVM
+        Runtime rt = Runtime.getRuntime();
+        long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L);
+        long maxMb = rt.maxMemory() / (1024L * 1024L);
+        send(sender, "&7 JVM memory: &f" + usedMb + " / " + maxMb + " MB");
+
+        // SQLite pool
+        send(sender, "&7 SQLite pool: &f" + plugin.getLedger().poolIdle() + " idle / "
+                + plugin.getLedger().poolSize() + " total · wait " + plugin.getLedger().poolWaiting());
+
+        // Writer
+        int queue = plugin.getWriter().queueSize();
+        long failed = plugin.getWriter().failed();
+        String queueColor = queue > 500 ? "&c" : (queue > 100 ? "&e" : "&f");
+        String failedColor = failed > 0 ? "&c" : "&a";
+        send(sender, "&7 Writer: " + queueColor + "queue " + queue + "&r · applied "
+                + plugin.getWriter().applied() + " · failed " + failedColor + failed + "&r");
+
+        // Cache
+        send(sender, "&7 Cache: &frows " + plugin.getWallets().cachedRows()
+                + " · hit-rate &e" + String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate()) + "%");
+
+        // Transactions
+        long txPerMin = plugin.getTxCounter().perMinute();
+        long totalTx = plugin.getLedger().countTransactions();
+        double tps = uptimeSeconds > 0 ? (double) totalTx / uptimeSeconds : 0.0D;
+        send(sender, "&7 Tx: &f" + totalTx + " total · " + txPerMin + "/min · "
+                + String.format(Locale.ROOT, "%.2f", tps) + " tx/s");
+        send(sender, "&7 Last tx: &f" + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+                .format(new Date(plugin.getLedger().lastTransactionTimestamp())));
+
+        // Reconcile
+        long lastReconcile = plugin.getLastReconcileMillis();
+        if (lastReconcile > 0) {
+            long ago = (System.currentTimeMillis() - lastReconcile) / 1000L;
+            send(sender, "&7 Last reconcile: &f" + formatUptime(ago) + " ago");
         } else {
-            send(sender, plugin.getMessages().prefix() + "&cОперация не прошла (лимит покрытия или недостаточно средств)");
+            send(sender, "&7 Last reconcile: &7not yet");
         }
+
+        // Backup
+        if (plugin.getBackups() != null) {
+            send(sender, "&7 Daily backup: &aenabled");
+        } else {
+            send(sender, "&7 Daily backup: &cdisabled");
+        }
+
+        // Spark
+        if (plugin.getSparkHook().isAvailable()) {
+            send(sender, "&7 Spark: &adetected &7(смотри /spark profiler)");
+        } else {
+            send(sender, "&7 Spark: &7not detected");
+        }
+
+        send(sender, plugin.getMessages().prefix() + "&6╚════════════════════════════════╝");
+    }
+
+    private String formatUptime(long seconds) {
+        long d = seconds / 86400L;
+        long h = (seconds % 86400L) / 3600L;
+        long m = (seconds % 3600L) / 60L;
+        long s = seconds % 60L;
+        if (d > 0) return d + "d " + h + "h " + m + "m";
+        if (h > 0) return h + "h " + m + "m " + s + "s";
+        if (m > 0) return m + "m " + s + "s";
+        return s + "s";
     }
 
     private void reserveOp(CommandSender sender, String[] args) {
@@ -171,39 +211,6 @@ public final class AdminSubcommand {
         } else {
             send(sender, plugin.getMessages().prefix() + "&f/rv admin reserve set|add <нация> <сумма>");
         }
-    }
-
-    private void health(CommandSender sender) {
-        if (!sender.hasPermission("raskolvault.admin.health")) {
-            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
-            return;
-        }
-        send(sender, plugin.getMessages().prefix() + "&6=== RaskolVault Health ===");
-        String tps1 = "-", tps5 = "-", tps15 = "-";
-        try {
-            double[] tps = Bukkit.getTPS();
-            if (tps != null && tps.length >= 3) {
-                tps1 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[0]));
-                tps5 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[1]));
-                tps15 = String.format(Locale.ROOT, "%.2f", Math.min(20.0, tps[2]));
-            }
-        } catch (Throwable ignored) {
-        }
-        send(sender, "&7 TPS (1/5/15m): &f" + tps1 + " / " + tps5 + " / " + tps15);
-        send(sender, "&7 Online: &f" + Bukkit.getOnlinePlayers().size() + "/" + Bukkit.getMaxPlayers());
-        Runtime rt = Runtime.getRuntime();
-        long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L);
-        long maxMb = rt.maxMemory() / (1024L * 1024L);
-        send(sender, "&7 JVM memory: &f" + usedMb + " / " + maxMb + " MB");
-        send(sender, "&7 SQLite pool: &f" + plugin.getLedger().poolIdle() + " idle / "
-                + plugin.getLedger().poolSize() + " total · wait " + plugin.getLedger().poolWaiting());
-        send(sender, "&7 Writer: &fqueue " + plugin.getWriter().queueSize()
-                + " · applied " + plugin.getWriter().applied()
-                + " · failed " + (plugin.getWriter().failed() == 0 ? "&a0&r" : "&c" + plugin.getWriter().failed()));
-        send(sender, "&7 Cache: &frows " + plugin.getWallets().cachedRows()
-                + " · hit-rate &e" + String.format(Locale.ROOT, "%.1f", plugin.getWallets().cacheHitRate()) + "%");
-        send(sender, "&7 Tx/min (60s): &f" + plugin.getTxCounter().perMinute());
-        send(sender, plugin.getMessages().prefix() + "&6======================");
     }
 
     private void adminBalance(CommandSender sender, String[] args) {
@@ -323,6 +330,60 @@ public final class AdminSubcommand {
                 + Formatter.withSymbol(neu, currency.decimals(), currency.symbol()));
     }
 
+    private void treasuryOp(CommandSender sender, String[] args, boolean mint) {
+        String perm = mint ? "raskolvault.admin.mint" : "raskolvault.admin.burn";
+        if (!sender.hasPermission(perm)) {
+            send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
+            return;
+        }
+        if (args.length < 3) {
+            send(sender, plugin.getMessages().prefix()
+                    + "&f/rv admin " + (mint ? "mint" : "burn") + " <валюта> <сумма>");
+            return;
+        }
+        Currency currency = plugin.getCurrencies().get(args[1]).orElse(null);
+        if (currency == null) {
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.unknown-currency", Map.of("id", args[1])));
+            return;
+        }
+        if (currency.type() != dev.raskol.vault.api.currency.CurrencyType.NATIONAL) {
+            send(sender, plugin.getMessages().prefix() + "&cТолько национальные валюты (NATIONAL)");
+            return;
+        }
+        double amount;
+        try {
+            amount = Double.parseDouble(args[2]);
+        } catch (NumberFormatException e) {
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
+            return;
+        }
+        if (!(amount > 0.0D)) {
+            send(sender, plugin.getMessages().prefix()
+                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", args[2])));
+            return;
+        }
+        String nation = currency.nationId();
+        var bank = plugin.getReserveBank();
+        boolean ok = mint
+                ? bank.mintToTreasury(nation, currency, amount)
+                : bank.burnFromTreasury(nation, currency, amount);
+        if (ok && mint) {
+            double fee = amount * bank.seigniorageRate();
+            send(sender, plugin.getMessages().prefix() + "&aМинт &f"
+                    + Formatter.amount(amount, currency.decimals()) + " " + currency.id()
+                    + " &7в казну " + nation + " &7(сеньораж сожжён: &f"
+                    + Formatter.amount(fee, currency.decimals()) + "&7)");
+        } else if (ok) {
+            send(sender, plugin.getMessages().prefix() + "&aБёрн &f"
+                    + Formatter.amount(amount, currency.decimals()) + " " + currency.id()
+                    + " &7из казны " + nation);
+        } else {
+            send(sender, plugin.getMessages().prefix() + "&cОперация не прошла (лимит покрытия или недостаточно средств)");
+        }
+    }
+
     private void simulateLoad(CommandSender sender, String[] args) {
         if (!sender.hasPermission("raskolvault.admin.debug")) {
             send(sender, plugin.getMessages().prefix() + plugin.getMessages().get("error.no-permission", null));
@@ -388,7 +449,8 @@ public final class AdminSubcommand {
                 plugin.getConfig().getString("messages.file", "messages.yml")));
         plugin.getRates().load(new File(plugin.getDataFolder(),
                 plugin.getConfig().getString("exchange.rates-file", "rates.yml")));
-        send(sender, plugin.getMessages().prefix() + "&aКонфиги перезагружены");
+        plugin.getReserveBank().invalidateCache();
+        send(sender, plugin.getMessages().prefix() + "&aКонфиги перезагружены, кэш цен инвалидирован");
     }
 
     private void backup(CommandSender sender) {
