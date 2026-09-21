@@ -15,9 +15,9 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Реестр валют. Источники: currencies.yml (приоритет) + БД (merge).
- * 1.1.0-a: merge из БД закрывает дыру 1.0.x — валюты, созданные в рантайме
- * (авто-лушнер наций), теперь переживают рестарт сервера.
+ * Реестр валют. Источники: currencies.yml (приоритет) + merge из БД.
+ * 1.1.0.2: добавлен disableNationCurrencies (нация удалена → валюты неторгуемые,
+ * балансы игроков НЕ удаляются).
  */
 public final class CurrencyRegistry {
 
@@ -77,27 +77,6 @@ public final class CurrencyRegistry {
         plugin.getLogger().info("RaskolVault: валют в реестре: " + byId.size() + " (global=" + this.globalId + ")");
     }
 
-    /**
-     * 1.1.0-a: подтянуть валюты из БД, которых нет в currencies.yml
-     * (созданные в рантайме). YML остаётся приоритетным источником.
-     */
-    public int mergeFromLedger(SQLiteLedger ledger) {
-        int added = 0;
-        for (Currency db : ledger.loadCurrencies()) {
-            if (!byId.containsKey(db.id())) {
-                byId.put(db.id(), db);
-                if (db.type() == CurrencyType.GLOBAL && globalId == null) {
-                    globalId = db.id();
-                }
-                added++;
-            }
-        }
-        if (added > 0) {
-            plugin.getLogger().info("RaskolVault: из БД подтянуто валют: " + added);
-        }
-        return added;
-    }
-
     public void syncToLedger(SQLiteLedger ledger) {
         for (Currency c : byId.values()) {
             ledger.upsertCurrency(c);
@@ -133,26 +112,44 @@ public final class CurrencyRegistry {
         return count;
     }
 
+    /** Переименование нации: обновляет nationId у всех её валют. */
     public int updateNationId(String oldName, String newName) {
-        if (oldName == null || oldName.equals(newName)) {
+        if (oldName == null || newName == null || oldName.equalsIgnoreCase(newName)) {
             return 0;
         }
-        List<String> keys = new ArrayList<>();
-        List<Currency> replaced = new ArrayList<>();
+        int n = 0;
         for (Map.Entry<String, Currency> e : byId.entrySet()) {
             Currency c = e.getValue();
             if (oldName.equalsIgnoreCase(c.nationId())) {
-                keys.add(e.getKey());
-                replaced.add(new Currency(c.id(), c.displayName(), c.symbol(), c.type(),
-                        newName, c.decimals(), c.tradeable()));
+                byId.put(e.getKey(), new Currency(c.id(), c.displayName(), c.symbol(),
+                        c.type(), newName, c.decimals(), c.tradeable()));
+                n++;
             }
         }
-        for (int i = 0; i < keys.size(); i++) {
-            byId.put(keys.get(i), replaced.get(i));
-        }
-        return replaced.size();
+        return n;
     }
 
+    /**
+     * Нация удалена: её валюты помечаются неторгуемыми (tradeable=false).
+     * Балансы игроков и казны НЕ удаляются (FK CASCADE не срабатывает).
+     */
+    public int disableNationCurrencies(String nation) {
+        if (nation == null) {
+            return 0;
+        }
+        int n = 0;
+        for (Map.Entry<String, Currency> e : byId.entrySet()) {
+            Currency c = e.getValue();
+            if (nation.equalsIgnoreCase(c.nationId()) && c.tradeable()) {
+                byId.put(e.getKey(), new Currency(c.id(), c.displayName(), c.symbol(),
+                        c.type(), c.nationId(), c.decimals(), false));
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** Переименование валюты по ID (атомарно в реестре; БД — через ledger.renameCurrency). */
     public boolean rename(String oldId, String newId) {
         String upperOld = oldId.toUpperCase(Locale.ROOT);
         String upperNew = newId.toUpperCase(Locale.ROOT);
