@@ -92,7 +92,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             send(sender, plugin.getMessages().get("error.no-permission", null));
             return;
         }
-        WalletGui.openMain(player);
+        // FIX: WalletGui.openMain требует (plugin, player)
+        WalletGui.openMain(plugin, player);
     }
 
     private void confirm(CommandSender sender) {
@@ -183,7 +184,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 4 && op.equals("exchange")) {
             String sub = args[1].toLowerCase(Locale.ROOT);
-            if (sub.equals("sell") || sub.equals("buy")) return Collections.emptyList(); // amount — свободный ввод
+            if (sub.equals("sell") || sub.equals("buy")) return Collections.emptyList();
         }
         if (args.length == 4 && op.equals("admin")) {
             String sub = args[1].toLowerCase(Locale.ROOT);
