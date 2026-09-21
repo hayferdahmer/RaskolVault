@@ -3,6 +3,7 @@ package dev.raskol.vault.command.sub;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.util.Formatter;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
