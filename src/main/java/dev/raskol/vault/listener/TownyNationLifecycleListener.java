@@ -1,20 +1,26 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault.listener;
 
+import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
+import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.storage.SQLiteLedger;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.plugin.EventExecutor;
 import org.bukkit.plugin.Plugin;
 
+import java.io.File;
 import java.lang.reflect.Method;
 
 /**
- * Слушатель переименования/удаления наций (фикс 1.1.0.1):
- * Towny 0.103.1.0 использует другие пакеты для событий.
- * Fallback: если события не найдены, логируем warning и продолжаем.
+ * Слушатель переименования/удаления наций (фикс 1.1.0.2).
+ * Использует ТОЛЬКО существующие методы реестра: updateNationId / disableNationCurrencies.
+ * currencies.yml перезаписывается как источник правды (на рестарте syncToLedger
+ * приведёт таблицу currencies в БД к тому же состоянию).
  */
 public final class TownyNationLifecycleListener implements Listener {
 
@@ -61,9 +67,10 @@ public final class TownyNationLifecycleListener implements Listener {
             if (oldName == null || newName == null || oldName.equals(newName)) {
                 return;
             }
-            currencies.renameNation(oldName, newName);
-            ledger.renameNation(oldName, newName);
-            plugin.getLogger().info("RaskolVault: нация переименована '" + oldName + "' → '" + newName + "'");
+            int n = currencies.updateNationId(oldName, newName);
+            rewriteCurrenciesYml();
+            plugin.getLogger().info("RaskolVault: нация переименована '" + oldName + "' → '" + newName
+                    + "', валют обновлено: " + n + " (currencies.yml перезаписан)");
         } catch (Exception e) {
             plugin.getLogger().warning("RaskolVault: обработка переименования нации провалена: " + e.getMessage());
         }
@@ -81,11 +88,38 @@ public final class TownyNationLifecycleListener implements Listener {
             if (nationName == null) {
                 return;
             }
-            currencies.removeNation(nationName);
-            ledger.removeNation(nationName);
-            plugin.getLogger().info("RaskolVault: нация '" + nationName + "' удалена, валюты помечены как неактивные");
+            int n = currencies.disableNationCurrencies(nationName);
+            rewriteCurrenciesYml();
+            plugin.getLogger().warning("RaskolVault: нация '" + nationName + "' удалена: "
+                    + n + " валют(ы) помечены неторгуемыми. Балансы игроков сохранены. "
+                    + "Вернуть торговлю: /rv admin currency + tradeable в currencies.yml");
         } catch (Exception e) {
             plugin.getLogger().warning("RaskolVault: обработка удаления нации провалена: " + e.getMessage());
+        }
+    }
+
+    /** Перезаписывает currencies.yml из текущего состояния реестра (источник правды). */
+    private void rewriteCurrenciesYml() {
+        try {
+            File file = new File(plugin.getDataFolder(), "currencies.yml");
+            YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            ConfigurationSection section = yaml.getConfigurationSection("currencies");
+            if (section == null) {
+                return;
+            }
+            for (String key : section.getKeys(false)) {
+                Currency c = currencies.get(key).orElse(null);
+                if (c == null) {
+                    continue;
+                }
+                if (c.nationId() != null) {
+                    section.set(key + ".nation-id", c.nationId());
+                }
+                section.set(key + ".tradeable", c.tradeable());
+            }
+            SafeStorage.saveAtomic(yaml, file, plugin);
+        } catch (Exception e) {
+            plugin.getLogger().warning("RaskolVault: не удалось перезаписать currencies.yml: " + e.getMessage());
         }
     }
 }
