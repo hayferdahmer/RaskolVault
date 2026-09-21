@@ -26,10 +26,10 @@
             <id>placeholderapi</id>
             <url>https://repo.extendedclip.com/content/repositories/placeholderapi/</url>
         </repository>
-        <!-- 1.2.0: Towny через jitpack (официально рекомендовано в README Towny) -->
+        <!-- 1.2.0: официальный Nexus Towny (glaremasters) -->
         <repository>
-            <id>jitpack.io</id>
-            <url>https://jitpack.io</url>
+            <id>glaremasters</id>
+            <url>https://repo.glaremasters.me/repository/towny/</url>
         </repository>
     </repositories>
 
@@ -46,10 +46,10 @@
             <version>2.11.6</version>
             <scope>provided</scope>
         </dependency>
-        <!-- 1.2.0: Towny API напрямую (scope=provided — в runtime подгружается сервером) -->
+        <!-- 1.2.0: Towny API напрямую с официального Nexus -->
         <dependency>
-            <groupId>com.github.TownyAdvanced</groupId>
-            <artifactId>Towny</artifactId>
+            <groupId>com.palmergames.bukkit.towny</groupId>
+            <artifactId>towny</artifactId>
             <version>0.103.2.0</version>
             <scope>provided</scope>
         </dependency>
