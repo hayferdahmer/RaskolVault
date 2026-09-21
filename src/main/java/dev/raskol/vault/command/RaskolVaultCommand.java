@@ -22,7 +22,10 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — корневой роутер. 1.1.0-d: добавлены /rv cabinet, /rv guide.
+ * /rv — корневой роутер (фикс 1.1.0.1): таб-комплит ранговый и без дублей GUI.
+ * База: wallet, pay, convert, confirm, nation, help, version.
+ * Король: + cabinet, guide. Админ: + admin.
+ * /rv rates и /rv bank работают набором, но из таба убраны (дубли GUI).
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -122,14 +125,16 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     private void help(CommandSender sender) {
         sender.sendMessage(prefix() + "&6=== RaskolVault ===");
         sender.sendMessage("&f /rv wallet &7— GUI кошелька (балансы, конверт, курсы, история)");
-        sender.sendMessage("&f /rv cabinet &7— GUI кабинета правителя (только король)");
-        sender.sendMessage("&f /rv guide &7— кодекс правителя (инструкции)");
         sender.sendMessage("&f /rv pay <ник> <валюта> <сумма> [причина]");
         sender.sendMessage("&f /rv convert <из> <в> <сумма> &7→ &f/rv confirm");
-        sender.sendMessage("&f /rv rates &7— курсы валют");
-        sender.sendMessage("&f /rv bank &7— банк нации (резерв, паритет, налог)");
+        sender.sendMessage("&f /rv nation &7— твоя нация и казна");
+        if (sender instanceof Player p && WalletGui.isKing(plugin, p)) {
+            sender.sendMessage("&f /rv cabinet &7— кабинет правителя");
+            sender.sendMessage("&f /rv guide &7— кодекс правителя");
+        }
         if (sender.hasPermission("raskolvault.admin")) {
             sender.sendMessage("&f /rv admin … &7— админ-блок (balance, give, take, audit, …)");
+            sender.sendMessage("&f /rv rates · /rv bank &7— служебные (дубли GUI)");
         }
     }
 
@@ -150,7 +155,11 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(Arrays.asList(
-                    "help", "version", "wallet", "cabinet", "guide", "convert", "confirm", "rates", "bank", "nation", "pay"));
+                    "wallet", "pay", "convert", "confirm", "nation", "help", "version"));
+            if (sender instanceof Player p && WalletGui.isKing(plugin, p)) {
+                subs.add("cabinet");
+                subs.add("guide");
+            }
             if (sender.hasPermission("raskolvault.admin")) {
                 subs.add("admin");
             }
@@ -164,10 +173,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                 case "pay" -> {
                     return offline == null ? Collections.emptyList() : offline.matchNames(args[1], 50);
                 }
-                case "convert", "rates" -> currencyTab(args[1]);
-                case "bank" -> {
-                    return filter(Arrays.asList("info", "deposit", "withdraw", "parity", "tax"), args[1]);
-                }
+                case "convert" -> currencyTab(args[1]);
+                case "bank" -> filter(Arrays.asList("info", "deposit", "withdraw", "parity", "tax"), args[1]);
                 case "admin" -> {
                     if (!sender.hasPermission("raskolvault.admin")) {
                         return Collections.emptyList();
