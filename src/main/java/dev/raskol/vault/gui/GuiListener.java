@@ -14,10 +14,11 @@ import org.bukkit.event.player.AsyncPlayerChatEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
- * Единый обработчик кликов GUI «Кошелёк» + захват чата для ввода суммы (1.1.0-c).
- * Все клики внутри GUI отменяются (предметы не двигаются).
+ * Обработчик кликов GUI «Кошелёк» + захват чата (фикс 1.1.0.1):
+ * клик по иконке валюты на главной = быстрый старт конверта ИЗ этой валюты.
  */
 public final class GuiListener implements Listener {
 
@@ -70,7 +71,7 @@ public final class GuiListener implements Listener {
         } catch (NumberFormatException e) {
             event.getPlayer().sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.invalid-amount",
-                    java.util.Map.of("value", event.getMessage())));
+                    Map.of("value", event.getMessage())));
             return;
         }
         Player player = event.getPlayer();
@@ -80,6 +81,13 @@ public final class GuiListener implements Listener {
 
     private void onMain(Player player, int slot) {
         switch (slot) {
+            case 10, 12, 14 -> {
+                int index = (slot - 10) / 2;
+                List<Currency> list = new ArrayList<>(plugin.getCurrencies().all());
+                if (index >= 0 && index < list.size()) {
+                    WalletGui.openConvertTo(plugin, player, list.get(index).id());
+                }
+            }
             case 29 -> WalletGui.openConvertFrom(plugin, player);
             case 31 -> WalletGui.openRates(plugin, player);
             case 33 -> WalletGui.openHistory(plugin, player, 0);
@@ -164,7 +172,7 @@ public final class GuiListener implements Listener {
         if (executed.isEmpty()) {
             player.sendMessage(plugin.getMessages().prefix()
                     + plugin.getMessages().get("error.convert.generic",
-                    java.util.Map.of("reason", "курс или средства изменились",
+                    Map.of("reason", "курс или средства изменились",
                             "from", holder.fromId(), "to", holder.toId())));
             player.closeInventory();
             return;
@@ -172,8 +180,10 @@ public final class GuiListener implements Listener {
         var q = executed.get();
         Currency to = plugin.getCurrencies().get(q.toId()).orElse(null);
         player.sendMessage(plugin.getMessages().prefix()
-                + plugin.getMessages().get("convert.done", java.util.Map.of(
-                "amount", FormatterSafe(q.net(), to))));
+                + plugin.getMessages().get("convert.done", Map.of(
+                "amount", dev.raskol.vault.util.Formatter.withSymbol(q.net(),
+                        to == null ? 2 : to.decimals(),
+                        to == null ? q.toId() : to.symbol()))));
         WalletGui.openMain(plugin, player);
     }
 
@@ -265,18 +275,10 @@ public final class GuiListener implements Listener {
         return list;
     }
 
-    /** Слоты 10,12,14,... → индекс 0,1,2,... */
     private int indexOf(int slot) {
         if (slot < 10 || (slot - 10) % 2 != 0) {
             return -1;
         }
         return (slot - 10) / 2;
-    }
-
-    private String FormatterSafe(double amount, Currency currency) {
-        if (currency == null) {
-            return dev.raskol.vault.util.Formatter.amount(amount, 2);
-        }
-        return dev.raskol.vault.util.Formatter.withSymbol(amount, currency.decimals(), currency.symbol());
     }
 }
