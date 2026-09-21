@@ -1,6 +1,7 @@
 // © 2026 hayferdahmer — RASKOL Proprietary License v1.0. See LICENSE.
 package dev.raskol.vault;
 
+import dev.raskol.vault.api.RaskolVaultAPI;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
@@ -14,6 +15,7 @@ import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.gui.GuiListener;
 import dev.raskol.vault.gui.WalletGui;
 import dev.raskol.vault.hook.EssentialsHook;
+import dev.raskol.vault.hook.LuckPermsHook;
 import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
 import dev.raskol.vault.hook.TownyHook;
@@ -46,8 +48,10 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.1.5 (RC): restore по флагу, конфиг-валидатор с клампами,
- * escrow-примитив (фундамент 1.2.0), версия 1.1.5.
+ * RaskolVault 1.2.0-SNAPSHOT (межгосударственная биржа, банки, облигации):
+ * + LuckPerms-хук для проверки прав
+ * + публичный RaskolVaultAPI для плагинов-друзей (Market/Caravans/Charters/ESGUI)
+ * + loadbefore RaskolMarket/RaskolCaravans/RaskolCharters в plugin.yml
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -69,6 +73,7 @@ public final class RaskolVault extends JavaPlugin {
     private ConfirmManager confirms;
     private RaskolCoreHook coreHook;
     private TownyHook townyHook;
+    private LuckPermsHook luckPermsHook;
     private NationTreasury treasury;
     private OfflinePlayerRegistry offlinePlayerRegistry;
     private BackupService backups;
@@ -86,6 +91,7 @@ public final class RaskolVault extends JavaPlugin {
     private RateLimiter payLimiter;
     private TxCounter txCounter;
     private InflationCheckpoint inflationCheckpoint;
+    private RaskolVaultAPI api;
     private long startTimeMillis;
     private volatile long lastReconcileMillis;
 
@@ -97,7 +103,6 @@ public final class RaskolVault extends JavaPlugin {
         saveResourceIfAbsent("messages.yml");
         saveResourceIfAbsent("rates.yml");
 
-        // 1.1.5: валидация конфига с клампами до создания компонентов
         ConfigValidator validator = new ConfigValidator(this);
         validator.report(validator.validate(getConfig()));
 
@@ -108,7 +113,6 @@ public final class RaskolVault extends JavaPlugin {
 
         File dbFile = new File(getDataFolder(), getConfig().getString("storage.sqlite.file", "data/ledger.sqlite"));
 
-        // 1.1.5: restore по флагу ДО инициализации леджера
         restoreService = new RestoreService(this);
         restoreService.maybeRestore(dbFile);
 
@@ -157,6 +161,12 @@ public final class RaskolVault extends JavaPlugin {
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
         escrowService = new EscrowService(this, wallets, ledger);
 
+        // 1.2.0: LuckPerms-хук (права для API)
+        luckPermsHook = new LuckPermsHook(this);
+        if (luckPermsPresent && getConfig().getBoolean("hooks.luckperms.enabled", true)) {
+            luckPermsHook.init();
+        }
+
         townyHook = new TownyHook(this);
         if (townyPresent && getConfig().getBoolean("hooks.towny.enabled", true)) {
             townyHook.init();
@@ -172,6 +182,9 @@ public final class RaskolVault extends JavaPlugin {
                 getConfig().getDouble("safety.pay-rate-limit.refill-per-second", 0.5D));
         txCounter = new TxCounter(ledger);
         inflationCheckpoint = new InflationCheckpoint(this, reserveBank, currencies, townyHook);
+
+        // 1.2.0: публичный API — должен быть создан после всех хуков
+        api = new RaskolVaultAPI(this);
 
         offlinePlayerRegistry = new OfflinePlayerRegistry(this);
         offlinePlayerRegistry.init();
@@ -273,45 +286,25 @@ public final class RaskolVault extends JavaPlugin {
                 + " · Core " + (corePresent ? "on" : "off")
                 + " · Essentials " + (essentialsPresent ? "on" : "off")
                 + " · Towny " + (townyPresent ? "on" : "off") + "/" + (townyHook.isAvailable() ? "hooked" : "off")
-                + " · PAPI " + (placeholderPresent ? "on" : "off"));
+                + " · LuckPerms " + (luckPermsPresent ? "on" : "off") + "/" + (luckPermsHook.isAvailable() ? "hooked" : "off")
+                + " · PAPI " + (placeholderPresent ? "on" : "off")
+                + " · API ready (for RaskolMarket/Caravans/Charters)");
     }
 
     @Override
     public void onDisable() {
-        if (writerAlarmTask != null) {
-            writerAlarmTask.cancel();
-            writerAlarmTask = null;
-        }
-        if (reconcileTask != null) {
-            reconcileTask.cancel();
-            reconcileTask = null;
-        }
-        if (inflationTask != null) {
-            inflationTask.cancel();
-            inflationTask = null;
-        }
-        if (checkpointTask != null) {
-            checkpointTask.cancel();
-            checkpointTask = null;
-        }
-        if (coreHook != null) {
-            coreHook.shutdown();
-        }
-        if (confirms != null) {
-            confirms.clear();
-        }
-        if (backups != null) {
-            backups.stop();
-        }
+        if (writerAlarmTask != null) { writerAlarmTask.cancel(); writerAlarmTask = null; }
+        if (reconcileTask != null) { reconcileTask.cancel(); reconcileTask = null; }
+        if (inflationTask != null) { inflationTask.cancel(); inflationTask = null; }
+        if (checkpointTask != null) { checkpointTask.cancel(); checkpointTask = null; }
+        if (coreHook != null) { coreHook.shutdown(); }
+        if (confirms != null) { confirms.clear(); }
+        if (backups != null) { backups.stop(); }
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) {
             saveBalancesBackup();
         }
-        if (writer != null) {
-            writer.close(10000L);
-        }
-        if (ledger != null) {
-            ledger.close();
-        }
+        if (writer != null) { writer.close(10000L); }
+        if (ledger != null) { ledger.close(); }
         getLogger().info("RaskolVault выключен");
     }
 
@@ -347,6 +340,8 @@ public final class RaskolVault extends JavaPlugin {
         return plugin != null && plugin.isEnabled();
     }
 
+    // ============ Геттеры ============
+
     public SQLiteLedger getLedger() { return ledger; }
     public LedgerWriter getWriter() { return writer; }
     public MessagesConfig getMessages() { return messages; }
@@ -359,6 +354,7 @@ public final class RaskolVault extends JavaPlugin {
     public ConfirmManager getConfirms() { return confirms; }
     public RaskolCoreHook getCoreHook() { return coreHook; }
     public TownyHook getTownyHook() { return townyHook; }
+    public LuckPermsHook getLuckPermsHook() { return luckPermsHook; }
     public NationTreasury getTreasury() { return treasury; }
     public OfflinePlayerRegistry getOfflinePlayerRegistry() { return offlinePlayerRegistry; }
     public BackupService getBackups() { return backups; }
@@ -374,6 +370,9 @@ public final class RaskolVault extends JavaPlugin {
     public InflationCheckpoint getInflationCheckpoint() { return inflationCheckpoint; }
     public long getStartTimeMillis() { return startTimeMillis; }
     public long getLastReconcileMillis() { return lastReconcileMillis; }
+
+    /** 1.2.0: публичный API для плагинов-друзей. */
+    public RaskolVaultAPI getAPI() { return api; }
 
     public boolean isCorePresent() { return corePresent; }
     public boolean isEssentialsPresent() { return essentialsPresent; }
