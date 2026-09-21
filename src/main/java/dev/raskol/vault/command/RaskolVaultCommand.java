@@ -24,8 +24,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — корневой роутер (1.2.2-a): exchange/cabinet/guide открывают GUI.
- * Консоль для exchange даёт текстовый стакан (ExchangeSubcommand).
+ * /rv — корневой роутер (1.2.2-a, фикс: openCodex(plugin, player, page)).
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -95,7 +94,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
     private void openGuide(CommandSender sender) {
         if (!(sender instanceof Player player)) { send(sender, "&cКодекс доступен только в игре"); return; }
-        WalletGui.openCodex(player, 0);
+        // FIX 1.2.2-a: сигнатура openCodex(RaskolVault, Player, int)
+        WalletGui.openCodex(plugin, player, 0);
     }
 
     private void confirm(CommandSender sender) {
