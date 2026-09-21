@@ -79,8 +79,22 @@ public final class RaskolVaultAPI {
         if (player == null || fromCurrency == null || toCurrency == null || !(amount > 0.0D)) {
             return ConvertResult.failure("invalid arguments");
         }
-        return plugin.getConvertEngine().convert(player, fromCurrency.toUpperCase(),
-                toCurrency.toUpperCase(), amount, "api");
+        String from = fromCurrency.toUpperCase();
+        String to = toCurrency.toUpperCase();
+        
+        // Проверка блокировки
+        String blockReason = plugin.getConvertEngine().blockReason(player, from, to, amount);
+        if (!blockReason.isEmpty()) {
+            return ConvertResult.failure(blockReason);
+        }
+        
+        // Выполнение конвертации
+        var quoteOpt = plugin.getConvertEngine().execute(player, from, to, amount);
+        if (quoteOpt.isEmpty()) {
+            return ConvertResult.failure("conversion failed: course or balance changed");
+        }
+        
+        return ConvertResult.fromQuote(quoteOpt.get());
     }
 
     /** Актуальный курс from→to (без комиссий). 0 если пара эмбарго или нет резерва. */
@@ -202,7 +216,7 @@ public final class RaskolVaultAPI {
     /** Пара эмбарго (в rates.yml). */
     public boolean isEmbargo(String fromCurrency, String toCurrency) {
         if (fromCurrency == null || toCurrency == null) return false;
-        return plugin.getRates().isEmbargo(fromCurrency.toUpperCase(), toCurrency.toUpperCase());
+        return plugin.getRates().isEmbargoed(fromCurrency.toUpperCase(), toCurrency.toUpperCase());
     }
 
     // ============ Права (делегат LuckPermsHook) ============
