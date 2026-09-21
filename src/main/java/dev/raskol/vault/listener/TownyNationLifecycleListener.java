@@ -18,7 +18,16 @@ import org.bukkit.plugin.Plugin;
 import java.io.File;
 
 /**
- * Слушатель переименования/удаления наций (1.2.0).
+ * Слушатель переименования/удаления наций (1.1.5-rc2, фикс API Towny 0.103.x).
+ *
+ * API-контракт Towny 0.103.x:
+ *  - RenameNationEvent: getNation() → Nation, getOldName() → String;
+ *  - DeleteNationEvent: getNation() НЕТ (нация уже удалена) —
+ *    событие несёт только getNationName() и getNationUUID().
+ *
+ * Переименование → updateNationId в реестре + перезапись currencies.yml.
+ * Удаление → валюты нации помечаются неторгуемыми, резерв обнуляется,
+ * балансы игроков сохраняются.
  */
 public final class TownyNationLifecycleListener implements Listener {
 
@@ -56,12 +65,9 @@ public final class TownyNationLifecycleListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDelete(DeleteNationEvent event) {
-        Nation nation = event.getNation();
-        if (nation == null) {
-            return;
-        }
-        String nationName = nation.getName();
-        if (nationName == null) {
+        // FIX 1.1.5-rc2: у DeleteNationEvent нет getNation() — берём имя из события.
+        String nationName = event.getNationName();
+        if (nationName == null || nationName.isBlank()) {
             return;
         }
         int n = currencies.disableNationCurrencies(nationName);
@@ -74,9 +80,10 @@ public final class TownyNationLifecycleListener implements Listener {
         rewriteCurrenciesYml();
         plugin.getLogger().warning("RaskolVault: нация '" + nationName + "' удалена: "
                 + n + " валют(ы) помечены неторгуемыми, резерв обнулён. "
-                + "Балансы игроков сохранены. Вернуть торговлю: /rv admin currency + tradeable");
+                + "Балансы игроков сохранены. Вернуть торговлю: /rv admin currency + tradeable в currencies.yml");
     }
 
+    /** Перезаписывает currencies.yml из текущего состояния реестра (источник правды). */
     private void rewriteCurrenciesYml() {
         try {
             File file = new File(plugin.getDataFolder(), "currencies.yml");
