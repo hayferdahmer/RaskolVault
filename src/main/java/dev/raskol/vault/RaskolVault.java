@@ -12,12 +12,12 @@ import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.PlaceholderApiHook;
 import dev.raskol.vault.hook.RaskolCoreHook;
-import dev.raskol.vault.hook.SparkHook;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.listener.TownyNationLifecycleListener;
 import dev.raskol.vault.nation.NationTreasury;
 import dev.raskol.vault.observability.InflationCheckpoint;
+import dev.raskol.vault.observability.SparkHook;
 import dev.raskol.vault.observability.TxCounter;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
 import dev.raskol.vault.reserve.ReserveBank;
@@ -44,7 +44,7 @@ import java.util.UUID;
  * RaskolVault 1.1.0 — многовалютный экономический слой поверх EssentialsX.
  * 1.1.0-b: Валютный совет (резерв/паритет/налог/интервенции), tx/min, rate-limit,
  * кризисный чекпоинт покрытия.
- * 1.0.1-fix: восстановлен импорт OfflinePlayerRegistry; SparkHook подключён реально.
+ * Fix: импорт SparkHook из dev.raskol.vault.observability (фактическое место класса).
  */
 public final class RaskolVault extends JavaPlugin {
 
