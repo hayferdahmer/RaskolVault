@@ -22,7 +22,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — корневой роутер. 1.1.0-c: добавлен /rv wallet (GUI кошелька).
+ * /rv — корневой роутер. 1.1.0-d: добавлены /rv cabinet, /rv guide.
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -51,6 +51,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "help", "?" -> help(sender);
             case "version" -> sender.sendMessage(prefix() + "&fRaskolVault &6" + plugin.getPluginMeta().getVersion());
             case "wallet" -> openWallet(sender);
+            case "cabinet" -> openCabinet(sender);
+            case "guide" -> openGuide(sender);
             case "balance" -> redirectBalance(sender, args);
             case "pay" -> paySubcommand.execute(sender, args);
             case "convert" -> convertSubcommand.execute(sender, args);
@@ -74,6 +76,26 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             return;
         }
         WalletGui.openMain(plugin, player);
+    }
+
+    private void openCabinet(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(prefix() + "&cКабинет — только в игре");
+            return;
+        }
+        if (!WalletGui.isKing(plugin, player)) {
+            sender.sendMessage(prefix() + plugin.getMessages().get("bank.not-king", null));
+            return;
+        }
+        WalletGui.openCabinet(plugin, player);
+    }
+
+    private void openGuide(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(prefix() + "&cКодекс — только в игре");
+            return;
+        }
+        WalletGui.openCodex(plugin, player, 0);
     }
 
     private void redirectBalance(CommandSender sender, String[] args) {
@@ -100,6 +122,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     private void help(CommandSender sender) {
         sender.sendMessage(prefix() + "&6=== RaskolVault ===");
         sender.sendMessage("&f /rv wallet &7— GUI кошелька (балансы, конверт, курсы, история)");
+        sender.sendMessage("&f /rv cabinet &7— GUI кабинета правителя (только король)");
+        sender.sendMessage("&f /rv guide &7— кодекс правителя (инструкции)");
         sender.sendMessage("&f /rv pay <ник> <валюта> <сумма> [причина]");
         sender.sendMessage("&f /rv convert <из> <в> <сумма> &7→ &f/rv confirm");
         sender.sendMessage("&f /rv rates &7— курсы валют");
@@ -126,7 +150,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(Arrays.asList(
-                    "help", "version", "wallet", "convert", "confirm", "rates", "bank", "nation", "pay"));
+                    "help", "version", "wallet", "cabinet", "guide", "convert", "confirm", "rates", "bank", "nation", "pay"));
             if (sender.hasPermission("raskolvault.admin")) {
                 subs.add("admin");
             }
