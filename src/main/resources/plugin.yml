@@ -1,5 +1,5 @@
 name: RaskolVault
-version: '1.1.0'
+version: '1.1.5'
 main: dev.raskol.vault.RaskolVault
 api-version: '1.21'
 author: hayferdahmer
@@ -15,7 +15,7 @@ commands:
 
 permissions:
   raskolvault.use:
-    description: 'Базовые команды кошелька и GUI'
+    description: 'Базовые команды кошелька'
     default: true
   raskolvault.convert:
     description: 'Обмен валют'
