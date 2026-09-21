@@ -16,9 +16,7 @@ import java.util.Locale;
 
 /**
  * Авто-создание национальной валюты при NewNationEvent (фикс 1.1.0.1).
- * Имена наций кириллические, поэтому ID валюты берётся из карты
- * hooks.towny.nation-currency («Рассвет: RAS», «Вальрадис: VLR»).
- * Нация вне карты — пропускаем с warning (никаких кириллических ID-валют).
+ * Fallback: если событие не найдено, логируем warning и продолжаем.
  */
 public final class NationAutoCurrencyListener implements Listener {
 
@@ -40,7 +38,7 @@ public final class NationAutoCurrencyListener implements Listener {
                     eventClass, this, EventPriority.MONITOR, this::onNewNation, plugin, true);
             plugin.getLogger().info("RaskolVault: авто-создание национальных валют активно");
         } catch (ClassNotFoundException e) {
-            plugin.getLogger().warning("RaskolVault: NewNationEvent не найден (Towny другой версии?)");
+            plugin.getLogger().warning("RaskolVault: NewNationEvent не найден (Towny другой версии?) — авто-создание валют отключено");
         } catch (Exception e) {
             plugin.getLogger().warning("RaskolVault: не удалось подписаться на NewNationEvent: " + e.getMessage());
         }
