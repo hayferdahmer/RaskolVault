@@ -20,18 +20,18 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * GUI кошелька (1.2.3-b): + кнопка «Перевод» (слот 32), перевод из рук в руки ≤6 блоков.
- * /rv pay удалён — переводы только отсюда.
+ * GUI кошелька (1.2.3-b). Переводы через кнопку "Перевод" (≤6 блоков).
+ * Holder: поля public final (FIX 1.2.3-b), чтобы GuiListener мог их типизировать.
  */
 public final class WalletGui {
 
-    public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>(); // {mode, ...}
+    public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>();
 
     public static final class Holder implements InventoryHolder {
-        final String page;
-        final String fromId;
-        final String toId;
-        final double amount;
+        public final String page;
+        public final String fromId;
+        public final String toId;
+        public final double amount;
         Holder(String page, String fromId, String toId, double amount) {
             this.page = page; this.fromId = fromId; this.toId = toId; this.amount = amount;
         }
