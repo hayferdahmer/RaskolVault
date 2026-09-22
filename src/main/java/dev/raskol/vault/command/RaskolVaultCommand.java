@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — роутер (1.2.2-b): /rv cabinet открывает Кабинет государя (CabinetGui).
+ * /rv — роутер (1.2.3): + /rv bond (GUI облигаций).
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -59,6 +59,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "wallet" -> openWallet(sender);
             case "exchange" -> openExchange(sender, args);
             case "cabinet" -> openCabinet(sender);
+            case "bond" -> openBond(sender);
             case "guide" -> openGuide(sender);
             case "pay" -> paySubcommand.execute(sender, args);
             case "convert" -> convertSubcommand.execute(sender, args);
@@ -89,8 +90,12 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             send(sender, "&cКабинет государя доступен только королю нации");
             return;
         }
-        // 1.2.2-b: полноценный Кабинет с налогами/монетарной/отчётами
         plugin.getCabinetGui().openHome(player, nation);
+    }
+
+    private void openBond(CommandSender sender) {
+        if (!(sender instanceof Player player)) { send(sender, "&cОблигации доступны только в игре"); return; }
+        plugin.getBondGui().openMarket(player);
     }
 
     private void openGuide(CommandSender sender) {
@@ -106,12 +111,12 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     }
 
     private void help(CommandSender sender) {
-        send(sender, "&6=== RaskolVault 1.2.2 ===");
+        send(sender, "&6=== RaskolVault 1.2.3 ===");
         send(sender, "&f/rv wallet &7— GUI кошелька");
-        send(sender, "&f/rv exchange &7— GUI биржи (partial+matching)");
-        send(sender, "&f/rv cabinet &7— Кабинет государя (короли): резерв/монетарная/налоги/отчёты");
-        send(sender, "&f/rv guide &7— кодекс правителя");
-        send(sender, "&f/rv pay <ник> <валюта> <сумма> [причина]");
+        send(sender, "&f/rv bond &7— Королевская рента / Заёмная грамота");
+        send(sender, "&f/rv exchange &7— GUI биржи");
+        send(sender, "&f/rv cabinet &7— Кабинет государя (короли)");
+        send(sender, "&f/rv pay <ник> <валюта> <сумма> &7— перевод (≤ 6 блоков)");
         send(sender, "&f/rv convert <из> <в> <сумма> &7→ &f/rv confirm");
         send(sender, "&f/rv rates &7— курсы");
         send(sender, "&f/rv admin … &7— админ-блок");
@@ -128,7 +133,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(Arrays.asList(
-                    "wallet", "exchange", "cabinet", "guide", "pay", "convert", "confirm", "rates", "nation", "admin", "help"));
+                    "wallet", "bond", "exchange", "cabinet", "guide", "pay", "convert", "confirm", "rates", "nation", "admin", "help"));
             if (!sender.hasPermission("raskolvault.admin")) subs.remove("admin");
             return filter(subs, args[0]);
         }
