@@ -3,6 +3,7 @@ package dev.raskol.vault;
 
 import dev.raskol.vault.api.RaskolVaultAPI;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
+import dev.raskol.vault.bond.BondService;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.config.ConfigValidator;
@@ -12,6 +13,7 @@ import dev.raskol.vault.escrow.EscrowService;
 import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
+import dev.raskol.vault.gui.BondGui;
 import dev.raskol.vault.gui.CabinetGui;
 import dev.raskol.vault.gui.ExchangeGui;
 import dev.raskol.vault.gui.GuiListener;
@@ -52,7 +54,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.2-SNAPSHOT: частичные исполнения + авто-матчинг + Кабинет государя + налоги.
+ * RaskolVault 1.2.3-SNAPSHOT: Королевская рента / Заёмная грамота (облигации).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -78,6 +80,7 @@ public final class RaskolVault extends JavaPlugin {
     private RestoreService restoreService;
     private EscrowService escrowService;
     private TaxService taxService;
+    private BondService bondService;
     private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
@@ -89,6 +92,7 @@ public final class RaskolVault extends JavaPlugin {
     private ReserveGui reserveGui;
     private ExchangeGui exchangeGui;
     private CabinetGui cabinetGui;
+    private BondGui bondGui;
     private long startTimeMillis;
     private volatile long lastReconcileMillis;
 
@@ -156,9 +160,11 @@ public final class RaskolVault extends JavaPlugin {
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
         escrowService = new EscrowService(this, wallets, ledger);
 
-        // 1.2.2-b: налоговая система
         taxService = new TaxService(this, wallets);
         taxService.load();
+
+        // 1.2.3: облигации
+        bondService = new BondService(this, wallets);
 
         luckPermsHook = new LuckPermsHook(this);
         if (luckPermsPresent && getConfig().getBoolean("hooks.luckperms.enabled", true)) luckPermsHook.init();
@@ -186,9 +192,10 @@ public final class RaskolVault extends JavaPlugin {
         getServer().getPluginManager().registerEvents(reserveGui, this);
         exchangeGui = new ExchangeGui(this);
         getServer().getPluginManager().registerEvents(exchangeGui, this);
-        // 1.2.2-b: Кабинет государя
         cabinetGui = new CabinetGui(this);
         getServer().getPluginManager().registerEvents(cabinetGui, this);
+        bondGui = new BondGui(this, bondService);
+        getServer().getPluginManager().registerEvents(bondGui, this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
@@ -247,7 +254,6 @@ public final class RaskolVault extends JavaPlugin {
             }, period, period);
         }
 
-        // Автосохранение налогов каждые 10 минут
         taxSaveTask = getServer().getScheduler().runTaskTimerAsynchronously(this, taxService::save, 600L * 10, 600L * 10);
 
         long[] alarm = new long[]{0};
@@ -274,7 +280,7 @@ public final class RaskolVault extends JavaPlugin {
         }
 
         getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён"
-                + " · Биржа (partial+matching) · Кабинет · Налоги");
+                + " · Рента/грамоты активны");
     }
 
     @Override
@@ -284,6 +290,7 @@ public final class RaskolVault extends JavaPlugin {
         if (taxSaveTask != null) taxSaveTask.cancel();
         if (inflationTask != null) inflationTask.cancel();
         if (checkpointTask != null) checkpointTask.cancel();
+        if (bondService != null) bondService.save();
         if (coreHook != null) coreHook.shutdown();
         if (confirms != null) confirms.clear();
         if (taxService != null) taxService.save();
@@ -342,6 +349,7 @@ public final class RaskolVault extends JavaPlugin {
     public RestoreService getRestoreService() { return restoreService; }
     public EscrowService getEscrow() { return escrowService; }
     public TaxService getTaxService() { return taxService; }
+    public BondService getBondService() { return bondService; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public SparkHook getSparkHook() { return sparkHook; }
     public ReserveBank getReserveBank() { return reserveBank; }
@@ -353,6 +361,7 @@ public final class RaskolVault extends JavaPlugin {
     public ReserveGui getReserveGui() { return reserveGui; }
     public ExchangeGui getExchangeGui() { return exchangeGui; }
     public CabinetGui getCabinetGui() { return cabinetGui; }
+    public BondGui getBondGui() { return bondGui; }
     public long getStartTimeMillis() { return startTimeMillis; }
     public long getLastReconcileMillis() { return lastReconcileMillis; }
 
