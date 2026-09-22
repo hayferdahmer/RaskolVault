@@ -11,6 +11,7 @@ import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
@@ -27,7 +28,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Кабинет государя (1.2.3-b): + кнопка «Выпустить валюту» для государств без валюты.
+ * Кабинет государя (1.2.4): + секция «Доли» (эмиссия/ужиток).
  */
 public final class CabinetGui implements Listener {
 
@@ -56,6 +57,7 @@ public final class CabinetGui implements Listener {
     }
     private static ItemStack pane() { return item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of()); }
     private static String fmt(double v) { return String.format(Locale.ROOT, "%.2f", v); }
+    private static String pct(double v) { return String.format(Locale.ROOT, "%.1f%%", v * 100); }
 
     public void openHome(Player king, String nation) {
         Holder h = new Holder(nation, "home");
@@ -64,15 +66,17 @@ public final class CabinetGui implements Listener {
         ReserveBank bank = plugin.getReserveBank();
         Currency nat = nationalCurrency(nation);
         double reserve = bank.reserveOf(nation);
+        double totalShares = plugin.getShareService().totalGrams(nation);
         inv.setItem(4, item(Material.GOLDEN_APPLE, "&6Обзор", List.of(
                 "&7Резерв: &f" + fmt(reserve) + " GLD",
                 nat == null ? "&cНет национальной валюты" : "&7Эмиссия: &f" + fmt(bank.supplyOf(nat.id())),
-                nat == null ? "" : "&7Покрытие: &f" + String.format(Locale.ROOT, "%.1f%%", bank.coverageOf(nation, nat.id()) * 100))));
+                "&7Доли эмитированы: &f" + fmt(totalShares) + " золотников")));
         inv.setItem(20, item(Material.GOLD_BLOCK, "&6Резерв", List.of()));
-        inv.setItem(22, item(Material.COMPASS, "&6Монетарная", List.of()));
-        inv.setItem(24, item(Material.TRIPWIRE_HOOK, "&6Налоги", List.of()));
+        inv.setItem(21, item(Material.COMPASS, "&6Монетарная", List.of()));
+        inv.setItem(22, item(Material.TRIPWIRE_HOOK, "&6Налоги", List.of()));
+        inv.setItem(23, item(Material.PAPER, "&6Доли и Ужиток", List.of("&7Эмиссия, держатели, раздача Ужитка")));
+        inv.setItem(24, item(Material.CHEST, "&6Торговая политика", List.of()));
         inv.setItem(30, item(Material.WRITABLE_BOOK, "&6Отчёты", List.of()));
-        inv.setItem(32, item(Material.PAPER, "&6Торговая политика", List.of("&7whitelist/blacklist валют")));
         for (int i = 45; i < 54; i++) inv.setItem(i, pane());
         inv.setItem(49, item(Material.BARRIER, "&cЗакрыть", List.of()));
         king.openInventory(inv);
@@ -86,7 +90,7 @@ public final class CabinetGui implements Listener {
         Currency nat = nationalCurrency(nation);
         if (nat == null) {
             inv.setItem(13, item(Material.GOLD_BLOCK, "&aВыпустить валюту",
-                    List.of("&7Создать национальную валюту", "&7ID = первые 3 буквы нации", "&eКлик — выпустить")));
+                    List.of("&7Создать национальную валюту", "&7ID = первые 3 буквы нации")));
         } else {
             double parity = bank.parityOf(nation);
             inv.setItem(10, item(Material.REDSTONE, "&cПаритет −0.05", List.of("&7Текущий: &f" + fmt(parity))));
@@ -117,52 +121,11 @@ public final class CabinetGui implements Listener {
         Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Торговая политика &8▌"));
         h.inv = inv;
         var pol = plugin.getTradePolicy().policyOf(nation);
-        inv.setItem(11, item(Material.LIME_CONCRETE, "&aРежим: &f" + pol.mode(), List.of("&eКлик — переключить none→whitelist→blacklist")));
-        inv.setItem(15, item(Material.PAPER, "&6Список", List.of("&7Чат-ввод через запятую: RAS,VLR")));
+        inv.setItem(11, item(Material.LIME_CONCRETE, "&aРежим: &f" + pol.mode(), List.of("&eКлик — переключить")));
+        inv.setItem(15, item(Material.PAPER, "&6Список", List.of("&7Чат-ввод через запятую")));
         for (int i = 18; i < 27; i++) inv.setItem(i, pane());
         inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
         king.openInventory(inv);
-    }
-
-    @EventHandler
-    public void onClick(InventoryClickEvent e) {
-        if (!(e.getInventory().getHolder() instanceof Holder h)) return;
-        e.setCancelled(true);
-        if (!(e.getWhoClicked() instanceof Player p)) return;
-        int slot = e.getRawSlot();
-        String nation = h.nation;
-        switch (h.page) {
-            case "home" -> {
-                if (slot == 49) { p.closeInventory(); return; }
-                if (slot == 20) { openReserve(p, nation); return; }
-                if (slot == 22) { openMonetary(p, nation); return; }
-                if (slot == 24) { openTax(p, nation); return; }
-                if (slot == 30) { openTax(p, nation); return; }
-                if (slot == 32) { openTrade(p, nation); return; }
-            }
-            case "monetary" -> {
-                if (slot == 22) { openHome(p, nation); return; }
-                Currency nat = nationalCurrency(nation);
-                if (nat == null) {
-                    if (slot == 13) { issueCurrency(p, nation); }
-                    return;
-                }
-                if (slot == 10) { adjParity(p, nation, -0.05); return; }
-                if (slot == 14) { adjParity(p, nation, +0.05); return; }
-                if (slot == 16) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"mint", nation}); msg(p, "&7Сумма минта:"); return; }
-            }
-            case "tax" -> {
-                if (slot == 22) { openHome(p, nation); return; }
-                if (slot == 10) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-convert", nation}); msg(p, "&7Ставка % (0..5):"); return; }
-                if (slot == 12) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-exchange", nation}); msg(p, "&7Ставка % (0..5):"); return; }
-                if (slot == 14) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-market", nation}); msg(p, "&7Ставка % (0..5):"); return; }
-            }
-            case "trade" -> {
-                if (slot == 22) { openHome(p, nation); return; }
-                if (slot == 11) { cycleMode(p, nation); openTrade(p, nation); return; }
-                if (slot == 15) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"trade-list", nation}); msg(p, "&7Список валют через запятую:"); return; }
-            }
-        }
     }
 
     private void openReserve(Player king, String nation) {
@@ -180,7 +143,51 @@ public final class CabinetGui implements Listener {
         king.openInventory(inv);
     }
 
-    @EventHandler(priority = org.bukkit.event.EventPriority.LOWEST)
+    @EventHandler
+    public void onClick(InventoryClickEvent e) {
+        if (!(e.getInventory().getHolder() instanceof Holder h)) return;
+        e.setCancelled(true);
+        if (!(e.getWhoClicked() instanceof Player p)) return;
+        int slot = e.getRawSlot();
+        String nation = h.nation;
+        switch (h.page) {
+            case "home" -> {
+                if (slot == 49) { p.closeInventory(); return; }
+                if (slot == 20) { openReserve(p, nation); return; }
+                if (slot == 21) { openMonetary(p, nation); return; }
+                if (slot == 22) { openTax(p, nation); return; }
+                if (slot == 23) { plugin.getShareGui().openMarket(p, nation); return; }
+                if (slot == 24) { openTrade(p, nation); return; }
+                if (slot == 30) { openTax(p, nation); return; }
+            }
+            case "monetary" -> {
+                if (slot == 22) { openHome(p, nation); return; }
+                Currency nat = nationalCurrency(nation);
+                if (nat == null) { if (slot == 13) { issueCurrency(p, nation); } return; }
+                if (slot == 10) { adjParity(p, nation, -0.05); return; }
+                if (slot == 14) { adjParity(p, nation, +0.05); return; }
+                if (slot == 16) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"mint", nation}); msg(p, "&7Сумма минта:"); }
+            }
+            case "tax" -> {
+                if (slot == 22) { openHome(p, nation); return; }
+                if (slot == 10) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-convert", nation}); msg(p, "&7Ставка % (0..5):"); }
+                if (slot == 12) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-exchange", nation}); msg(p, "&7Ставка % (0..5):"); }
+                if (slot == 14) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-market", nation}); msg(p, "&7Ставка % (0..5):"); }
+            }
+            case "trade" -> {
+                if (slot == 22) { openHome(p, nation); return; }
+                if (slot == 11) { cycleMode(p, nation); openTrade(p, nation); }
+                if (slot == 15) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"trade-list", nation}); msg(p, "&7Список валют через запятую:"); }
+            }
+            case "reserve" -> {
+                if (slot == 49) { openHome(p, nation); return; }
+                if (slot == 27) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"reserve-dep", nation}); msg(p, "&7Сумма депозита:"); }
+                if (slot == 28) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"reserve-with", nation}); msg(p, "&7Сумма вывода:"); }
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
     public void onChat(AsyncPlayerChatEvent e) {
         String[] ctx = CHAT_CAPTURE.remove(e.getPlayer().getUniqueId());
         if (ctx == null) return;
@@ -229,18 +236,6 @@ public final class CabinetGui implements Listener {
         });
     }
 
-    // reserve page clicks handled here too
-    @EventHandler
-    public void onReserveClick(InventoryClickEvent e) {
-        if (!(e.getInventory().getHolder() instanceof Holder h) || !h.page.equals("reserve")) return;
-        e.setCancelled(true);
-        if (!(e.getWhoClicked() instanceof Player p)) return;
-        int slot = e.getRawSlot();
-        if (slot == 49) { openHome(p, h.nation); return; }
-        if (slot == 27) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"reserve-dep", h.nation}); msg(p, "&7Сумма депозита:"); }
-        if (slot == 28) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"reserve-with", h.nation}); msg(p, "&7Сумма вывода:"); }
-    }
-
     private void issueCurrency(Player p, String nation) {
         String base = nation.replaceAll("[^A-Za-zА-Яа-я]", "");
         String id = (base.length() >= 3 ? base.substring(0, 3) : base).toUpperCase(Locale.ROOT);
@@ -283,5 +278,4 @@ public final class CabinetGui implements Listener {
     private static double parse(String s) {
         try { return Double.parseDouble(s.replace(",", ".")); } catch (NumberFormatException e) { return -1; }
     }
-    private static String pct(double v) { return String.format(Locale.ROOT, "%.1f%%", v * 100); }
 }
