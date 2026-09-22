@@ -3,9 +3,6 @@ package dev.raskol.vault.gui;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
-import dev.raskol.vault.api.currency.CurrencyType;
-import dev.raskol.vault.reserve.ReserveBank;
-import dev.raskol.vault.util.Formatter;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
@@ -13,374 +10,169 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.UUID;
 
 /**
- * Обработчик GUI (1.1.2): кошелёк без кабинета/кодекса; кабинет с книгами механики.
+ * Обработчик WalletGui (1.2.3-b): конверт-мастер + перевод из рук в руки (≤6 блоков)
+ * + enforcement торговой политики нации.
  */
 public final class GuiListener implements Listener {
 
+    private static final double MAX_DISTANCE = 6.0D;
     private final RaskolVault plugin;
 
-    public GuiListener(RaskolVault plugin) {
-        this.plugin = plugin;
-    }
+    public GuiListener(RaskolVault plugin) { this.plugin = plugin; }
 
-    private static String c(String s) {
-        return ChatColor.translateAlternateColorCodes('&', s);
-    }
-
-    private void send(Player p, String raw) {
-        p.sendMessage(c(raw));
-    }
-
-    private void later(Runnable r) {
-        Bukkit.getScheduler().runTask(plugin, r);
-    }
+    private String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
+    private void msg(Player p, String raw) { p.sendMessage(c(plugin.getMessages().prefix() + raw)); }
 
     @EventHandler
-    public void onClick(InventoryClickEvent event) {
-        if (!(event.getInventory().getHolder() instanceof WalletGuiHolder holder)) {
-            return;
-        }
-        event.setCancelled(true);
-        if (!(event.getWhoClicked() instanceof Player player)) {
-            return;
-        }
-        int slot = event.getRawSlot();
-        if (slot < 0) {
-            return;
-        }
-        switch (holder.page()) {
-            case MAIN -> onMain(player, slot);
-            case CONVERT_FROM -> onFrom(player, slot);
-            case CONVERT_TO -> onTo(player, holder, slot);
-            case CONVERT_AMOUNT -> onAmount(player, holder, slot);
-            case CONVERT_CONFIRM -> onConfirm(player, holder, slot);
-            case RATES -> {
-                if (slot == 49) later(() -> WalletGui.openMain(plugin, player));
-            }
-            case HISTORY -> onHistory(player, holder, slot);
-            case CABINET -> onCabinet(player, slot);
-            case CODEX -> onCodex(player, holder, slot);
-            default -> {
-            }
+    public void onClick(InventoryClickEvent e) {
+        if (!(e.getInventory().getHolder() instanceof WalletGui.Holder h)) return;
+        e.setCancelled(true);
+        if (!(e.getWhoClicked() instanceof Player p)) return;
+        int slot = e.getRawSlot();
+        switch (h.page) {
+            case "main" -> onMain(p, slot);
+            case "cfrom" -> onFrom(p, slot);
+            case "cto" -> onTo(p, h, slot);
+            case "camt" -> onAmt(p, h, slot);
+            case "cconf" -> onConf(p, h, slot);
+            case "codex" -> onCodex(p, h, slot);
         }
     }
 
-    @EventHandler
-    public void onDrag(InventoryDragEvent event) {
-        if (event.getInventory().getHolder() instanceof WalletGuiHolder) {
-            event.setCancelled(true);
+    private void onMain(Player p, int slot) {
+        if (slot == 49) { p.closeInventory(); return; }
+        if (slot == 29) { WalletGui.openConvertFrom(plugin, p); return; }
+        if (slot == 31) { msg(p, "&7Смотри курсы: &f/rv rates"); return; }
+        if (slot == 33) { msg(p, "&7История: &f/rv admin audit " + p.getName()); return; }
+        if (slot == 35) {
+            String n = plugin.getTownyHook().nationOf(p.getUniqueId());
+            if (n != null && plugin.getTownyHook().isKing(p.getUniqueId(), n)) plugin.getCabinetGui().openHome(p, n);
+            else msg(p, "&cТолько король");
+            return;
         }
+        if (slot == 40) { WalletGui.openCodex(plugin, p, 0); return; }
+        if (slot == 32) {
+            p.closeInventory();
+            WalletGui.CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"transfer-name"});
+            msg(p, "&7Введите ник получателя:");
+            return;
+        }
+        if (slot == 10 || slot == 12 || slot == 14) {
+            int idx = (slot - 10) / 2;
+            var all = plugin.getCurrencies().all();
+            if (idx < all.size()) WalletGui.openConvertTo(plugin, p, all.get(idx).id());
+        }
+    }
+
+    private void onFrom(Player p, int slot) {
+        if (slot == 22) { p.closeInventory(); return; }
+        int idx = (slot - 10) / 2;
+        var all = plugin.getCurrencies().all();
+        if (idx >= 0 && idx < all.size()) WalletGui.openConvertTo(plugin, p, all.get(idx).id());
+    }
+
+    private void onTo(Player p, WalletGui.Holder h, int slot) {
+        if (slot == 22) { WalletGui.openConvertFrom(plugin, p); return; }
+        int idx = (slot - 10) / 2;
+        var all = plugin.getCurrencies().all().stream().filter(x -> !x.id().equals(h.fromId)).toList();
+        if (idx >= 0 && idx < list(all).size()) WalletGui.openConvertAmount(plugin, p, h.fromId, list(all).get(idx).id());
+    }
+
+    private void onAmt(Player p, WalletGui.Holder h, int slot) {
+        if (slot == 22) { WalletGui.openConvertTo(plugin, p, h.fromId); return; }
+        double bal = plugin.getWallets().getBalance(p.getUniqueId(), h.fromId);
+        Double amt = switch (slot) {
+            case 10 -> 1.0; case 11 -> 10.0; case 12 -> 64.0; case 13 -> 100.0; case 14 -> bal;
+            default -> null;
+        };
+        if (amt != null) { WalletGui.openConvertConfirm(plugin, p, h.fromId, h.toId, amt); return; }
+        if (slot == 16) {
+            p.closeInventory();
+            WalletGui.CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"convert-amt", h.fromId, h.toId});
+            msg(p, "&7Введите сумму:");
+        }
+    }
+
+    private void onConf(Player p, WalletGui.Holder h, int slot) {
+        if (slot == 22) { WalletGui.openConvertAmount(plugin, p, h.fromId, h.toId); return; }
+        if (slot == 15) { p.closeInventory(); return; }
+        if (slot == 11) {
+            String nation = plugin.getTownyHook().nationOf(p.getUniqueId());
+            if (!plugin.getTradePolicy().isAllowed(nation, h.toId)) {
+                msg(p, "&cВалюта " + h.toId + " запрещена к обороту в вашей нации");
+                p.closeInventory(); return;
+            }
+            var res = plugin.getConvertEngine().execute(p.getUniqueId(), h.fromId, h.toId, h.amount);
+            msg(p, res.map(x -> "&aПолучено &f" + String.format(Locale.ROOT, "%.2f", x.net()) + " " + x.toId())
+                    .orElse("&cНе удалось исполнить"));
+            p.closeInventory();
+        }
+    }
+
+    private void onCodex(Player p, WalletGui.Holder h, int slot) {
+        if (slot == 18 && h.amount > 0) { WalletGui.openCodex(plugin, p, (int) h.amount - 1); return; }
+        if (slot == 26) { WalletGui.openCodex(plugin, p, (int) h.amount + 1); return; }
+        if (slot == 22) p.closeInventory();
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
-    public void onChat(AsyncPlayerChatEvent event) {
-        String[] ctx = WalletGui.CHAT_CAPTURE.remove(event.getPlayer().getUniqueId());
-        if (ctx == null) {
-            return;
-        }
-        event.setCancelled(true);
-        double amount;
-        try {
-            amount = Double.parseDouble(event.getMessage().replace(",", ".").trim());
-        } catch (NumberFormatException e) {
-            send(event.getPlayer(), plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", event.getMessage())));
-            return;
-        }
-        if (!Double.isFinite(amount) || amount <= 0.0D) {
-            send(event.getPlayer(), plugin.getMessages().prefix()
-                    + plugin.getMessages().get("error.invalid-amount", Map.of("value", event.getMessage())));
-            return;
-        }
-        Player player = event.getPlayer();
-        later(() -> WalletGui.openConvertConfirm(plugin, player, ctx[0], ctx[1], amount));
-    }
-
-    private void onMain(Player player, int slot) {
-        switch (slot) {
-            case 10, 12, 14 -> {
-                int index = (slot - 10) / 2;
-                List<Currency> list = new ArrayList<>(plugin.getCurrencies().all());
-                if (index >= 0 && index < list.size()) {
-                    String id = list.get(index).id();
-                    later(() -> WalletGui.openConvertTo(plugin, player, id));
+    public void onChat(AsyncPlayerChatEvent e) {
+        String[] ctx = WalletGui.CHAT_CAPTURE.remove(e.getPlayer().getUniqueId());
+        if (ctx == null) return;
+        e.setCancelled(true);
+        Player p = e.getPlayer();
+        String text = e.getMessage().trim();
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            switch (ctx[0]) {
+                case "transfer-name" -> {
+                    Player target = Bukkit.getPlayerExact(text);
+                    if (target == null) { msg(p, "&cИгрок не найден"); return; }
+                    if (target.getUniqueId().equals(p.getUniqueId())) { msg(p, "&cНельзя себе"); return; }
+                    WalletGui.CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"transfer-amt", target.getName()});
+                    msg(p, "&7Введите сумму перевода:");
+                }
+                case "transfer-amt" -> {
+                    double amt;
+                    try { amt = Double.parseDouble(text.replace(",", ".")); }
+                    catch (NumberFormatException ex) { msg(p, "&cНекорректная сумма"); return; }
+                    if (!(amt > 0)) { msg(p, "&cСумма > 0"); return; }
+                    Player target = Bukkit.getPlayerExact(ctx[1]);
+                    if (target == null) { msg(p, "&cИгрок не найден"); return; }
+                    if (!p.getWorld().equals(target.getWorld())
+                            || p.getLocation().distance(target.getLocation()) > MAX_DISTANCE) {
+                        msg(p, "&cСлишком далеко. Подойдите ближе (≤6 блоков).");
+                        return;
+                    }
+                    String nation = plugin.getTownyHook().nationOf(p.getUniqueId());
+                    String glb = plugin.getCurrencies().globalId();
+                    if (!plugin.getTradePolicy().isAllowed(nation, glb)) {
+                        msg(p, "&cВалюта запрещена к обороту в вашей нации");
+                        return;
+                    }
+                    boolean ok = plugin.getWallets().transfer(p.getUniqueId(), target.getUniqueId(), glb, amt, "wallet-transfer");
+                    msg(p, ok ? "&aПередано &f" + String.format(Locale.ROOT, "%.2f", amt) + " GLD &aигроку &f" + target.getName()
+                            : "&cНедостаточно средств");
+                }
+                case "convert-amt" -> {
+                    double amt;
+                    try { amt = Double.parseDouble(text.replace(",", ".")); }
+                    catch (NumberFormatException ex) { msg(p, "&cНекорректная сумма"); return; }
+                    WalletGui.openConvertConfirm(plugin, p, ctx[1], ctx[2], amt);
                 }
             }
-            case 29 -> later(() -> WalletGui.openConvertFrom(plugin, player));
-            case 31 -> later(() -> WalletGui.openRates(plugin, player));
-            case 33 -> later(() -> WalletGui.openHistory(plugin, player, 0));
-            case 49 -> player.closeInventory();
-            default -> {
-            }
-        }
+        });
     }
 
-    private void onFrom(Player player, int slot) {
-        if (slot == 22) {
-            later(() -> WalletGui.openMain(plugin, player));
-            return;
-        }
-        List<Currency> list = tradeable();
-        int index = indexOf(slot);
-        if (index < 0 || index >= list.size()) {
-            return;
-        }
-        String id = list.get(index).id();
-        later(() -> WalletGui.openConvertTo(plugin, player, id));
+    @EventHandler
+    public void onQuit(PlayerQuitEvent e) {
+        WalletGui.CHAT_CAPTURE.remove(e.getPlayer().getUniqueId());
     }
 
-    private void onTo(Player player, WalletGuiHolder holder, int slot) {
-        if (slot == 22) {
-            later(() -> WalletGui.openConvertFrom(plugin, player));
-            return;
-        }
-        List<Currency> list = tradeableExcept(holder.fromId());
-        int index = indexOf(slot);
-        if (index < 0 || index >= list.size()) {
-            return;
-        }
-        String id = list.get(index).id();
-        later(() -> WalletGui.openConvertAmount(plugin, player, holder.fromId(), id));
-    }
-
-    private void onAmount(Player player, WalletGuiHolder holder, int slot) {
-        if (slot == 22) {
-            later(() -> WalletGui.openConvertTo(plugin, player, holder.fromId()));
-            return;
-        }
-        double balance = plugin.getWallets().getBalance(player.getUniqueId(), holder.fromId());
-        Double amount = switch (slot) {
-            case 10 -> 1.0D;
-            case 11 -> 10.0D;
-            case 12 -> 64.0D;
-            case 13 -> 100.0D;
-            case 14 -> balance;
-            default -> null;
-        };
-        if (amount != null) {
-            double amt = amount;
-            later(() -> WalletGui.openConvertConfirm(plugin, player, holder.fromId(), holder.toId(), amt));
-            return;
-        }
-        if (slot == 16) {
-            WalletGui.CHAT_CAPTURE.put(player.getUniqueId(), new String[]{holder.fromId(), holder.toId()});
-            player.closeInventory();
-            send(player, plugin.getMessages().prefix() + "&7Напиши сумму в чат:");
-        }
-    }
-
-    private void onConfirm(Player player, WalletGuiHolder holder, int slot) {
-        if (slot == 11) {
-            later(() -> WalletGui.openConvertAmount(plugin, player, holder.fromId(), holder.toId()));
-            return;
-        }
-        if (slot != 15) {
-            return;
-        }
-        if (!plugin.getRateLimiter().tryConsume(player.getUniqueId())) {
-            send(player, plugin.getMessages().prefix() + plugin.getMessages().get("error.rate-limited", null));
-            return;
-        }
-        var executed = plugin.getConvertEngine().execute(
-                player.getUniqueId(), holder.fromId(), holder.toId(), holder.amount());
-        if (executed.isEmpty()) {
-            String reason = plugin.getConvertEngine().blockReason(
-                    player.getUniqueId(), holder.fromId(), holder.toId(), holder.amount());
-            send(player, plugin.getMessages().prefix() + plugin.getMessages().get("error.convert.generic",
-                    Map.of("reason", reason.isEmpty() ? "неизвестно" : reason,
-                            "from", holder.fromId(), "to", holder.toId())));
-            player.closeInventory();
-            return;
-        }
-        var q = executed.get();
-        Currency to = plugin.getCurrencies().get(q.toId()).orElse(null);
-        send(player, plugin.getMessages().prefix() + plugin.getMessages().get("convert.done",
-                Map.of("amount", fmtSym(q.net(), to, q.toId()))));
-        later(() -> WalletGui.openMain(plugin, player));
-    }
-
-    private void onHistory(Player player, WalletGuiHolder holder, int slot) {
-        if (slot == 45 && holder.pageIndex() > 0) {
-            int p = holder.pageIndex() - 1;
-            later(() -> WalletGui.openHistory(plugin, player, p));
-        } else if (slot == 53) {
-            int p = holder.pageIndex() + 1;
-            later(() -> WalletGui.openHistory(plugin, player, p));
-        } else if (slot == 49) {
-            player.closeInventory();
-        }
-    }
-
-    private void onCabinet(Player player, int slot) {
-        if (!WalletGui.isKing(plugin, player)) {
-            player.closeInventory();
-            return;
-        }
-        String nation = plugin.getTownyHook().nationOf(player.getUniqueId());
-        if (nation == null) {
-            player.closeInventory();
-            return;
-        }
-        ReserveBank bank = plugin.getReserveBank();
-        Currency national = null;
-        for (Currency cur : plugin.getCurrencies().all()) {
-            if (cur.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(cur.nationId())) {
-                national = cur;
-            }
-        }
-        boolean refresh = true;
-        switch (slot) {
-            case 19 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) - 0.10D)),
-                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 0.50");
-            case 21 -> feedback(player, bank.setParity(nation, round2(bank.parityOf(nation) + 0.10D)),
-                    "Паритет: " + String.format(Locale.ROOT, "%.2f", bank.parityOf(nation)), "граница 2.00");
-            case 23 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) - 0.005D)),
-                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 0%");
-            case 25 -> feedback(player, bank.setTax(nation, round4(bank.taxOf(nation) + 0.005D)),
-                    "Налог: " + String.format(Locale.ROOT, "%.1f%%", bank.taxOf(nation) * 100.0D), "граница 5%");
-            case 29 -> depositFeedback(player, bank, nation, 100.0D);
-            case 30 -> depositFeedback(player, bank, nation, 1000.0D);
-            case 31 -> withdrawFeedback(player, bank, nation, 100.0D);
-            case 32 -> withdrawFeedback(player, bank, nation, 1000.0D);
-            case 33 -> {
-                if (national == null) {
-                    feedback(player, false, "", "нет национальной валюты");
-                } else if (!bank.canMint(nation, national.id(), 100.0D)) {
-                    feedback(player, false, "", "лимит покрытия: "
-                            + Formatter.amount(bank.maxMint(nation, national.id()), 2) + " — пополняй резерв");
-                } else {
-                    feedback(player, bank.mintToTreasury(nation, national, 100.0D),
-                            "Минт 100 " + national.id() + " в казну (минус сеньораж)", "казна недоступна");
-                }
-            }
-            case 34 -> {
-                if (national == null) {
-                    feedback(player, false, "", "нет национальной валюты");
-                } else {
-                    feedback(player, bank.burnFromTreasury(nation, national, 100.0D),
-                            "Бёрн 100 " + national.id() + " из казны", "в казне меньше 100");
-                }
-            }
-            case 45 -> {
-                later(() -> WalletGui.openCodex(plugin, player, 0));
-                refresh = false;
-            }
-            case 46 -> {
-                later(() -> WalletGui.openCodex(plugin, player, 1));
-                refresh = false;
-            }
-            case 47 -> {
-                later(() -> WalletGui.openCodex(plugin, player, 3));
-                refresh = false;
-            }
-            case 48 -> {
-                later(() -> WalletGui.openCodex(plugin, player, 4));
-                refresh = false;
-            }
-            case 53 -> {
-                later(() -> WalletGui.openMain(plugin, player));
-                refresh = false;
-            }
-            default -> refresh = false;
-        }
-        if (refresh) {
-            later(() -> WalletGui.openCabinet(plugin, player));
-        }
-    }
-
-    private void depositFeedback(Player player, ReserveBank bank, String nation, double amount) {
-        String glb = plugin.getCurrencies().globalId();
-        if (!plugin.getWallets().has(player.getUniqueId(), glb, amount)) {
-            feedback(player, false, "", "недостаточно личного золота ("
-                    + Formatter.amount(plugin.getWallets().getBalance(player.getUniqueId(), glb), 2) + " GLD)");
-            return;
-        }
-        feedback(player, bank.depositToReserve(player.getUniqueId(), nation, amount, "gui"),
-                "Внесено " + Formatter.amount(amount, 2) + " GLD в резерв (резерв: "
-                        + Formatter.amount(bank.reserveOf(nation), 2) + ")",
-                "резерв не принимает");
-    }
-
-    private void withdrawFeedback(Player player, ReserveBank bank, String nation, double amount) {
-        double reserve = bank.reserveOf(nation);
-        if (reserve + 1.0E-9D < amount) {
-            feedback(player, false, "", "резерв нации исчерпан (" + Formatter.amount(reserve, 2) + " GLD)");
-            return;
-        }
-        if (amount > bank.dailyWithdrawLimit(nation) + 1.0E-9D) {
-            feedback(player, false, "", "суточный лимит: " + Formatter.amount(bank.dailyWithdrawLimit(nation), 2) + " GLD");
-            return;
-        }
-        feedback(player, bank.withdrawFromReserve(player.getUniqueId(), nation, amount, "gui"),
-                "Выведено " + Formatter.amount(amount, 2) + " GLD (резерв: "
-                        + Formatter.amount(bank.reserveOf(nation), 2) + ")",
-                "операция отклонена");
-    }
-
-    private void onCodex(Player player, WalletGuiHolder holder, int slot) {
-        if (slot == 18 && holder.pageIndex() > 0) {
-            int p = holder.pageIndex() - 1;
-            later(() -> WalletGui.openCodex(plugin, player, p));
-        } else if (slot == 26) {
-            int p = holder.pageIndex() + 1;
-            later(() -> WalletGui.openCodex(plugin, player, p));
-        } else if (slot == 22) {
-            player.closeInventory();
-        }
-    }
-
-    private void feedback(Player player, boolean ok, String success, String failReason) {
-        send(player, plugin.getMessages().prefix() + (ok ? "&a✔ " + success : "&c✖ Отказ: " + failReason));
-    }
-
-    private List<Currency> tradeable() {
-        List<Currency> list = new ArrayList<>();
-        for (Currency cur : plugin.getCurrencies().all()) {
-            if (cur.tradeable()) {
-                list.add(cur);
-            }
-        }
-        return list;
-    }
-
-    private List<Currency> tradeableExcept(String exceptId) {
-        List<Currency> list = new ArrayList<>();
-        for (Currency cur : plugin.getCurrencies().all()) {
-            if (cur.tradeable() && !cur.id().equals(exceptId)) {
-                list.add(cur);
-            }
-        }
-        return list;
-    }
-
-    private int indexOf(int slot) {
-        if (slot < 10 || (slot - 10) % 2 != 0) {
-            return -1;
-        }
-        return (slot - 10) / 2;
-    }
-
-    private String fmtSym(double value, Currency cur, String fallback) {
-        if (cur == null) {
-            return Formatter.amount(value, 2) + " " + fallback;
-        }
-        return Formatter.withSymbol(value, cur.decimals(), cur.symbol());
-    }
-
-    private static double round2(double v) {
-        return Math.round(v * 100.0D) / 100.0D;
-    }
-
-    private static double round4(double v) {
-        return Math.round(v * 10000.0D) / 10000.0D;
-    }
+    private java.util.List<String> list(java.util.List<Currency> l) { return l; }
 }
