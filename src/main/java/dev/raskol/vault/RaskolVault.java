@@ -18,6 +18,7 @@ import dev.raskol.vault.gui.CabinetGui;
 import dev.raskol.vault.gui.ExchangeGui;
 import dev.raskol.vault.gui.GuiListener;
 import dev.raskol.vault.gui.ReserveGui;
+import dev.raskol.vault.gui.ShareGui;
 import dev.raskol.vault.gui.WalletGui;
 import dev.raskol.vault.hook.EssentialsHook;
 import dev.raskol.vault.hook.LuckPermsHook;
@@ -33,6 +34,7 @@ import dev.raskol.vault.observability.TxCounter;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.safety.RateLimiter;
+import dev.raskol.vault.share.ShareService;
 import dev.raskol.vault.storage.BackupService;
 import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.RestoreService;
@@ -55,7 +57,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.3-SNAPSHOT: + TradePolicyService (торговая политика наций).
+ * RaskolVault 1.2.4-SNAPSHOT: Доли и Ужиток.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -83,6 +85,7 @@ public final class RaskolVault extends JavaPlugin {
     private TaxService taxService;
     private BondService bondService;
     private TradePolicyService tradePolicy;
+    private ShareService shareService;
     private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
@@ -95,6 +98,7 @@ public final class RaskolVault extends JavaPlugin {
     private ExchangeGui exchangeGui;
     private CabinetGui cabinetGui;
     private BondGui bondGui;
+    private ShareGui shareGui;
     private long startTimeMillis;
     private volatile long lastReconcileMillis;
 
@@ -163,6 +167,7 @@ public final class RaskolVault extends JavaPlugin {
         taxService.load();
         bondService = new BondService(this, wallets);
         tradePolicy = new TradePolicyService(this);
+        shareService = new ShareService(this, wallets, reserveBank);
 
         luckPermsHook = new LuckPermsHook(this);
         if (luckPermsPresent && getConfig().getBoolean("hooks.luckperms.enabled", true)) luckPermsHook.init();
@@ -191,6 +196,8 @@ public final class RaskolVault extends JavaPlugin {
         getServer().getPluginManager().registerEvents(cabinetGui, this);
         bondGui = new BondGui(this, bondService);
         getServer().getPluginManager().registerEvents(bondGui, this);
+        shareGui = new ShareGui(this, shareService);
+        getServer().getPluginManager().registerEvents(shareGui, this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
@@ -252,7 +259,7 @@ public final class RaskolVault extends JavaPlugin {
         PluginCommand command = getCommand("rv");
         if (command != null) { command.setExecutor(executor); command.setTabCompleter(executor); }
 
-        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.3-b)");
+        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.4 — Доли и Ужиток)");
     }
 
     @Override
@@ -267,6 +274,7 @@ public final class RaskolVault extends JavaPlugin {
         if (tradePolicy != null) tradePolicy.save();
         if (taxService != null) taxService.save();
         if (bondService != null) bondService.save();
+        if (shareService != null) shareService.save();
         if (backups != null) backups.stop();
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) saveBalancesBackup();
         if (writer != null) writer.close(10000L);
@@ -318,6 +326,7 @@ public final class RaskolVault extends JavaPlugin {
     public TaxService getTaxService() { return taxService; }
     public BondService getBondService() { return bondService; }
     public TradePolicyService getTradePolicy() { return tradePolicy; }
+    public ShareService getShareService() { return shareService; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public SparkHook getSparkHook() { return sparkHook; }
     public ReserveBank getReserveBank() { return reserveBank; }
@@ -330,6 +339,7 @@ public final class RaskolVault extends JavaPlugin {
     public ExchangeGui getExchangeGui() { return exchangeGui; }
     public CabinetGui getCabinetGui() { return cabinetGui; }
     public BondGui getBondGui() { return bondGui; }
+    public ShareGui getShareGui() { return shareGui; }
     public long getStartTimeMillis() { return startTimeMillis; }
     public long getLastReconcileMillis() { return lastReconcileMillis; }
     public boolean isCorePresent() { return corePresent; }
