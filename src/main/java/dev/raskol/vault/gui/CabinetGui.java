@@ -11,7 +11,6 @@ import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
@@ -28,315 +27,261 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Кабинет государя (1.2.2-b): полный GUI для короля нации.
- * Страницы:
- *  - Главная (обзор + навигация)
- *  - Резерв (ячейки + депозит/вывод)
- *  - Монетарная (паритет ±, минт/бёрн)
- *  - Налоговая (3 налога 0..5%)
- *  - Отчёты (сводка за сутки)
+ * Кабинет государя (1.2.3-b): + кнопка «Выпустить валюту» для государств без валюты.
  */
 public final class CabinetGui implements Listener {
 
     public static final double CELL_GLD = 1000.0D;
-    public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>(); // {nation, mode}
+    public static final Map<UUID, String[]> CHAT_CAPTURE = new ConcurrentHashMap<>();
 
-    // mode: deposit / withdraw / parity / mint / burn / tax-convert / tax-exchange / tax-market
     public static final class Holder implements InventoryHolder {
-        final String nation;
-        final String page;
+        final String nation; final String page;
         Holder(String nation, String page) { this.nation = nation; this.page = page; }
-        public String nation() { return nation; }
-        public String page() { return page; }
         private Inventory inv;
         @Override public Inventory getInventory() { return inv; }
     }
 
     private final RaskolVault plugin;
-
-    public CabinetGui(RaskolVault plugin) {
-        this.plugin = plugin;
-    }
+    public CabinetGui(RaskolVault plugin) { this.plugin = plugin; }
 
     private String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
     private void msg(Player p, String raw) { p.sendMessage(c(plugin.getMessages().prefix() + raw)); }
-
     private static ItemStack item(Material m, String name, List<String> lore) {
         ItemStack s = new ItemStack(m);
         ItemMeta meta = s.getItemMeta();
-        if (meta != null) {
-            meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', name));
-            List<String> l = new ArrayList<>();
-            for (String line : lore) l.add(ChatColor.translateAlternateColorCodes('&', line));
-            meta.setLore(l);
-            s.setItemMeta(meta);
-        }
+        if (meta != null) { meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', name));
+            List<String> l = new ArrayList<>(); for (String x : lore) l.add(ChatColor.translateAlternateColorCodes('&', x));
+            meta.setLore(l); s.setItemMeta(meta); }
         return s;
     }
     private static ItemStack pane() { return item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of()); }
     private static String fmt(double v) { return String.format(Locale.ROOT, "%.2f", v); }
-    private static String fmtPct(double v) { return String.format(Locale.ROOT, "%.1f%%", v * 100.0); }
 
-    // ---------- Главная страница ----------
     public void openHome(Player king, String nation) {
         Holder h = new Holder(nation, "home");
         Inventory inv = Bukkit.createInventory(h, 54, c("&8▌&6 Кабинет " + nation + " &8▌"));
         h.inv = inv;
-
         ReserveBank bank = plugin.getReserveBank();
+        Currency nat = nationalCurrency(nation);
         double reserve = bank.reserveOf(nation);
-        Currency national = nationalCurrency(nation);
-        double supply = national == null ? 0.0D : bank.supplyOf(national.id());
-        double parity = bank.parityOf(nation);
-        double price = national == null ? 0.0D : bank.priceOf(national);
-        double coverage = national == null ? 0.0D : bank.coverageOf(nation, national.id());
-
-        // заголовок — сводка
-        inv.setItem(4, item(Material.GOLDEN_APPLE, "&6Обзор государства", List.of(
-                "&7Нация: &f" + nation,
-                "&7Король: &f" + nameOf(king),
+        inv.setItem(4, item(Material.GOLDEN_APPLE, "&6Обзор", List.of(
                 "&7Резерв: &f" + fmt(reserve) + " GLD",
-                "&7Эмиссия: &f" + fmt(supply) + " " + (national == null ? "?" : national.id()),
-                "&7Паритет: &f" + fmt(parity),
-                "&7Цена: &f" + fmt(price) + " GLD",
-                "&7Покрытие: &f" + fmtPct(coverage))));
-
-        // навигация
-        inv.setItem(20, item(Material.GOLD_BLOCK, "&6🏦 Резерв", List.of("&7Ячейки, депозит/вывод")));
-        inv.setItem(22, item(Material.COMPASS, "&6📈 Монетарная политика", List.of("&7Паритет, минт/бёрн")));
-        inv.setItem(24, item(Material.TRIPWIRE_HOOK, "&6⚖ Налоговая система", List.of("&7Ставки 0..5% по 3 каналам")));
-        inv.setItem(30, item(Material.WRITABLE_BOOK, "&6📊 Отчёты", List.of("&7Сборы налогов за сутки")));
-        inv.setItem(32, item(Material.PAPER, "&6📖 Кодекс правителя", List.of("&7Формулы и лимиты")));
-
-        for (int i = 36; i < 54; i++) inv.setItem(i, pane());
+                nat == null ? "&cНет национальной валюты" : "&7Эмиссия: &f" + fmt(bank.supplyOf(nat.id())),
+                nat == null ? "" : "&7Покрытие: &f" + String.format(Locale.ROOT, "%.1f%%", bank.coverageOf(nation, nat.id()) * 100))));
+        inv.setItem(20, item(Material.GOLD_BLOCK, "&6Резерв", List.of()));
+        inv.setItem(22, item(Material.COMPASS, "&6Монетарная", List.of()));
+        inv.setItem(24, item(Material.TRIPWIRE_HOOK, "&6Налоги", List.of()));
+        inv.setItem(30, item(Material.WRITABLE_BOOK, "&6Отчёты", List.of()));
+        inv.setItem(32, item(Material.PAPER, "&6Торговая политика", List.of("&7whitelist/blacklist валют")));
+        for (int i = 45; i < 54; i++) inv.setItem(i, pane());
         inv.setItem(49, item(Material.BARRIER, "&cЗакрыть", List.of()));
-
         king.openInventory(inv);
     }
 
-    // ---------- Резерв (ячейки) ----------
-    public void openReserve(Player king, String nation) {
-        Holder h = new Holder(nation, "reserve");
-        Inventory inv = Bukkit.createInventory(h, 54, c("&8▌&6 Резерв · " + nation + " &8▌"));
-        h.inv = inv;
-        double reserve = plugin.getReserveBank().reserveOf(nation);
-        int cells = (int) Math.min(27L, (long) (reserve / CELL_GLD));
-        for (int i = 0; i < cells; i++) {
-            inv.setItem(i, item(Material.GOLD_BLOCK, "&6Ячейка резерва",
-                    List.of("&71000 GLD", "&7Всего: &f" + fmt(reserve) + " GLD")));
-        }
-        for (int i = cells; i < 27; i++) inv.setItem(i, pane());
-
-        inv.setItem(27, item(Material.GOLD_BLOCK, "&aДепозит", List.of("&7Внести своё золото", "&7Клик → ввод в чат")));
-        inv.setItem(28, item(Material.HOPPER, "&cВывод", List.of("&7Вывести из резерва", "&7Лимит 25% в сутки", "&7Клик → ввод в чат")));
-        for (int i = 36; i < 54; i++) inv.setItem(i, pane());
-        inv.setItem(49, item(Material.ARROW, "&7← Назад", List.of()));
-        king.openInventory(inv);
-    }
-
-    // ---------- Монетарная ----------
-    public void openMonetary(Player king, String nation) {
+    private void openMonetary(Player king, String nation) {
         Holder h = new Holder(nation, "monetary");
-        Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Монетарная · " + nation + " &8▌"));
+        Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Монетарная &8▌"));
         h.inv = inv;
-
-        double parity = plugin.getReserveBank().parityOf(nation);
-        Currency national = nationalCurrency(nation);
-        double supply = national == null ? 0.0D : plugin.getReserveBank().supplyOf(national.id());
-        double maxMint = national == null ? 0.0D : plugin.getReserveBank().maxMint(nation, national.id());
-
-        inv.setItem(10, item(Material.REDSTONE, "&cПаритет −0.05", List.of("&7Текущий: &f" + fmt(parity))));
-        inv.setItem(12, item(Material.NETHER_STAR, "&6Паритет &f" + fmt(parity), List.of("&7Король может менять", "&7в пределах 0.5..2.0")));
-        inv.setItem(14, item(Material.GLOWSTONE_DUST, "&aПаритет +0.05", List.of("&7Текущий: &f" + fmt(parity))));
-
-        inv.setItem(16, item(Material.EMERALD, "&aМинт (эмиссия)",
-                List.of("&7Сумма: &f(чат-ввод)", "&7Лимит: &f" + fmt(maxMint) + " " + (national == null ? "?" : national.id()))));
-
+        ReserveBank bank = plugin.getReserveBank();
+        Currency nat = nationalCurrency(nation);
+        if (nat == null) {
+            inv.setItem(13, item(Material.GOLD_BLOCK, "&aВыпустить валюту",
+                    List.of("&7Создать национальную валюту", "&7ID = первые 3 буквы нации", "&eКлик — выпустить")));
+        } else {
+            double parity = bank.parityOf(nation);
+            inv.setItem(10, item(Material.REDSTONE, "&cПаритет −0.05", List.of("&7Текущий: &f" + fmt(parity))));
+            inv.setItem(12, item(Material.NETHER_STAR, "&6Паритет &f" + fmt(parity), List.of()));
+            inv.setItem(14, item(Material.GLOWSTONE_DUST, "&aПаритет +0.05", List.of("&7Текущий: &f" + fmt(parity))));
+            inv.setItem(16, item(Material.EMERALD, "&aМинт", List.of("&7Чат-ввод суммы")));
+        }
         for (int i = 18; i < 27; i++) inv.setItem(i, pane());
-        inv.setItem(22, item(Material.ARROW, "&7← Назад", List.of()));
+        inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
         king.openInventory(inv);
     }
 
-    // ---------- Налоговая ----------
-    public void openTax(Player king, String nation) {
+    private void openTax(Player king, String nation) {
         Holder h = new Holder(nation, "tax");
-        Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Налоги · " + nation + " &8▌"));
+        Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Налоги &8▌"));
         h.inv = inv;
-
         TaxService tax = plugin.getTaxService();
-        double conv = tax.getConvertRate(nation);
-        double exch = tax.getExchangeRate(nation);
-        double mkt = tax.getMarketRate(nation);
-        TaxService.DailyReport r = tax.todayReport(nation);
-
-        inv.setItem(10, item(Material.GOLD_NUGGET, "&6Конверсионный &f" + fmtPct(conv),
-                List.of("&7При обмене в национальную валюту", "&7Собрано сегодня: &f" + fmt(r.convert()))));
-        inv.setItem(12, item(Material.ENDER_CHEST, "&6Торговый &f" + fmtPct(exch),
-                List.of("&7С сделок на бирже", "&7Собрано сегодня: &f" + fmt(r.exchange()))));
-        inv.setItem(14, item(Material.CHEST, "&6Рыночный &f" + fmtPct(mkt),
-                List.of("&7С ChestShop/ESGUI в черте нации", "&7Собрано сегодня: &f" + fmt(r.market()))));
-        inv.setItem(16, item(Material.GOLD_INGOT, "&6Всего за сутки: &f" + fmt(r.total()),
-                List.of("&7Поступления в казну")));
-
+        inv.setItem(10, item(Material.GOLD_NUGGET, "&6Конверсионный &f" + pct(tax.getConvertRate(nation)), List.of("&eКлик — задать %")));
+        inv.setItem(12, item(Material.ENDER_CHEST, "&6Торговый &f" + pct(tax.getExchangeRate(nation)), List.of("&eКлик — задать %")));
+        inv.setItem(14, item(Material.CHEST, "&6Рыночный &f" + pct(tax.getMarketRate(nation)), List.of("&eКлик — задать %")));
         for (int i = 18; i < 27; i++) inv.setItem(i, pane());
-        inv.setItem(22, item(Material.ARROW, "&7← Назад", List.of()));
+        inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
         king.openInventory(inv);
     }
 
-    // ---------- Отчёты (те же данные, другая подача) ----------
-    public void openReports(Player king, String nation) {
-        openTax(king, nation); // переиспользуем налоговую страницу как отчёт
-    }
-
-    // ---------- Кодекс (текст) ----------
-    public void openCodex(Player king, String nation) {
-        Holder h = new Holder(nation, "codex");
-        Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Кодекс правителя &8▌"));
+    private void openTrade(Player king, String nation) {
+        Holder h = new Holder(nation, "trade");
+        Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Торговая политика &8▌"));
         h.inv = inv;
-        inv.setItem(13, item(Material.WRITABLE_BOOK, "&6Формулы и лимиты", List.of(
-                "&7• Покрытие = резерв / (эмиссия × паритет)",
-                "&7• Цена = min(паритет, резерв / эмиссия)",
-                "&7• Паритет: 0.5..2.0",
-                "&7• Покрытие < 100% — валюта дешевеет",
-                "&7• Покрытие < 50% — КРИЗИС",
-                "&7• Вывод резерва: ≤ 25% в сутки",
-                "&7• Налоги: 0..5% по каждому каналу")));
+        var pol = plugin.getTradePolicy().policyOf(nation);
+        inv.setItem(11, item(Material.LIME_CONCRETE, "&aРежим: &f" + pol.mode(), List.of("&eКлик — переключить none→whitelist→blacklist")));
+        inv.setItem(15, item(Material.PAPER, "&6Список", List.of("&7Чат-ввод через запятую: RAS,VLR")));
         for (int i = 18; i < 27; i++) inv.setItem(i, pane());
-        inv.setItem(22, item(Material.ARROW, "&7← Назад", List.of()));
+        inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
         king.openInventory(inv);
     }
 
-    // ---------- Клики ----------
     @EventHandler
     public void onClick(InventoryClickEvent e) {
-        InventoryHolder raw = e.getInventory().getHolder();
-        if (!(raw instanceof Holder h)) return;
+        if (!(e.getInventory().getHolder() instanceof Holder h)) return;
         e.setCancelled(true);
         if (!(e.getWhoClicked() instanceof Player p)) return;
         int slot = e.getRawSlot();
-        String nation = h.nation();
-
-        switch (h.page()) {
+        String nation = h.nation;
+        switch (h.page) {
             case "home" -> {
-                if (slot == 20) openReserve(p, nation);
-                else if (slot == 22) openMonetary(p, nation);
-                else if (slot == 24) openTax(p, nation);
-                else if (slot == 30) openReports(p, nation);
-                else if (slot == 32) openCodex(p, nation);
-                else if (slot == 49) p.closeInventory();
-            }
-            case "reserve" -> {
-                if (slot == 27) { capture(p, nation, "deposit"); return; }
-                if (slot == 28) { capture(p, nation, "withdraw"); return; }
-                if (slot == 49) { openHome(p, nation); return; }
+                if (slot == 49) { p.closeInventory(); return; }
+                if (slot == 20) { openReserve(p, nation); return; }
+                if (slot == 22) { openMonetary(p, nation); return; }
+                if (slot == 24) { openTax(p, nation); return; }
+                if (slot == 30) { openTax(p, nation); return; }
+                if (slot == 32) { openTrade(p, nation); return; }
             }
             case "monetary" -> {
-                if (slot == 10) { adjustParity(p, nation, -0.05); return; }
-                if (slot == 14) { adjustParity(p, nation, +0.05); return; }
-                if (slot == 16) { capture(p, nation, "mint"); return; }
                 if (slot == 22) { openHome(p, nation); return; }
+                Currency nat = nationalCurrency(nation);
+                if (nat == null) {
+                    if (slot == 13) { issueCurrency(p, nation); }
+                    return;
+                }
+                if (slot == 10) { adjParity(p, nation, -0.05); return; }
+                if (slot == 14) { adjParity(p, nation, +0.05); return; }
+                if (slot == 16) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"mint", nation}); msg(p, "&7Сумма минта:"); return; }
             }
             case "tax" -> {
-                if (slot == 10) { capture(p, nation, "tax-convert"); return; }
-                if (slot == 12) { capture(p, nation, "tax-exchange"); return; }
-                if (slot == 14) { capture(p, nation, "tax-market"); return; }
                 if (slot == 22) { openHome(p, nation); return; }
+                if (slot == 10) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-convert", nation}); msg(p, "&7Ставка % (0..5):"); return; }
+                if (slot == 12) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-exchange", nation}); msg(p, "&7Ставка % (0..5):"); return; }
+                if (slot == 14) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"tax-market", nation}); msg(p, "&7Ставка % (0..5):"); return; }
             }
-            case "codex" -> {
-                if (slot == 22) openHome(p, nation);
+            case "trade" -> {
+                if (slot == 22) { openHome(p, nation); return; }
+                if (slot == 11) { cycleMode(p, nation); openTrade(p, nation); return; }
+                if (slot == 15) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"trade-list", nation}); msg(p, "&7Список валют через запятую:"); return; }
             }
         }
     }
 
-    // ---------- Чат-захват ----------
-    @EventHandler(priority = EventPriority.LOWEST)
+    private void openReserve(Player king, String nation) {
+        Holder h = new Holder(nation, "reserve");
+        Inventory inv = Bukkit.createInventory(h, 54, c("&8▌&6 Резерв &8▌"));
+        h.inv = inv;
+        double reserve = plugin.getReserveBank().reserveOf(nation);
+        int cells = (int) Math.min(27L, (long) (reserve / CELL_GLD));
+        for (int i = 0; i < cells; i++) inv.setItem(i, item(Material.GOLD_BLOCK, "&6Ячейка", List.of("&71000 GLD")));
+        for (int i = cells; i < 27; i++) inv.setItem(i, pane());
+        inv.setItem(27, item(Material.GOLD_BLOCK, "&aДепозит", List.of("&eКлик → сумма в чат")));
+        inv.setItem(28, item(Material.HOPPER, "&cВывод", List.of("&eКлик → сумма в чат")));
+        for (int i = 36; i < 54; i++) inv.setItem(i, pane());
+        inv.setItem(49, item(Material.ARROW, "&7Назад", List.of()));
+        king.openInventory(inv);
+    }
+
+    @EventHandler(priority = org.bukkit.event.EventPriority.LOWEST)
     public void onChat(AsyncPlayerChatEvent e) {
         String[] ctx = CHAT_CAPTURE.remove(e.getPlayer().getUniqueId());
         if (ctx == null) return;
         e.setCancelled(true);
         Player p = e.getPlayer();
-        String nation = ctx[0];
-        String mode = ctx[1];
-        double amount;
-        try { amount = Double.parseDouble(e.getMessage().replace(",", ".").trim()); }
-        catch (NumberFormatException ex) { msg(p, "&cНекорректная сумма"); return; }
-        if (!Double.isFinite(amount)) { msg(p, "&cНекорректная сумма"); return; }
-
+        String text = e.getMessage().trim();
         Bukkit.getScheduler().runTask(plugin, () -> {
-            ReserveBank bank = plugin.getReserveBank();
-            TaxService tax = plugin.getTaxService();
-            switch (mode) {
-                case "deposit" -> {
-                    if (amount <= 0) { msg(p, "&cСумма должна быть > 0"); return; }
-                    boolean ok = bank.depositToReserve(p.getUniqueId(), nation, amount, "cabinet");
-                    msg(p, ok ? "&aВнесено &f" + fmt(amount) + " GLD" : "&cНедостаточно золота");
-                }
-                case "withdraw" -> {
-                    if (amount <= 0) { msg(p, "&cСумма должна быть > 0"); return; }
-                    boolean ok = bank.withdrawFromReserve(p.getUniqueId(), nation, amount, "cabinet");
-                    msg(p, ok ? "&aВыведено &f" + fmt(amount) + " GLD" : "&cОтказ (лимит 25% или мало резерва)");
-                }
+            String nation = ctx[1];
+            switch (ctx[0]) {
                 case "mint" -> {
-                    if (amount <= 0) { msg(p, "&cСумма должна быть > 0"); return; }
+                    double amt = parse(text);
+                    if (!(amt > 0)) { msg(p, "&cСумма > 0"); return; }
                     Currency nat = nationalCurrency(nation);
-                    if (nat == null) { msg(p, "&cУ нации нет национальной валюты"); return; }
-                    boolean ok = bank.mint(nation, nat.id(), amount, "cabinet");
-                    msg(p, ok ? "&aЭмитировано &f" + fmt(amount) + " " + nat.id() : "&cОтказ (покрытие)");
+                    if (nat == null) { msg(p, "&cНет валюты"); return; }
+                    boolean ok = plugin.getReserveBank().mint(nation, nat.id(), amt, "cabinet");
+                    msg(p, ok ? "&aЭмитировано &f" + fmt(amt) + " " + nat.id() : "&cОтказ (покрытие)");
+                    openMonetary(p, nation);
                 }
                 case "tax-convert", "tax-exchange", "tax-market" -> {
-                    double newRate;
-                    if (amount < 0) newRate = 0.0D;
-                    else if (amount > 5.0D) newRate = 0.05D; // процент в долях
-                    else newRate = amount / 100.0D;
-                    double set;
-                    String label;
-                    if (mode.endsWith("convert")) { set = tax.setConvertRate(nation, newRate); label = "Конверсионный"; }
-                    else if (mode.endsWith("exchange")) { set = tax.setExchangeRate(nation, newRate); label = "Торговый"; }
-                    else { set = tax.setMarketRate(nation, newRate); label = "Рыночный"; }
-                    msg(p, "&a" + label + " налог: &f" + fmtPct(set));
+                    double v = parse(text);
+                    if (v < 0 || v > 5) { msg(p, "&c0..5%"); return; }
+                    double rate = v / 100.0D;
+                    if (ctx[0].endsWith("convert")) plugin.getTaxService().setConvertRate(nation, rate);
+                    else if (ctx[0].endsWith("exchange")) plugin.getTaxService().setExchangeRate(nation, rate);
+                    else plugin.getTaxService().setMarketRate(nation, rate);
+                    msg(p, "&aНалог установлен: &f" + pct(rate));
+                    openTax(p, nation);
+                }
+                case "trade-list" -> {
+                    List<String> list = new ArrayList<>();
+                    for (String s : text.split(",")) if (!s.isBlank()) list.add(s.trim().toUpperCase(Locale.ROOT));
+                    plugin.getTradePolicy().setList(nation, list);
+                    msg(p, "&aСписок обновлён: &f" + String.join(",", list));
+                    openTrade(p, nation);
+                }
+                case "reserve-dep", "reserve-with" -> {
+                    double amt = parse(text);
+                    if (!(amt > 0)) { msg(p, "&cСумма > 0"); return; }
+                    boolean ok = ctx[0].equals("reserve-dep")
+                            ? plugin.getReserveBank().depositToReserve(p.getUniqueId(), nation, amt, "cabinet")
+                            : plugin.getReserveBank().withdrawFromReserve(p.getUniqueId(), nation, amt, "cabinet");
+                    msg(p, ok ? "&aОперация выполнена" : "&cОтказ");
+                    openReserve(p, nation);
                 }
             }
-            reopenAfterChat(p, nation, mode);
         });
     }
 
-    private void capture(Player p, String nation, String mode) {
-        p.closeInventory();
-        CHAT_CAPTURE.put(p.getUniqueId(), new String[]{nation, mode});
-        String prompt = switch (mode) {
-            case "deposit" -> "&7Введите сумму депозита в чат (GLD):";
-            case "withdraw" -> "&7Введите сумму вывода в чат (GLD):";
-            case "mint" -> "&7Введите сумму эмиссии в чат (единицы национальной валюты):";
-            case "tax-convert", "tax-exchange", "tax-market" -> "&7Введите ставку налога в % (0..5), например 2.5:";
-            default -> "&7Введите число:";
+    // reserve page clicks handled here too
+    @EventHandler
+    public void onReserveClick(InventoryClickEvent e) {
+        if (!(e.getInventory().getHolder() instanceof Holder h) || !h.page.equals("reserve")) return;
+        e.setCancelled(true);
+        if (!(e.getWhoClicked() instanceof Player p)) return;
+        int slot = e.getRawSlot();
+        if (slot == 49) { openHome(p, h.nation); return; }
+        if (slot == 27) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"reserve-dep", h.nation}); msg(p, "&7Сумма депозита:"); }
+        if (slot == 28) { p.closeInventory(); CHAT_CAPTURE.put(p.getUniqueId(), new String[]{"reserve-with", h.nation}); msg(p, "&7Сумма вывода:"); }
+    }
+
+    private void issueCurrency(Player p, String nation) {
+        String base = nation.replaceAll("[^A-Za-zА-Яа-я]", "");
+        String id = (base.length() >= 3 ? base.substring(0, 3) : base).toUpperCase(Locale.ROOT);
+        String candidate = id;
+        int suffix = 0;
+        while (plugin.getCurrencies().get(candidate).isPresent()) { suffix++; candidate = id + suffix; }
+        Currency cur = new dev.raskol.vault.api.currency.Currency(candidate,
+                "Динар " + nation, candidate, CurrencyType.NATIONAL, nation, 2, true);
+        plugin.getCurrencies().addCurrency(cur);
+        plugin.getLedger().upsertCurrency(cur);
+        msg(p, "&aВыпущена валюта &f" + candidate + " &aдля нации " + nation);
+        openMonetary(p, nation);
+    }
+
+    private void cycleMode(Player p, String nation) {
+        var cur = plugin.getTradePolicy().policyOf(nation);
+        var next = switch (cur.mode()) {
+            case NONE -> dev.raskol.vault.trade.TradePolicyService.Mode.WHITELIST;
+            case WHITELIST -> dev.raskol.vault.trade.TradePolicyService.Mode.BLACKLIST;
+            case BLACKLIST -> dev.raskol.vault.trade.TradePolicyService.Mode.NONE;
         };
-        p.sendMessage(c(plugin.getMessages().prefix() + prompt));
+        plugin.getTradePolicy().setMode(nation, next);
+        msg(p, "&aРежим: &f" + next);
     }
 
-    private void reopenAfterChat(Player p, String nation, String mode) {
-        switch (mode) {
-            case "deposit", "withdraw" -> openReserve(p, nation);
-            case "mint" -> openMonetary(p, nation);
-            case "tax-convert", "tax-exchange", "tax-market" -> openTax(p, nation);
-        }
-    }
-
-    private void adjustParity(Player p, String nation, double delta) {
-        ReserveBank bank = plugin.getReserveBank();
-        double cur = bank.parityOf(nation);
+    private void adjParity(Player p, String nation, double delta) {
+        double cur = plugin.getReserveBank().parityOf(nation);
         double next = cur + delta;
-        if (next < 0.5D || next > 2.0D) { msg(p, "&cПаритет ограничен диапазоном 0.5..2.0"); return; }
-        boolean ok = bank.setParity(nation, next, "cabinet");
-        msg(p, ok ? "&aПаритет: &f" + fmt(next) : "&cОтказ");
+        boolean ok = plugin.getReserveBank().setParity(nation, next, "cabinet");
+        msg(p, ok ? "&aПаритет: &f" + fmt(next) : "&cДиапазон 0.5..2.0");
         openMonetary(p, nation);
     }
 
     private Currency nationalCurrency(String nation) {
-        for (Currency cur : plugin.getCurrencies().all()) {
+        for (Currency cur : plugin.getCurrencies().all())
             if (cur.type() == CurrencyType.NATIONAL && nation.equalsIgnoreCase(cur.nationId())) return cur;
-        }
         return null;
     }
 
-    private String nameOf(Player p) { return p.getName(); }
+    private static double parse(String s) {
+        try { return Double.parseDouble(s.replace(",", ".")); } catch (NumberFormatException e) { return -1; }
+    }
+    private static String pct(double v) { return String.format(Locale.ROOT, "%.1f%%", v * 100); }
 }
