@@ -19,15 +19,13 @@ import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * GUI «Ячейки резерва» (1.2.1): визуальное золото нации.
- * 1 ячейка (GOLD_BLOCK) = 1000 GLD резерва. Слоты 0..26 — ячейки.
- * Слот 27 = Депозит, 28 = Вывод, 29 = Назад (в кабинет), 31 = справка.
- * Ввод суммы — через чат-захват (отдельная карта, не конфликтует с WalletGui).
+ * GUI ячеек резерва (1.1.x, FIX 1.2.3-b: slot 29 → CabinetGui.openHome вместо WalletGui.openCabinet).
  */
 public final class ReserveGui implements Listener {
 
@@ -37,39 +35,29 @@ public final class ReserveGui implements Listener {
     public static final class Holder implements InventoryHolder {
         private final String nation;
         private Inventory inventory;
-
-        Holder(String nation) {
-            this.nation = nation;
-        }
-
+        Holder(String nation) { this.nation = nation; }
         public String nation() { return nation; }
-
-        @Override
-        public Inventory getInventory() { return inventory; }
+        @Override public Inventory getInventory() { return inventory; }
     }
 
     private final RaskolVault plugin;
 
-    public ReserveGui(RaskolVault plugin) {
-        this.plugin = plugin;
-    }
+    public ReserveGui(RaskolVault plugin) { this.plugin = plugin; }
 
     public void open(Player king, String nation) {
         ReserveBank bank = plugin.getReserveBank();
         double reserve = bank.reserveOf(nation);
-        Holder holder = new Holder(nation);
-        Inventory inv = Bukkit.createInventory(holder, 54,
+        Holder h = new Holder(nation);
+        Inventory inv = Bukkit.createInventory(h, 54,
                 ChatColor.translateAlternateColorCodes('&', "&8▌&6 Казна " + nation + " &8▌"));
-        holder.inventory = inv;
+        h.inventory = inv;
 
         int cells = (int) Math.min(27L, (long) (reserve / CELL_GLD));
         for (int i = 0; i < cells; i++) {
             inv.setItem(i, item(Material.GOLD_BLOCK, "&6Ячейка резерва",
                     List.of("&71000 GLD", "&7Всего в казне: &f" + fmt(reserve) + " GLD")));
         }
-        for (int i = cells; i < 27; i++) {
-            inv.setItem(i, item(Material.BLACK_STAINED_GLASS_PANE, "&8пусто", List.of()));
-        }
+        for (int i = cells; i < 27; i++) inv.setItem(i, item(Material.BLACK_STAINED_GLASS_PANE, "&8пусто", List.of()));
 
         inv.setItem(27, item(Material.GOLD_BLOCK, "&aДепозит",
                 List.of("&7Внести своё золото в резерв", "&7Клик → ввод суммы в чат")));
@@ -81,23 +69,17 @@ public final class ReserveGui implements Listener {
                         "&7Покрытие = резерв / (эмиссия × паритет).",
                         "&7Покрытие < 100% → валюта дешевеет.",
                         "&7Покрытие < 50% → КРИЗИС.")));
-        for (int i = 36; i < 54; i++) {
-            inv.setItem(i, item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of()));
-        }
+        for (int i = 36; i < 54; i++) inv.setItem(i, item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of()));
         king.openInventory(inv);
     }
 
     @EventHandler
     public void onClick(InventoryClickEvent event) {
-        if (!(event.getInventory().getHolder() instanceof Holder holder)) {
-            return;
-        }
+        if (!(event.getInventory().getHolder() instanceof Holder h)) return;
         event.setCancelled(true);
-        if (!(event.getWhoClicked() instanceof Player player)) {
-            return;
-        }
+        if (!(event.getWhoClicked() instanceof Player player)) return;
         int slot = event.getRawSlot();
-        String nation = holder.nation();
+        String nation = h.nation();
         if (slot == 27) {
             player.closeInventory();
             CHAT_CAPTURE.put(player.getUniqueId(), new String[]{nation, "deposit"});
@@ -107,32 +89,32 @@ public final class ReserveGui implements Listener {
             CHAT_CAPTURE.put(player.getUniqueId(), new String[]{nation, "withdraw"});
             player.sendMessage(prefix() + "&7Введите сумму вывода в чат (GLD):");
         } else if (slot == 29) {
+            // FIX 1.2.3-b: открываем CabinetGui напрямую (у WalletGui нет метода openCabinet)
             player.closeInventory();
-            // FIX: WalletGui.openCabinet требует (plugin, player)
-            WalletGui.openCabinet(plugin, player);
+            String n = plugin.getTownyHook().isAvailable() ? plugin.getTownyHook().nationOf(player.getUniqueId()) : null;
+            if (n != null && plugin.getTownyHook().isKing(player.getUniqueId(), n)) {
+                plugin.getCabinetGui().openHome(player, n);
+            } else {
+                WalletGui.openMain(plugin, player);
+            }
         }
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
     public void onChat(AsyncPlayerChatEvent event) {
         String[] ctx = CHAT_CAPTURE.remove(event.getPlayer().getUniqueId());
-        if (ctx == null) {
-            return;
-        }
+        if (ctx == null) return;
         event.setCancelled(true);
         Player player = event.getPlayer();
         String nation = ctx[0];
         String mode = ctx[1];
         double amount;
-        try {
-            amount = Double.parseDouble(event.getMessage().replace(",", ".").trim());
-        } catch (NumberFormatException e) {
-            player.sendMessage(prefix() + "&cНекорректная сумма");
-            return;
+        try { amount = Double.parseDouble(event.getMessage().replace(",", ".").trim()); }
+        catch (NumberFormatException e) {
+            player.sendMessage(prefix() + "&cНекорректная сумма"); return;
         }
         if (!(amount > 0.0D) || !Double.isFinite(amount)) {
-            player.sendMessage(prefix() + "&cНекорректная сумма");
-            return;
+            player.sendMessage(prefix() + "&cНекорректная сумма"); return;
         }
         ReserveBank bank = plugin.getReserveBank();
         boolean ok;
@@ -150,23 +132,15 @@ public final class ReserveGui implements Listener {
         Bukkit.getScheduler().runTask(plugin, () -> open(player, nation));
     }
 
-    private String prefix() {
-        return plugin.getMessages().prefix();
-    }
-
-    private static String fmt(double v) {
-        return String.format(java.util.Locale.ROOT, "%.2f", v);
-    }
-
+    private String prefix() { return plugin.getMessages().prefix(); }
+    private static String fmt(double v) { return String.format(Locale.ROOT, "%.2f", v); }
     private static ItemStack item(Material material, String name, List<String> lore) {
         ItemStack stack = new ItemStack(material);
         ItemMeta meta = stack.getItemMeta();
         if (meta != null) {
             meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', name));
             List<String> colored = new ArrayList<>();
-            for (String line : lore) {
-                colored.add(ChatColor.translateAlternateColorCodes('&', line));
-            }
+            for (String line : lore) colored.add(ChatColor.translateAlternateColorCodes('&', line));
             meta.setLore(colored);
             stack.setItemMeta(meta);
         }
