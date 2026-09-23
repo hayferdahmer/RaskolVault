@@ -1,10 +1,15 @@
-# RaskolVault 1.1.5 — многовалютный экономический слой поверх EssentialsX
+# ============================================================
+#  RaskolVault — config.yml (v1.2.5-b)
+#  Многовалютная экономика сервера «РАСКОЛ | ДВЕ КОРОНЫ»
+#  Все суммы — в единицах валюты; ставки — доли (0.02 = 2%)
+# ============================================================
 
 general:
   debug: false
   locale: ru
   auto-save-minutes: 5
 
+# ---------- Глобальная валюта (прокси в EssentialsX) ----------
 global-currency:
   id: GLD
   display-name: 'Золото'
@@ -12,57 +17,66 @@ global-currency:
   decimals: 2
   essentials-sync: true
 
+# ---------- Обмен валют ----------
 exchange:
   enabled: true
-  default-fee: 0.02
+  default-fee: 0.02          # базовая комиссия обмена (сжигается)
+  min-fee: 0.01              # пол комиссии (анти-dust)
+  min-amount: 1.0            # минимальная сумма обмена
   require-confirm: true
   confirm-timeout-seconds: 30
   rates-file: rates.yml
 
+# ---------- Авто-конверт при входе в нацию (опционально) ----------
 auto-convert:
   enabled: false
   require-confirm: true
 
+# ---------- Хуки ----------
 hooks:
   essentials:
     enabled: true
   towny:
     enabled: true
-    auto-create-national: true       # при создании нации создавать валюту автоматически
-    auto-currency:
-      enabled: true                  # авто-генерация ID валюты из имени нации (первые 3 буквы)
-    # nation-currency:              # ЯВНЫЙ МАППИНГ (опционально, если нужны стабильные ID):
-      # Валрадис: VLR               #   nation-name: CURRENCY_ID
-      # Орда: ORD
+    auto-create-national: true   # авто-создание нацвалюты при появлении нации
   luckperms:
     enabled: true
   raskolcore:
     enabled: true
-    register-as-provider: true
+    register-as-provider: true   # регистрировать RaskolVault как Economy-провайдер
   placeholderapi:
     enabled: true
 
+# ---------- Валютный совет (резерв / паритет / налоги) ----------
 reserve:
-  coverage-floor: 0.5
+  coverage-floor: 0.5        # покрытие < 50% = КРИЗИС
   parity-min: 0.5
   parity-max: 2.0
-  tax-max: 0.05
-  withdraw-daily-share: 0.25
-  check-interval-minutes: 60
+  tax-max: 0.05              # максимум налога нации (5%)
+  withdraw-daily-share: 0.25 # лимит вывода из резерва в сутки (25%)
+  check-interval-minutes: 60 # проверка покрытия / кризис-broadcast
+  seigniorage: 0.02          # сеньораж при минте (сжигается)
   file: nations.yml
-  seigniorage: 0.02
   bulletin:
     enabled: true
-    interval-minutes: 10080
+    interval-minutes: 10080  # еженедельный экономический бюллетень
+  # Runtime-ключи (пишутся плагином автоматически, вручную не трогать):
+  # parity:
+  #   вальрадис: 1.00
+  # tax:
+  #   вальрадис: 0.02
 
+# ---------- Безопасность ----------
 safety:
-  rate-limit:
+  rate-limit:                # конверты
     capacity: 5.0
     refill-per-second: 0.5
-  pay-rate-limit:
+  pay-rate-limit:            # переводы
     capacity: 5.0
     refill-per-second: 0.5
+  max-transaction: 1000000000 # анти-overflow кап любой операции
 
+# ---------- Хранилище ----------
 storage:
   sqlite:
     file: data/ledger.sqlite
@@ -71,7 +85,7 @@ storage:
     borrow-timeout-ms: 5000
     checkpoint-interval-minutes: 5
     writer-queue-cap: 10000
-  reconcile-interval-minutes: 30
+  reconcile-interval-minutes: 30   # сверка кэш↔леджер
   yaml-backup:
     enabled: true
     file: data/balances.yml
@@ -80,10 +94,58 @@ storage:
     time: '04:00'
     keep-days: 7
 
+# ---------- Аудит и самопроверка ----------
 audit:
   log-to-file: true
   log-to-console: false
   rotation-mb: 5
+  interval-minutes: 60       # период EconomicInvariantAuditor (selftest)
 
+# ---------- Аукцион (1.2.5-a) ----------
+auction:
+  listing-fee-rate: 0.01     # комиссия листинга (сжигается)
+  listing-fee-min: 0.1
+  sell-fee-rate: 0.03        # комиссия продажи
+  max-duration-hours: 72
+  max-lots-per-player: 10
+  sounds-enabled: true
+  chat-notify: true
+  sniping-window-ms: 30000   # окно анти-снайпинга (ставка в последние 30 сек)
+  sniping-extend-ms: 300000  # продление лота при снайпинге (+5 мин)
+  blacklist-items:           # материалы, запрещённые к продаже
+    - BEDROCK
+    - BARRIER
+    - COMMAND_BLOCK
+    - STRUCTURE_BLOCK
+    - DEBUG_STICK
+
+# ---------- Банк (1.2.5-b) ----------
+bank:
+  defaults:
+    demand-rate: 0.01        # до востребования, годовых
+    rate-7: 0.02             # срочный 7 дней
+    rate-30: 0.035           # срочный 30 дней
+    rate-90: 0.05            # срочный 90 дней
+    loan-rate: 0.10          # базовая ставка кредита, годовых
+    collateral-ratio: 1.5    # залог = 150% суммы кредита
+    reserve-multiplier: 3.0  # maxLoans = резерв нации × 3 (фракционное резервирование)
+    early-penalty: 0.02      # штраф досрочного закрытия вклада (% от тела)
+  accrual-interval-minutes: 60      # начисление процентов по вкладам
+  liquidation-check-minutes: 60     # авто-ликвидация просроченных кредитов
+  appraisal:                 # оценка предметов залога (цена за 1 шт, GLD)
+    DIAMOND: 100.0
+    DIAMOND_BLOCK: 900.0
+    NETHERITE_INGOT: 500.0
+    GOLD_BLOCK: 90.0
+    EMERALD: 60.0
+    ENCHANTED_GOLDEN_APPLE: 250.0
+  # Переопределение параметров для конкретной нации (опционально):
+  # nations:
+  #   вальрадис:
+  #     loan-rate: 0.08
+  #     collateral-ratio: 1.3
+  #     reserve-multiplier: 4.0
+
+# ---------- Сообщения ----------
 messages:
   file: messages.yml
