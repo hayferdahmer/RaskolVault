@@ -4,8 +4,10 @@ package dev.raskol.vault;
 import dev.raskol.vault.api.RaskolVaultAPI;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.audit.EconomicInvariantAuditor;
+import dev.raskol.vault.auction.AuctionBanService;
 import dev.raskol.vault.auction.AuctionReputation;
 import dev.raskol.vault.auction.AuctionService;
+import dev.raskol.vault.auction.AuctionStats;
 import dev.raskol.vault.bond.BondService;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
@@ -61,7 +63,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.5-a.2 fix: TaxService создаётся с wallets (нужен для collect*).
+ * RaskolVault 1.2.5-a.3: аукцион + админка (remove/ban/stats/blacklist).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -92,6 +94,8 @@ public final class RaskolVault extends JavaPlugin {
     private ShareService shareService;
     private AuctionService auctionService;
     private AuctionReputation auctionReputation;
+    private AuctionBanService auctionBans;
+    private AuctionStats auctionStats;
     private EconomicInvariantAuditor auditor;
     private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask, auditTask, auctionTask;
     private ConvertSubcommand convertSubcommand;
@@ -170,13 +174,15 @@ public final class RaskolVault extends JavaPlugin {
         exchange = new ExchangeService(this, wallets, currencies, rates);
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
         escrowService = new EscrowService(this, wallets, ledger, currencies);
-        // FIX: передаём wallets (нужен для collect*)
         taxService = new TaxService(this, wallets);
+        taxService.load();
         bondService = new BondService(this, wallets);
         tradePolicy = new TradePolicyService(this);
         shareService = new ShareService(this, wallets, reserveBank);
         auctionReputation = new AuctionReputation(this);
-        auctionService = new AuctionService(this, wallets, reserveBank, auctionReputation);
+        auctionBans = new AuctionBanService(this);
+        auctionStats = new AuctionStats(this);
+        auctionService = new AuctionService(this, wallets, reserveBank, auctionReputation, auctionBans, auctionStats);
         auditor = new EconomicInvariantAuditor(this);
 
         luckPermsHook = new LuckPermsHook(this);
@@ -288,7 +294,7 @@ public final class RaskolVault extends JavaPlugin {
         PluginCommand command = getCommand("rv");
         if (command != null) { command.setExecutor(executor); command.setTabCompleter(executor); }
 
-        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.5-a.2 fix)");
+        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.5-a.3 auction admin)");
     }
 
     @Override
@@ -308,6 +314,8 @@ public final class RaskolVault extends JavaPlugin {
         if (shareService != null) shareService.save();
         if (auctionService != null) auctionService.save();
         if (auctionReputation != null) auctionReputation.save();
+        if (auctionBans != null) auctionBans.save();
+        if (auctionStats != null) auctionStats.save();
         if (backups != null) backups.stop();
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) saveBalancesBackup();
         if (writer != null) writer.close(10000L);
@@ -362,6 +370,8 @@ public final class RaskolVault extends JavaPlugin {
     public ShareService getShareService() { return shareService; }
     public AuctionService getAuctionService() { return auctionService; }
     public AuctionReputation getAuctionReputation() { return auctionReputation; }
+    public AuctionBanService getAuctionBans() { return auctionBans; }
+    public AuctionStats getAuctionStats() { return auctionStats; }
     public EconomicInvariantAuditor getAuditor() { return auditor; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public SparkHook getSparkHook() { return sparkHook; }
