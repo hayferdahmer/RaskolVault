@@ -61,7 +61,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.5-a.2: аукцион с мультивалютностью, налогом нации, sniping, репутацией.
+ * RaskolVault 1.2.5-a.2 fix: TaxService создаётся с wallets (нужен для collect*).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -170,8 +170,8 @@ public final class RaskolVault extends JavaPlugin {
         exchange = new ExchangeService(this, wallets, currencies, rates);
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
         escrowService = new EscrowService(this, wallets, ledger, currencies);
-        taxService = new TaxService(this, null);
-        taxService.load();
+        // FIX: передаём wallets (нужен для collect*)
+        taxService = new TaxService(this, wallets);
         bondService = new BondService(this, wallets);
         tradePolicy = new TradePolicyService(this);
         shareService = new ShareService(this, wallets, reserveBank);
@@ -288,7 +288,7 @@ public final class RaskolVault extends JavaPlugin {
         PluginCommand command = getCommand("rv");
         if (command != null) { command.setExecutor(executor); command.setTabCompleter(executor); }
 
-        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.5-a.2 auction++)");
+        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.5-a.2 fix)");
     }
 
     @Override
