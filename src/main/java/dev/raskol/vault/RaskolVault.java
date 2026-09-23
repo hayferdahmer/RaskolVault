@@ -59,10 +59,6 @@ import java.sql.SQLException;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * RaskolVault 1.2.5-a: Аукцион (лоты, ставки, buyout, комиссии, GUI).
- * Банковская система — в следующем батче 1.2.5-b.
- */
 public final class RaskolVault extends JavaPlugin {
 
     private boolean corePresent, essentialsPresent, townyPresent, luckPermsPresent, placeholderPresent;
@@ -274,7 +270,6 @@ public final class RaskolVault extends JavaPlugin {
             }, period, period);
         }
 
-        // 1.2.5: периодика аукциона (проверка просроченных лотов) — каждую минуту
         auctionTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
             int expired = auctionService.expireAll();
             if (expired > 0 && getConfig().getBoolean("general.debug", false))
