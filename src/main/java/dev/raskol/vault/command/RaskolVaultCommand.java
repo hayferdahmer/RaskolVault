@@ -24,8 +24,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — роутер (1.2.4.2): /rv rates РАБОТАЕТ (для PAPI/плагинов), но СКРЫТ
- * из tab-комплита и /rv help, чтобы не мозолить глаза игрокам.
+ * /rv — роутер (1.2.5-a): + /rv auction (GUI аукциона).
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -60,8 +59,9 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "wallet" -> openWallet(sender);
             case "exchange" -> openExchange(sender, args);
             case "cabinet" -> openCabinet(sender);
+            case "auction" -> openAuction(sender);
             case "guide" -> openGuide(sender);
-            case "rates" -> ratesSubcommand.execute(sender); // рабочий, но скрыт из tab/help
+            case "rates" -> ratesSubcommand.execute(sender);
             case "pay" -> paySubcommand.execute(sender, args);
             case "convert" -> convertSubcommand.execute(sender, args);
             case "confirm" -> confirm(sender);
@@ -87,6 +87,10 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         if (nation == null || !plugin.getTownyHook().isKing(player.getUniqueId(), nation)) { send(sender, "&cТолько король"); return; }
         plugin.getCabinetGui().openHome(player, nation);
     }
+    private void openAuction(CommandSender sender) {
+        if (!(sender instanceof Player player)) { send(sender, "&cАукцион только в игре"); return; }
+        plugin.getAuctionGui().openMarket(player, 0);
+    }
     private void openGuide(CommandSender sender) {
         if (!(sender instanceof Player player)) { send(sender, "&cСправка только в игре"); return; }
         WalletGui.openGuide(plugin, player, 0);
@@ -99,14 +103,14 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     }
 
     private void help(CommandSender sender) {
-        send(sender, "&6=== RaskolVault ===");
-        send(sender, "&f/rv wallet &7— кошелёк (валюты/обмен/курсы/перевод/история)");
+        send(sender, "&6=== RaskolVault 1.2.5 ===");
+        send(sender, "&f/rv wallet &7— кошелёк");
+        send(sender, "&f/rv auction &7— аукцион");
         send(sender, "&f/rv exchange &7— биржа");
-        send(sender, "&f/rv cabinet &7— кабинет государя (короли)");
-        send(sender, "&f/rv guide &7— справка по кошельку");
+        send(sender, "&f/rv cabinet &7— кабинет государя");
+        send(sender, "&f/rv guide &7— справка");
         send(sender, "&f/rv convert <из> <в> <сумма> &7→ &f/rv confirm");
         send(sender, "&f/rv admin … &7— админ-блок");
-        // /rv rates намеренно НЕ показан здесь (скрыт), но команда работает
     }
 
     private String[] prepend(String sub, String[] args) {
@@ -118,9 +122,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            // "rates" намеренно отсутствует в подсказке
             List<String> subs = new ArrayList<>(Arrays.asList(
-                    "wallet", "exchange", "cabinet", "guide", "convert", "confirm", "nation", "admin", "help"));
+                    "wallet", "auction", "exchange", "cabinet", "guide", "convert", "confirm", "nation", "admin", "help"));
             if (!sender.hasPermission("raskolvault.admin")) subs.remove("admin");
             return filter(subs, args[0]);
         }
