@@ -6,6 +6,7 @@ import dev.raskol.vault.auction.AuctionCategory;
 import dev.raskol.vault.auction.AuctionFilter;
 import dev.raskol.vault.auction.AuctionLot;
 import dev.raskol.vault.auction.AuctionService;
+import dev.raskol.vault.api.currency.Currency;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -31,8 +32,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * GUI аукциона (1.2.5-a.1 fix): категории 0–7 без коллизий, static c(),
- * валидные Material (WHITE_BANNER, SPYGLASS), уникальные case-метки.
+ * GUI аукциона (1.2.5-a.2): мультивалютность (выбор при создании, отображение в лотах).
  */
 public final class AuctionGui implements Listener {
 
@@ -47,6 +47,7 @@ public final class AuctionGui implements Listener {
         double startPrice = 0;
         double buyoutPrice = 0;
         int durationHours = 24;
+        String currencyId = "GLD";
     }
 
     public static final class MarketHolder implements InventoryHolder {
@@ -93,6 +94,10 @@ public final class AuctionGui implements Listener {
         private Inventory inv;
         @Override public Inventory getInventory() { return inv; }
     }
+    public static final class CreateCurrencyHolder implements InventoryHolder {
+        private Inventory inv;
+        @Override public Inventory getInventory() { return inv; }
+    }
     public static final class CreateConfirmHolder implements InventoryHolder {
         private Inventory inv;
         @Override public Inventory getInventory() { return inv; }
@@ -106,7 +111,6 @@ public final class AuctionGui implements Listener {
         this.auctions = auctions;
     }
 
-    // FIX 1: static — вызывается из static item(...)
     private static String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
     private void msg(Player p, String raw) { p.sendMessage(c(plugin.getMessages().prefix() + raw)); }
 
@@ -155,7 +159,6 @@ public final class AuctionGui implements Listener {
         h.inv = inv;
         frame(inv);
 
-        // Верх: категории 0–7 (FIX layout: без коллизий с меню)
         AuctionCategory[] cats = AuctionCategory.values();
         for (int i = 0; i < cats.length && i < 8; i++) {
             AuctionCategory cat = cats[i];
@@ -181,12 +184,15 @@ public final class AuctionGui implements Listener {
                 List<String> lore = meta.getLore() == null ? new ArrayList<>() : new ArrayList<>(meta.getLore());
                 lore.add("");
                 lore.add(c("&7Продавец: &f" + lot.sellerName()));
+                int rep = auctions.getReputation().getSuccessCount(lot.seller());
+                if (rep > 0) lore.add(c("&7Репутация: &a★ " + rep + " сделок"));
+                lore.add(c("&7Валюта: &f" + lot.currencyId()));
                 lore.add(c("&7Тип: &f" + formatLotType(lot.type())));
                 lore.add(c("&7Категория: &f" + AuctionCategory.of(lot.item()).displayName()));
                 if (lot.type() != AuctionLot.LotType.AUCTION)
-                    lore.add(c("&7Buyout: &f" + fmt(lot.buyoutPrice()) + " GLD"));
+                    lore.add(c("&7Buyout: &f" + fmt(lot.buyoutPrice()) + " " + lot.currencyId()));
                 if (lot.type() != AuctionLot.LotType.BUYOUT)
-                    lore.add(c("&7Ставка: &f" + (lot.currentBid() > 0 ? fmt(lot.currentBid()) : fmt(lot.startPrice())) + " GLD"));
+                    lore.add(c("&7Ставка: &f" + (lot.currentBid() > 0 ? fmt(lot.currentBid()) : fmt(lot.startPrice())) + " " + lot.currencyId()));
                 lore.add(c("&7Осталось: &e" + timeLeft(lot.expiresAt())));
                 lore.add("");
                 lore.add(c("&eЛКМ — подробности"));
@@ -199,7 +205,6 @@ public final class AuctionGui implements Listener {
         }
         for (int i = Math.max(0, active.size() - start); i < grid.length; i++) inv.setItem(grid[i], pane());
 
-        // Низ: управление (FIX layout)
         inv.setItem(45, item(Material.COMPARATOR, "&6Фильтры", filterSummary(filter)));
         inv.setItem(46, item(Material.NAME_TAG, "&bПоиск", List.of(
                 "&7По имени предмета или нику продавца",
@@ -255,7 +260,6 @@ public final class AuctionGui implements Listener {
                 List.of("&7Текущий: &f" + (f.searchQuery() == null ? "—" : f.searchQuery()),
                         "&eКлик → ввод в чат")));
         if (plugin.getTownyHook().isAvailable()) {
-            // FIX 3: WHITE_BANNER вместо несуществующего BANNER_PATTERN
             inv.setItem(15, item(Material.WHITE_BANNER, "&6Нация продавца",
                     List.of("&7Текущая: &f" + (f.nation() == null ? "любая" : f.nation()),
                             "&eКлик → ввод названия в чат")));
@@ -301,10 +305,11 @@ public final class AuctionGui implements Listener {
                 meta.setDisplayName(c("&6" + baseName));
                 List<String> lore = meta.getLore() == null ? new ArrayList<>() : new ArrayList<>(meta.getLore());
                 lore.add("");
+                lore.add(c("&7Валюта: &f" + lot.currencyId()));
                 lore.add(c("&7Статус: &f" + lot.status()));
                 if (lot.status() == AuctionLot.Status.ACTIVE) lore.add(c("&7Осталось: &e" + timeLeft(lot.expiresAt())));
                 else if (lot.status() == AuctionLot.Status.SOLD)
-                    lore.add(c("&7Продано: &f" + fmt(lot.finalPrice()) + " GLD → " + lot.buyerName()));
+                    lore.add(c("&7Продано: &f" + fmt(lot.finalPrice()) + " " + lot.currencyId() + " → " + lot.buyerName()));
                 lore.add(c("&eКлик — подробности"));
                 meta.setLore(lore);
                 meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ADDITIONAL_TOOLTIP);
@@ -330,7 +335,8 @@ public final class AuctionGui implements Listener {
         for (int i = 0; i < grid.length && i < bids.size(); i++) {
             AuctionLot lot = bids.get(i);
             inv.setItem(grid[i], item(Material.PAPER, "&6" + AuctionFilter.itemDisplayName(lot), List.of(
-                    "&7Моя ставка: &f" + fmt(lot.currentBid()) + " GLD",
+                    "&7Валюта: &f" + lot.currencyId(),
+                    "&7Моя ставка: &f" + fmt(lot.currentBid()) + " " + lot.currencyId(),
                     "&7Осталось: &e" + timeLeft(lot.expiresAt()),
                     "&eКлик — подробности")));
         }
@@ -377,25 +383,27 @@ public final class AuctionGui implements Listener {
         frame(inv);
 
         inv.setItem(4, lot.item().clone());
-        // FIX 4: SPYGLASS вместо выдуманного MAGNIFIER_GLASS_PANE
         inv.setItem(13, item(Material.SPYGLASS, "&6Осмотреть предмет",
                 List.of("&7Все свойства: энчанты, лор, прочность", "&eКлик — осмотр")));
 
         List<String> info = new ArrayList<>();
         info.add("&7Продавец: &f" + lot.sellerName());
+        int rep = auctions.getReputation().getSuccessCount(lot.seller());
+        if (rep > 0) info.add("&7Репутация: &a★ " + rep + " успешных сделок");
+        info.add("&7Валюта: &f" + lot.currencyId());
         info.add("&7Тип: &f" + formatLotType(lot.type()));
         info.add("&7Категория: &f" + AuctionCategory.of(lot.item()).displayName());
         info.add("&7Статус: &f" + lot.status());
-        if (lot.type() != AuctionLot.LotType.AUCTION) info.add("&7Buyout: &f" + fmt(lot.buyoutPrice()) + " GLD");
-        if (lot.type() != AuctionLot.LotType.BUYOUT) info.add("&7Стартовая: &f" + fmt(lot.startPrice()) + " GLD");
+        if (lot.type() != AuctionLot.LotType.AUCTION) info.add("&7Buyout: &f" + fmt(lot.buyoutPrice()) + " " + lot.currencyId());
+        if (lot.type() != AuctionLot.LotType.BUYOUT) info.add("&7Стартовая: &f" + fmt(lot.startPrice()) + " " + lot.currencyId());
         if (lot.type() != AuctionLot.LotType.BUYOUT && lot.currentBid() > 0)
-            info.add("&7Текущая ставка: &f" + fmt(lot.currentBid()) + " GLD");
+            info.add("&7Текущая ставка: &f" + fmt(lot.currentBid()) + " " + lot.currencyId());
         if (lot.currentBidderName() != null) info.add("&7Лидер: &f" + lot.currentBidderName());
         if (lot.status() == AuctionLot.Status.ACTIVE) info.add("&7Осталось: &e" + timeLeft(lot.expiresAt()));
         if (lot.type() != AuctionLot.LotType.BUYOUT && lot.status() == AuctionLot.Status.ACTIVE)
-            info.add("&7Мин. след. ставка: &f" + fmt(lot.minNextBid()) + " GLD");
+            info.add("&7Мин. след. ставка: &f" + fmt(lot.minNextBid()) + " " + lot.currencyId());
         if (lot.status() == AuctionLot.Status.SOLD)
-            info.add("&7Продано: &f" + fmt(lot.finalPrice()) + " GLD → " + lot.buyerName());
+            info.add("&7Продано: &f" + fmt(lot.finalPrice()) + " " + lot.currencyId() + " → " + lot.buyerName());
         inv.setItem(22, item(Material.BOOK, "&6Информация", info));
 
         boolean own = lot.seller().equals(p.getUniqueId());
@@ -403,10 +411,10 @@ public final class AuctionGui implements Listener {
         if (active) {
             if (lot.type() != AuctionLot.LotType.AUCTION && !own)
                 inv.setItem(21, item(Material.EMERALD, "&aКупить сейчас",
-                        List.of("&7Цена: &f" + fmt(lot.buyoutPrice()) + " GLD", "&eКлик — подтвердить")));
+                        List.of("&7Цена: &f" + fmt(lot.buyoutPrice()) + " " + lot.currencyId(), "&eКлик — подтвердить")));
             if (lot.type() != AuctionLot.LotType.BUYOUT && !own)
                 inv.setItem(23, item(Material.GOLD_NUGGET, "&6Сделать ставку",
-                        List.of("&7Мин: &f" + fmt(lot.minNextBid()) + " GLD", "&eКлик → ввод в чат")));
+                        List.of("&7Мин: &f" + fmt(lot.minNextBid()) + " " + lot.currencyId(), "&eКлик → ввод в чат")));
             if (own)
                 inv.setItem(25, item(Material.RED_CONCRETE, "&cОтменить лот",
                         List.of("&7Вернёт предмет и ставку лидеру")));
@@ -417,7 +425,7 @@ public final class AuctionGui implements Listener {
             int shown = Math.min(5, lot.bidHistory().size());
             for (int i = lot.bidHistory().size() - 1; i >= lot.bidHistory().size() - shown; i--) {
                 AuctionLot.BidHistoryEntry e2 = lot.bidHistory().get(i);
-                hist.add("&7- &f" + e2.bidderName() + "&7: &f" + fmt(e2.amount()) + " GLD");
+                hist.add("&7- &f" + e2.bidderName() + "&7: &f" + fmt(e2.amount()) + " " + lot.currencyId());
             }
             inv.setItem(31, item(Material.PAPER, "&6История ставок", hist));
         }
@@ -467,10 +475,11 @@ public final class AuctionGui implements Listener {
         List<String> lotInfo = new ArrayList<>();
         lotInfo.add("&7Продавец: &f" + lot.sellerName());
         lotInfo.add("&7Тип лота: &f" + formatLotType(lot.type()));
+        lotInfo.add("&7Валюта: &f" + lot.currencyId());
         lotInfo.add("&7Категория: &f" + AuctionCategory.of(lot.item()).displayName());
-        if (lot.type() != AuctionLot.LotType.AUCTION) lotInfo.add("&7Buyout: &f" + fmt(lot.buyoutPrice()) + " GLD");
+        if (lot.type() != AuctionLot.LotType.AUCTION) lotInfo.add("&7Buyout: &f" + fmt(lot.buyoutPrice()) + " " + lot.currencyId());
         if (lot.type() != AuctionLot.LotType.BUYOUT && lot.currentBid() > 0)
-            lotInfo.add("&7Ставка: &f" + fmt(lot.currentBid()) + " GLD");
+            lotInfo.add("&7Ставка: &f" + fmt(lot.currentBid()) + " " + lot.currencyId());
         inv.setItem(23, item(Material.PAPER, "&6Информация о лоте", lotInfo));
 
         inv.setItem(40, item(Material.ARROW, "&7◀ К деталям лота", List.of()));
@@ -478,16 +487,16 @@ public final class AuctionGui implements Listener {
         boolean active = lot.status() == AuctionLot.Status.ACTIVE;
         if (active && !own) {
             if (lot.type() != AuctionLot.LotType.AUCTION)
-                inv.setItem(42, item(Material.EMERALD, "&aКупить за &f" + fmt(lot.buyoutPrice()) + " GLD",
+                inv.setItem(42, item(Material.EMERALD, "&aКупить за &f" + fmt(lot.buyoutPrice()) + " " + lot.currencyId(),
                         List.of("&eКлик — подтвердить")));
             else
                 inv.setItem(42, item(Material.GOLD_NUGGET, "&6Сделать ставку",
-                        List.of("&7Мин: &f" + fmt(lot.minNextBid()) + " GLD", "&eКлик → ввод в чат")));
+                        List.of("&7Мин: &f" + fmt(lot.minNextBid()) + " " + lot.currencyId(), "&eКлик → ввод в чат")));
         }
         p.openInventory(inv);
     }
 
-    // ---------- СОЗДАНИЕ ----------
+    // ---------- СОЗДАНИЕ: тип ----------
     public void openCreateType(Player p) {
         ItemStack held = p.getInventory().getItemInMainHand();
         if (held == null || held.getType().isAir()) {
@@ -508,6 +517,23 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
+    // ---------- СОЗДАНИЕ: выбор валюты ----------
+    private void openCreateCurrency(Player p) {
+        CreateCurrencyHolder h = new CreateCurrencyHolder();
+        Inventory inv = Bukkit.createInventory(h, 27, c("&8▌&6 Валюта лота &8▌"));
+        h.inv = inv;
+        List<Currency> all = plugin.getCurrencies().all();
+        int slot = 10;
+        for (Currency cur : all) {
+            if (slot > 16) break;
+            inv.setItem(slot, item(iconOf(cur.id()), "&6" + cur.displayName(),
+                    List.of("&7ID: &f" + cur.id(), "&eКлик — выбрать")));
+            slot += 2;
+        }
+        inv.setItem(22, item(Material.ARROW, "&7Назад", List.of()));
+        p.openInventory(inv);
+    }
+
     private void openCreateConfirm(Player p) {
         CreateWizard w = wizards.get(p.getUniqueId());
         if (w == null) return;
@@ -518,10 +544,11 @@ public final class AuctionGui implements Listener {
         double listingFee = Math.max(0.1D, Math.round(refPrice * 0.01D * 100.0D) / 100.0D);
         List<String> lore = new ArrayList<>();
         lore.add("&7Тип: &f" + formatLotType(w.type));
-        if (w.type != AuctionLot.LotType.BUYOUT) lore.add("&7Стартовая: &f" + fmt(w.startPrice) + " GLD");
-        if (w.type != AuctionLot.LotType.AUCTION) lore.add("&7Buyout: &f" + fmt(w.buyoutPrice) + " GLD");
+        lore.add("&7Валюта: &f" + w.currencyId);
+        if (w.type != AuctionLot.LotType.BUYOUT) lore.add("&7Стартовая: &f" + fmt(w.startPrice) + " " + w.currencyId);
+        if (w.type != AuctionLot.LotType.AUCTION) lore.add("&7Buyout: &f" + fmt(w.buyoutPrice) + " " + w.currencyId);
         lore.add("&7Длительность: &f" + w.durationHours + "ч");
-        lore.add("&7Комиссия листинга: &c-" + fmt(listingFee) + " GLD");
+        lore.add("&7Комиссия листинга: &c-" + fmt(listingFee) + " " + w.currencyId);
         inv.setItem(13, item(Material.BOOK, "&6Сводка", lore));
         inv.setItem(11, item(Material.LIME_CONCRETE, "&a✔ Выставить", List.of()));
         inv.setItem(15, item(Material.RED_CONCRETE, "&cОтмена", List.of()));
@@ -536,7 +563,8 @@ public final class AuctionGui implements Listener {
                 && !(raw instanceof MyBidsHolder) && !(raw instanceof CollectHolder)
                 && !(raw instanceof DetailHolder) && !(raw instanceof InspectHolder)
                 && !(raw instanceof FilterHolder) && !(raw instanceof CategoryHolder)
-                && !(raw instanceof CreateTypeHolder) && !(raw instanceof CreateConfirmHolder)) return;
+                && !(raw instanceof CreateTypeHolder) && !(raw instanceof CreateCurrencyHolder)
+                && !(raw instanceof CreateConfirmHolder)) return;
         e.setCancelled(true);
         if (!(e.getWhoClicked() instanceof Player p)) return;
         int slot = e.getRawSlot();
@@ -665,7 +693,7 @@ public final class AuctionGui implements Listener {
             if (slot == 23 && !own && lot.type() != AuctionLot.LotType.BUYOUT && lot.status() == AuctionLot.Status.ACTIVE) {
                 p.closeInventory();
                 chatField.put(p.getUniqueId(), "bid:" + lot.id());
-                msg(p, "&7Сумма ставки (мин &f" + fmt(lot.minNextBid()) + "&7):");
+                msg(p, "&7Сумма ставки (мин &f" + fmt(lot.minNextBid()) + " " + lot.currencyId() + "&7):");
                 return;
             }
             if (slot == 25 && own && lot.status() == AuctionLot.Status.ACTIVE) {
@@ -690,7 +718,7 @@ public final class AuctionGui implements Listener {
                 } else {
                     p.closeInventory();
                     chatField.put(p.getUniqueId(), "bid:" + lot.id());
-                    msg(p, "&7Сумма ставки (мин &f" + fmt(lot.minNextBid()) + "&7):");
+                    msg(p, "&7Сумма ставки (мин &f" + fmt(lot.minNextBid()) + " " + lot.currencyId() + "&7):");
                 }
             }
             return;
@@ -700,9 +728,39 @@ public final class AuctionGui implements Listener {
             CreateWizard w = wizards.computeIfAbsent(p.getUniqueId(), k -> new CreateWizard());
             w.item = pendingItem.get(p.getUniqueId());
             if (slot == 22) { p.closeInventory(); wizards.remove(p.getUniqueId()); pendingItem.remove(p.getUniqueId()); return; }
-            if (slot == 11) { w.type = AuctionLot.LotType.BUYOUT; p.closeInventory(); chatField.put(p.getUniqueId(), "buyout-price"); msg(p, "&7Цена buyout (GLD):"); }
-            if (slot == 13) { w.type = AuctionLot.LotType.AUCTION; p.closeInventory(); chatField.put(p.getUniqueId(), "auction-start"); msg(p, "&7Стартовая цена (GLD):"); }
-            if (slot == 15) { w.type = AuctionLot.LotType.AUCTION_BUYOUT; p.closeInventory(); chatField.put(p.getUniqueId(), "hybrid-start"); msg(p, "&7Стартовая цена (GLD):"); }
+            if (slot == 11) { w.type = AuctionLot.LotType.BUYOUT; openCreateCurrency(p); return; }
+            if (slot == 13) { w.type = AuctionLot.LotType.AUCTION; openCreateCurrency(p); return; }
+            if (slot == 15) { w.type = AuctionLot.LotType.AUCTION_BUYOUT; openCreateCurrency(p); return; }
+            return;
+        }
+
+        if (raw instanceof CreateCurrencyHolder) {
+            if (slot == 22) { openCreateType(p); return; }
+            CreateWizard w = wizards.get(p.getUniqueId());
+            if (w == null) return;
+            List<Currency> all = plugin.getCurrencies().all();
+            int slot2 = 10;
+            for (Currency cur : all) {
+                if (slot2 > 16) break;
+                if (slot == slot2) {
+                    w.currencyId = cur.id();
+                    if (w.type == AuctionLot.LotType.BUYOUT) {
+                        p.closeInventory();
+                        chatField.put(p.getUniqueId(), "buyout-price");
+                        msg(p, "&7Цена buyout (" + cur.id() + "):");
+                    } else if (w.type == AuctionLot.LotType.AUCTION) {
+                        p.closeInventory();
+                        chatField.put(p.getUniqueId(), "auction-start");
+                        msg(p, "&7Стартовая цена (" + cur.id() + "):");
+                    } else {
+                        p.closeInventory();
+                        chatField.put(p.getUniqueId(), "hybrid-start");
+                        msg(p, "&7Стартовая цена (" + cur.id() + "):");
+                    }
+                    return;
+                }
+                slot2 += 2;
+            }
             return;
         }
 
@@ -710,7 +768,7 @@ public final class AuctionGui implements Listener {
             CreateWizard w = wizards.get(p.getUniqueId());
             if (slot == 15) { p.closeInventory(); wizards.remove(p.getUniqueId()); return; }
             if (slot == 11 && w != null) {
-                AuctionLot lot = auctions.create(p.getUniqueId(), w.item, w.type, w.startPrice, w.buyoutPrice, w.durationHours);
+                AuctionLot lot = auctions.create(p.getUniqueId(), w.item, w.type, w.startPrice, w.buyoutPrice, w.durationHours, w.currencyId);
                 msg(p, lot != null ? "&aЛот &f" + lot.id().substring(0, 8) + " &aвыставлен" : "&cНе удалось (комиссия/лимит)");
                 p.closeInventory();
                 wizards.remove(p.getUniqueId());
@@ -814,7 +872,6 @@ public final class AuctionGui implements Listener {
     @EventHandler
     public void onClose(InventoryCloseEvent e) {}
 
-    // ---------- Хелперы ----------
     private static String formatLotType(AuctionLot.LotType t) {
         return switch (t) {
             case BUYOUT -> "Торговая грамота";
@@ -834,7 +891,6 @@ public final class AuctionGui implements Listener {
         return sb.toString();
     }
 
-    // FIX 5: уникальные case-метки (дубль "looting" удалён)
     private static String formatEnchantName(Enchantment e) {
         String key = e.getKey().getKey();
         return switch (key) {
@@ -883,6 +939,15 @@ public final class AuctionGui implements Listener {
         return switch (level) {
             case 1 -> "I"; case 2 -> "II"; case 3 -> "III";
             case 4 -> "IV"; case 5 -> "V"; default -> String.valueOf(level);
+        };
+    }
+
+    private static Material iconOf(String id) {
+        return switch (id.toUpperCase(Locale.ROOT)) {
+            case "GLD" -> Material.GOLD_INGOT;
+            case "RAS" -> Material.SUNFLOWER;
+            case "VLR" -> Material.GOLDEN_HELMET;
+            default -> Material.GOLD_NUGGET;
         };
     }
 
