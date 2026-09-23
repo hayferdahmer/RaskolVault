@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Лот аукциона (1.2.5).
+ * Лот аукциона (1.2.5-a.2): + currencyId (валюта лота).
  */
 public final class AuctionLot {
 
@@ -24,6 +24,7 @@ public final class AuctionLot {
     private final LotType type;
     private final double startPrice;
     private final double buyoutPrice;
+    private final String currencyId;
     private double currentBid;
     private UUID currentBidder;
     private String currentBidderName;
@@ -35,10 +36,12 @@ public final class AuctionLot {
     private double finalPrice;
 
     public AuctionLot(String id, UUID seller, String sellerName, ItemStack item, LotType type,
-                      double startPrice, double buyoutPrice, long createdAt, long expiresAt) {
+                      double startPrice, double buyoutPrice, String currencyId,
+                      long createdAt, long expiresAt) {
         this.id = id; this.seller = seller; this.sellerName = sellerName;
         this.item = item; this.type = type;
         this.startPrice = startPrice; this.buyoutPrice = buyoutPrice;
+        this.currencyId = currencyId;
         this.createdAt = createdAt; this.expiresAt = expiresAt;
         this.status = Status.ACTIVE;
         this.currentBid = 0.0D;
@@ -51,6 +54,7 @@ public final class AuctionLot {
     public LotType type() { return type; }
     public double startPrice() { return startPrice; }
     public double buyoutPrice() { return buyoutPrice; }
+    public String currencyId() { return currencyId; }
     public double currentBid() { return currentBid; }
     public UUID currentBidder() { return currentBidder; }
     public String currentBidderName() { return currentBidderName; }
@@ -77,6 +81,9 @@ public final class AuctionLot {
     public void markExpired() { this.status = Status.EXPIRED; }
     public void markCancelled() { this.status = Status.CANCELLED; }
     public boolean isExpired(long now) { return now >= expiresAt; }
+
+    /** Продлевает лот на 5 минут (sniping protection). */
+    public void extend(long milliseconds) { this.expiresAt += milliseconds; }
 
     public double minNextBid() {
         double base = currentBid > 0 ? currentBid : startPrice;
