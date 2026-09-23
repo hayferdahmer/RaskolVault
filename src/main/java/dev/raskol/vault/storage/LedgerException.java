@@ -2,10 +2,13 @@
 package dev.raskol.vault.storage;
 
 /**
- * Обёртка SQLException для домена: деньги не должны молча теряться —
- * любая ошибка леджера прерывает операцию громко.
+ * Исключение леджера (1.2.4.1): добавлен конструктор (String) для guardNonNegative.
  */
 public class LedgerException extends RuntimeException {
+
+    public LedgerException(String message) {
+        super(message);
+    }
 
     public LedgerException(String message, Throwable cause) {
         super(message, cause);
