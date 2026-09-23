@@ -27,16 +27,10 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * GUI аукциона (1.2.5).
- * Страницы: Главная (лоты рынка + фильтры) / Мои лоты / Мои ставки / Забрать /
- *           Создание (wizard 5 шагов) / Детали лота.
- */
 public final class AuctionGui implements Listener {
 
-    // Мастер создания: предмет в pendingItem, шаги через chat
     private final Map<UUID, CreateWizard> wizards = new ConcurrentHashMap<>();
-    private final Map<UUID, String> chatField = new ConcurrentHashMap<>(); // field:<lotId>|<nation>|...
+    private final Map<UUID, String> chatField = new ConcurrentHashMap<>();
     private final Map<UUID, ItemStack> pendingItem = new ConcurrentHashMap<>();
 
     private static final class CreateWizard {
@@ -121,7 +115,6 @@ public final class AuctionGui implements Listener {
         for (int i = 45; i < 54; i++) inv.setItem(i, pane());
     }
 
-    // ---------- Главная ----------
     public void openMarket(Player p, int page) {
         MarketHolder h = new MarketHolder(page);
         Inventory inv = Bukkit.createInventory(h, 54, c("&8▌&6 Аукцион · рынок &8▌"));
@@ -161,7 +154,6 @@ public final class AuctionGui implements Listener {
         }
         for (int i = Math.max(0, active.size() - start); i < grid.length; i++) inv.setItem(grid[i], pane());
 
-        // Меню
         inv.setItem(2, item(Material.GOLD_BLOCK, "&aМои лоты", List.of("&7Выставленные мной товары", "&eКлик — открыть")));
         inv.setItem(4, item(Material.ENDER_CHEST, "&6Мои ставки", List.of("&7Лоты где я лидер", "&eКлик — открыть")));
         inv.setItem(6, item(Material.HOPPER, "&bЗабрать", List.of("&7Истёкшие/отменённые предметы", "&eКлик — открыть")));
@@ -173,7 +165,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- Мои лоты ----------
     public void openMyListings(Player p, int page) {
         MyListingsHolder h = new MyListingsHolder(page);
         Inventory inv = Bukkit.createInventory(h, 54, c("&8▌&6 Мои лоты &8▌"));
@@ -215,7 +206,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- Мои ставки ----------
     public void openMyBids(Player p) {
         MyBidsHolder h = new MyBidsHolder();
         Inventory inv = Bukkit.createInventory(h, 54, c("&8▌&6 Мои ставки &8▌"));
@@ -235,7 +225,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- Забрать ----------
     public void openCollect(Player p) {
         CollectHolder h = new CollectHolder();
         Inventory inv = Bukkit.createInventory(h, 54, c("&8▌&6 Забрать предметы &8▌"));
@@ -264,7 +253,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- Детали лота ----------
     public void openDetails(Player p, String lotId) {
         AuctionLot lot = auctions.get(lotId);
         if (lot == null) { msg(p, "&cЛот не найден"); openMarket(p, 0); return; }
@@ -313,7 +301,6 @@ public final class AuctionGui implements Listener {
             }
         }
 
-        // История ставок
         if (!lot.bidHistory().isEmpty()) {
             List<String> hist = new ArrayList<>();
             hist.add("&7Последние ставки:");
@@ -329,7 +316,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- Создание: шаг 1 (тип) ----------
     public void openCreateType(Player p) {
         ItemStack held = p.getInventory().getItemInMainHand();
         if (held == null || held.getType().isAir()) {
@@ -350,7 +336,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- Создание: шаг финальный (подтверждение) ----------
     private void openCreateConfirm(Player p) {
         CreateWizard w = wizards.get(p.getUniqueId());
         if (w == null) return;
@@ -371,7 +356,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- Клики ----------
     @EventHandler
     public void onClick(InventoryClickEvent e) {
         InventoryHolder raw = e.getInventory().getHolder();
@@ -561,9 +545,7 @@ public final class AuctionGui implements Listener {
     }
 
     @EventHandler
-    public void onClose(InventoryCloseEvent e) {
-        // pendingItem очищается только при успехе/отмене, не при закрытии GUI
-    }
+    public void onClose(InventoryCloseEvent e) {}
 
     private static double parse(String s) {
         try { return Double.parseDouble(s.replace(",", ".")); } catch (NumberFormatException e) { return -1; }
