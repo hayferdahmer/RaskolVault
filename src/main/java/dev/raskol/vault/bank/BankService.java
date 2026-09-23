@@ -17,22 +17,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Банк нации (1.2.5-b): вклады, кредиты под залог, фракционное резервирование,
+ * Банк нации (1.2.5-b fix): вклады, кредиты под залог, фракционное резервирование,
  * спред как прибыль нации, кредитная история, ликвидация.
- *
- * Модель ликвидности (per nation+currency):
- *   pool          = деньги, доступные для выдачи кредитов (фондируются вкладами + аллокацией казны)
- *   interestReserve = деньги для выплаты процентов вкладчикам (фондируются процентным доходом по кредитам + казной)
- *   maxLoans      = (резерв нации в GLD) × reserveMultiplier  (фракционное резервирование)
- *
- * Хранение: data/bank-accounts.yml, data/bank-loans.yml, data/bank-pools.yml.
+ * FIX: дни срока вычисляются локальным switch по enum Term (не term.termDays()).
  */
 public final class BankService {
 
@@ -50,10 +43,8 @@ public final class BankService {
     private final File poolsFile;
     private final Map<String, BankAccount> accounts = new ConcurrentHashMap<>();
     private final Map<String, BankLoan> loans = new ConcurrentHashMap<>();
-    // pool/interestReserve: key = nation + "|" + currency
     private final Map<String, Double> pools = new ConcurrentHashMap<>();
     private final Map<String, Double> interestReserves = new ConcurrentHashMap<>();
-    // кредитная история: repaid / defaulted counts
     private final Map<UUID, Integer> repaidCount = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> defaultedCount = new ConcurrentHashMap<>();
 
@@ -67,20 +58,27 @@ public final class BankService {
         load();
     }
 
+    /** FIX: дни срока из enum Term локальным switch. */
+    private static int termDaysOf(BankAccount.Term term) {
+        return switch (term) {
+            case DEMAND -> 0;
+            case TERM_7 -> 7;
+            case TERM_30 -> 30;
+            case TERM_90 -> 90;
+        };
+    }
+
     // ---------- параметры нации ----------
     public BankParams params(String nation) {
         String n = nation == null ? "" : nation.toLowerCase();
-        double def = 0.01D, d7 = 0.02D, d30 = 0.035D, d90 = 0.05D;
-        double loan = 0.10D, coll = 1.5D, mult = 3.0D, early = 0.02D;
-        def = plugin.getConfig().getDouble("bank.defaults.demand-rate", def);
-        d7 = plugin.getConfig().getDouble("bank.defaults.rate-7", d7);
-        d30 = plugin.getConfig().getDouble("bank.defaults.rate-30", d30);
-        d90 = plugin.getConfig().getDouble("bank.defaults.rate-90", d90);
-        loan = plugin.getConfig().getDouble("bank.defaults.loan-rate", loan);
-        coll = plugin.getConfig().getDouble("bank.defaults.collateral-ratio", coll);
-        mult = plugin.getConfig().getDouble("bank.defaults.reserve-multiplier", mult);
-        early = plugin.getConfig().getDouble("bank.defaults.early-penalty", early);
-        // per-nation overrides
+        double def = plugin.getConfig().getDouble("bank.defaults.demand-rate", 0.01D);
+        double d7 = plugin.getConfig().getDouble("bank.defaults.rate-7", 0.02D);
+        double d30 = plugin.getConfig().getDouble("bank.defaults.rate-30", 0.035D);
+        double d90 = plugin.getConfig().getDouble("bank.defaults.rate-90", 0.05D);
+        double loan = plugin.getConfig().getDouble("bank.defaults.loan-rate", 0.10D);
+        double coll = plugin.getConfig().getDouble("bank.defaults.collateral-ratio", 1.5D);
+        double mult = plugin.getConfig().getDouble("bank.defaults.reserve-multiplier", 3.0D);
+        double early = plugin.getConfig().getDouble("bank.defaults.early-penalty", 0.02D);
         def = plugin.getConfig().getDouble("bank.nations." + n + ".demand-rate", def);
         d7 = plugin.getConfig().getDouble("bank.nations." + n + ".rate-7", d7);
         d30 = plugin.getConfig().getDouble("bank.nations." + n + ".rate-30", d30);
@@ -105,7 +103,6 @@ public final class BankService {
     private void addPool(String nation, String currency, double d) { pools.merge(poolKey(nation, currency), d, Double::sum); savePools(); }
     private void addInterestReserve(String nation, String currency, double d) { interestReserves.merge(poolKey(nation, currency), d, Double::sum); savePools(); }
 
-    /** Максимум суммарно выданных кредитов = резерв нации (GLD) × reserveMultiplier. */
     public double maxLoans(String nation) {
         return bank.reserveOf(nation) * params(nation).reserveMultiplier();
     }
@@ -128,7 +125,6 @@ public final class BankService {
         return repaidCount.getOrDefault(player, 0) - 2 * defaultedCount.getOrDefault(player, 0);
     }
     private double creditRateBonus(UUID player) {
-        // хороший скор снижает ставку, плохой повышает
         int score = creditScore(player);
         return -Math.min(0.02D, score * 0.002D) + Math.max(0.0D, -score * 0.005D);
     }
@@ -147,7 +143,9 @@ public final class BankService {
         };
         if (!wallets.withdraw(owner, currency, amount, TransactionType.PAY, "bank:deposit")) return "не удалось списать";
         long now = System.currentTimeMillis();
-        long matures = term == BankAccount.Term.DEMAND ? 0L : now + term.termDays() * 86_400_000L;
+        // FIX: дни срока через локальный switch, а не term.termDays()
+        int days = termDaysOf(term);
+        long matures = (term == BankAccount.Term.DEMAND) ? 0L : now + days * 86_400_000L;
         String id = UUID.randomUUID().toString();
         accounts.put(id, new BankAccount(id, owner, ownerName, nation, currency, amount, term, rate, now, matures));
         addPool(nation, currency, amount);
@@ -155,7 +153,6 @@ public final class BankService {
         return null;
     }
 
-    /** Закрыть вклад: в срок → тело+проценты; досрочно (срочный) → тело − штраф, проценты сгорают. */
     public String closeDeposit(UUID owner, String accountId) {
         BankAccount a = accounts.get(accountId);
         if (a == null || !a.owner().equals(owner)) return "вклад не найден";
@@ -164,8 +161,6 @@ public final class BankService {
         a.accrue(now, params(a.nation()).demandRate());
         double payout;
         if (a.isDemand() || a.isMatured(now)) {
-            payout = a.principal() + a.accrued();
-            // проценты платим из interestReserve, тело из pool
             addPool(a.nation(), a.currencyId(), -a.principal());
             double ir = interestReserve(a.nation(), a.currencyId());
             double interest = Math.min(a.accrued(), Math.max(0, ir));
@@ -191,10 +186,8 @@ public final class BankService {
         if (!(amount > 0.0D)) return "сумма должна быть > 0";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
         BankParams p = params(nation);
-        // фракционное резервирование
         if (totalOutstandingLoans(nation) + amount > maxLoans(nation)) return "банк исчерпал лимит выдачи (резерв)";
         if (pool(nation, currency) < amount) return "недостаточно ликвидности в пуле";
-        // залог
         double required = amount * p.collateralRatio();
         double collateralValue = 0;
         String itemB64 = null;
@@ -208,7 +201,6 @@ public final class BankService {
             collateralValue = appraisal(collateralItem);
             if (collateralValue < required) return "оценка залога " + fmt(collateralValue) + " < требуемых " + fmt(required);
             itemB64 = serialize(collateralItem);
-            // предмет изымается у игрока (вызов передаёт уже снятый стек)
         }
         double rate = p.loanRate() + creditRateBonus(borrower);
         long now = System.currentTimeMillis();
@@ -216,7 +208,7 @@ public final class BankService {
         String id = UUID.randomUUID().toString();
         loans.put(id, new BankLoan(id, borrower, borrowerName, nation, amount, currency, rate, termDays,
                 now, due, collateralType, collateralCurrency, itemB64, collateralValue, creditScore(borrower)));
-        addPool(nation, currency, -amount); // выдача из пула
+        addPool(nation, currency, -amount);
         wallets.deposit(borrower, currency, amount, TransactionType.PAY, "bank:loan:disburse");
         saveLoans();
         return null;
@@ -232,7 +224,6 @@ public final class BankService {
         if (!(pay > 0.0D)) return "нечего погашать";
         if (!wallets.has(borrower, l.currencyId(), pay)) return "недостаточно средств";
         if (!wallets.withdraw(borrower, l.currencyId(), pay, TransactionType.PAY, "bank:loan:repay")) return "не удалось списать";
-        // разбивка: сначала проценты → interestReserve, остальное тело → pool
         double interestPart = Math.min(pay, l.accruedInterest(now));
         double principalPart = pay - interestPart;
         addInterestReserve(l.nation(), l.currencyId(), interestPart);
@@ -247,7 +238,6 @@ public final class BankService {
         return null;
     }
 
-    /** Ликвидация залога (авто при просрочке или админом). */
     public String liquidate(String loanId) {
         BankLoan l = loans.get(loanId);
         if (l == null) return "кредит не найден";
@@ -255,19 +245,16 @@ public final class BankService {
         long now = System.currentTimeMillis();
         double out = l.outstanding(now);
         double proceeds = l.collateralValue();
-        // залог уходит в банк: покрывает долг, остаток в interestReserve/pool
         double toInterest = Math.min(out, proceeds);
         double remainder = Math.max(0, proceeds - toInterest);
         addInterestReserve(l.nation(), l.currencyId(), toInterest);
         addPool(l.nation(), l.currencyId(), remainder);
         l.markLiquidated();
         defaultedCount.merge(l.borrower(), 1, Integer::sum);
-        // предмет залога уничтожается (уже в base64, не возвращаем)
         saveLoans();
         return null;
     }
 
-    /** Авто-ликвидация просроченных (вызывается таской). */
     public int autoLiquidateOverdue() {
         long now = System.currentTimeMillis();
         int count = 0;
@@ -280,7 +267,6 @@ public final class BankService {
         return count;
     }
 
-    /** Начислить проценты по всем активным вкладам. */
     public void accrueAll() {
         long now = System.currentTimeMillis();
         for (BankAccount a : accounts.values()) {
@@ -294,7 +280,6 @@ public final class BankService {
             wallets.deposit(l.borrower(), l.collateralCurrency(), l.collateralValue(),
                     TransactionType.PAY, "bank:collateral:release");
         }
-        // ITEM: возвращаем предмет, если есть место
         if (l.collateralType() == BankLoan.CollateralType.ITEM && l.collateralItemBase64() != null) {
             ItemStack item = deserialize(l.collateralItemBase64());
             if (item != null) {
@@ -307,7 +292,6 @@ public final class BankService {
         }
     }
 
-    /** Оценка предмета залога по конфигу bank.appraisal.<MATERIAL>. */
     public double appraisal(ItemStack item) {
         if (item == null) return 0.0D;
         double unit = plugin.getConfig().getDouble("bank.appraisal." + item.getType().name(), 0.0D);
