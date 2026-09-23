@@ -6,8 +6,10 @@ import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.wallet.WalletService;
 import org.bukkit.Bukkit;
+import org.bukkit.Sound;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
@@ -24,7 +26,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Аукцион (1.2.5, FIX: обращения к полям через геттеры).
+ * Аукцион (1.2.5-a.1): + фильтры, категории, звуковые уведомления, чат-оповещения.
  */
 public final class AuctionService {
 
@@ -48,6 +50,8 @@ public final class AuctionService {
     private double sellFeeRate() { return plugin.getConfig().getDouble("auction.sell-fee-rate", 0.03D); }
     private int maxDurationHours() { return plugin.getConfig().getInt("auction.max-duration-hours", 72); }
     private int maxLotsPerPlayer() { return plugin.getConfig().getInt("auction.max-lots-per-player", 10); }
+    private boolean soundsEnabled() { return plugin.getConfig().getBoolean("auction.sounds-enabled", true); }
+    private boolean notifyEnabled() { return plugin.getConfig().getBoolean("auction.chat-notify", true); }
 
     public void load() {
         if (!lotsFile.getParentFile().exists()) lotsFile.getParentFile().mkdirs();
@@ -72,26 +76,18 @@ public final class AuctionService {
                 ItemStack item = items.get(id);
                 if (item == null) continue;
                 AuctionLot lot = new AuctionLot(
-                        id,
-                        UUID.fromString(s.getString("seller")),
+                        id, UUID.fromString(s.getString("seller")),
                         s.getString("sellerName", ""),
-                        item,
-                        type,
-                        s.getDouble("startPrice", 0),
-                        s.getDouble("buyoutPrice", 0),
-                        s.getLong("createdAt", 0L),
-                        s.getLong("expiresAt", 0L));
+                        item, type,
+                        s.getDouble("startPrice", 0), s.getDouble("buyoutPrice", 0),
+                        s.getLong("createdAt", 0L), s.getLong("expiresAt", 0L));
                 lot.placeBid(
                         s.getString("currentBidder", "").isEmpty() ? null : UUID.fromString(s.getString("currentBidder")),
                         s.getString("currentBidderName", ""),
                         s.getDouble("currentBid", 0));
-                if (status == AuctionLot.Status.SOLD) {
-                    lot.markSold(null, s.getString("buyerName", ""), s.getDouble("finalPrice", 0));
-                } else if (status == AuctionLot.Status.EXPIRED) {
-                    lot.markExpired();
-                } else if (status == AuctionLot.Status.CANCELLED) {
-                    lot.markCancelled();
-                }
+                if (status == AuctionLot.Status.SOLD) lot.markSold(null, s.getString("buyerName", ""), s.getDouble("finalPrice", 0));
+                else if (status == AuctionLot.Status.EXPIRED) lot.markExpired();
+                else if (status == AuctionLot.Status.CANCELLED) lot.markCancelled();
                 ConfigurationSection hist = s.getConfigurationSection("history");
                 if (hist != null) {
                     for (String hId : hist.getKeys(false)) {
@@ -179,6 +175,7 @@ public final class AuctionService {
         lots.put(id, lot);
         items.put(id, item.clone());
         save();
+        playSound(seller, Sound.BLOCK_ANVIL_USE, 1.0f, 1.0f);
         return lot;
     }
 
@@ -201,12 +198,16 @@ public final class AuctionService {
         if (prevBidder != null && !prevBidder.equals(bidder)) {
             if (!wallets.deposit(prevBidder, glb, lot.currentBid(), TransactionType.PAY, "auction:bid:return:" + lotId))
                 return "системная ошибка возврата ставки";
+            notify(prevBidder, "&7Ваша ставка на лот &6" + lotId.substring(0, 8) + " &7была перебита");
         }
         if (!wallets.withdraw(bidder, glb, amount, TransactionType.PAY, "auction:bid:" + lotId))
             return "не удалось списать ставку";
 
         lot.placeBid(bidder, nameOf(bidder), amount);
         save();
+        playSound(bidder, Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.2f);
+        notify(lot.seller(), "&6Игрок &f" + nameOf(bidder) + " &6поставил &f" + fmt(amount)
+                + " GLD &6на ваш лот &f" + lotId.substring(0, 8));
         return null;
     }
 
@@ -226,6 +227,8 @@ public final class AuctionService {
         if (lot.currentBidder() != null) {
             wallets.deposit(lot.currentBidder(), glb, lot.currentBid(),
                     TransactionType.PAY, "auction:buyout:return:" + lotId);
+            notify(lot.currentBidder(), "&7Ваша ставка на лот &6" + lotId.substring(0, 8)
+                    + " &7возвращена (лот выкуплен)");
         }
 
         if (!giveItem(buyer, lot.item())) {
@@ -239,6 +242,13 @@ public final class AuctionService {
         lot.markSold(buyer, nameOf(buyer), price);
         items.remove(lotId);
         save();
+
+        playSound(buyer, Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+        playSound(lot.seller(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+        notify(buyer, "&aВы купили &6" + AuctionFilter.itemDisplayName(lot)
+                + " &aза &f" + fmt(price) + " GLD");
+        notify(lot.seller(), "&aВаш лот &f" + lotId.substring(0, 8) + " &aпродан игроку &f"
+                + nameOf(buyer) + " &aза &f" + fmt(net) + " GLD &7(после комиссии)");
         return null;
     }
 
@@ -252,9 +262,12 @@ public final class AuctionService {
             String glb = plugin.getCurrencies().globalId();
             wallets.deposit(lot.currentBidder(), glb, lot.currentBid(),
                     TransactionType.PAY, "auction:cancel:return:" + lotId);
+            notify(lot.currentBidder(), "&7Ваша ставка на лот &6" + lotId.substring(0, 8)
+                    + " &7возвращена (лот отменён продавцом)");
         }
         lot.markCancelled();
         save();
+        playSound(seller, Sound.BLOCK_ANVIL_LAND, 1.0f, 0.8f);
         return null;
     }
 
@@ -288,23 +301,39 @@ public final class AuctionService {
                     wallets.deposit(lot.seller(), glb, net, TransactionType.PAY, "auction:won:" + lot.id());
                     lot.markSold(lot.currentBidder(), lot.currentBidderName(), price);
                     items.remove(lot.id());
+                    notify(lot.currentBidder(), "&aВы выиграли аукцион &f" + lot.id().substring(0, 8)
+                            + " &aза &f" + fmt(price) + " GLD");
+                    notify(lot.seller(), "&aВаш лот &f" + lot.id().substring(0, 8)
+                            + " &aпродан на аукционе игроку &f" + lot.currentBidderName());
                 } else {
                     wallets.deposit(lot.currentBidder(), glb, price, TransactionType.PAY, "auction:expired:return:" + lot.id());
                     lot.markExpired();
+                    notify(lot.currentBidder(), "&7Аукцион на лот &6" + lot.id().substring(0, 8)
+                            + " &7истёк, ставка возвращена (ваш инвентарь был полон)");
                 }
             } else {
                 lot.markExpired();
+                notify(lot.seller(), "&7Лот &6" + lot.id().substring(0, 8)
+                        + " &7истёк без продажи. Заберите предмет через «Забрать»");
             }
+            playSound(lot.seller(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 0.7f);
         }
         if (count > 0) save();
         return count;
     }
 
-    public List<AuctionLot> listActive() {
+    /** Список активных лотов без фильтра. */
+    public List<AuctionLot> listActive() { return listActive(AuctionFilter.empty()); }
+
+    /** Список активных лотов с учётом фильтра. */
+    public List<AuctionLot> listActive(AuctionFilter filter) {
         List<AuctionLot> out = new ArrayList<>();
         long now = System.currentTimeMillis();
-        for (AuctionLot l : lots.values())
-            if (l.status() == AuctionLot.Status.ACTIVE && !l.isExpired(now)) out.add(l);
+        for (AuctionLot l : lots.values()) {
+            if (l.status() != AuctionLot.Status.ACTIVE || l.isExpired(now)) continue;
+            if (filter != null && !filter.matches(l, plugin)) continue;
+            out.add(l);
+        }
         out.sort((a, b) -> Long.compare(a.expiresAt(), b.expiresAt()));
         return out;
     }
@@ -335,7 +364,7 @@ public final class AuctionService {
     public AuctionLot get(String id) { return lots.get(id); }
 
     private boolean giveItem(UUID player, ItemStack item) {
-        org.bukkit.entity.Player p = Bukkit.getPlayer(player);
+        Player p = Bukkit.getPlayer(player);
         if (p == null) return false;
         HashMap<Integer, ItemStack> overflow = p.getInventory().addItem(item.clone());
         if (overflow.isEmpty()) return true;
@@ -347,6 +376,21 @@ public final class AuctionService {
         org.bukkit.OfflinePlayer op = Bukkit.getOfflinePlayer(uuid);
         String n = op.getName();
         return n == null ? uuid.toString().substring(0, 8) : n;
+    }
+
+    private void playSound(UUID player, Sound sound, float volume, float pitch) {
+        if (!soundsEnabled()) return;
+        Player p = Bukkit.getPlayer(player);
+        if (p != null) p.playSound(p.getLocation(), sound, volume, pitch);
+    }
+
+    private void notify(UUID player, String message) {
+        if (!notifyEnabled()) return;
+        Player p = Bukkit.getPlayer(player);
+        if (p != null) {
+            String prefix = plugin.getMessages().prefix();
+            p.sendMessage(org.bukkit.ChatColor.translateAlternateColorCodes('&', prefix + message));
+        }
     }
 
     private static String serialize(ItemStack item) {
