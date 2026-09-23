@@ -23,9 +23,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * /rv — роутер (1.2.5-a): + /rv auction (GUI аукциона).
- */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
     private final RaskolVault plugin;
