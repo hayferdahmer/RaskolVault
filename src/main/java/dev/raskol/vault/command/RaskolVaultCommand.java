@@ -7,6 +7,7 @@ import dev.raskol.vault.command.sub.AdminSubcommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.command.sub.ExchangeSubcommand;
 import dev.raskol.vault.command.sub.PaySubcommand;
+import dev.raskol.vault.command.sub.RatesSubcommand;
 import dev.raskol.vault.gui.WalletGui;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
 import org.bukkit.ChatColor;
@@ -23,7 +24,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /rv — роутер (1.2.1-fix): /rv rates УБРАН (курсы только в кошельке).
+ * /rv — роутер (1.2.4.2): /rv rates РАБОТАЕТ (для PAPI/плагинов), но СКРЫТ
+ * из tab-комплита и /rv help, чтобы не мозолить глаза игрокам.
  */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
@@ -31,6 +33,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     private final PaySubcommand paySubcommand;
     private final ConvertSubcommand convertSubcommand;
     private final ExchangeSubcommand exchangeSubcommand;
+    private final RatesSubcommand ratesSubcommand;
     private final AdminSubcommand adminSubcommand;
 
     public RaskolVaultCommand(RaskolVault plugin, ConvertSubcommand convertSubcommand) {
@@ -40,6 +43,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         this.exchangeSubcommand = new ExchangeSubcommand(plugin,
                 new dev.raskol.vault.exchange.ExchangeOrderService(plugin, plugin.getLedger(),
                         plugin.getWallets(), plugin.getCurrencies(), plugin.getEscrow()));
+        this.ratesSubcommand = new RatesSubcommand(plugin);
         this.adminSubcommand = new AdminSubcommand(plugin);
     }
 
@@ -57,6 +61,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "exchange" -> openExchange(sender, args);
             case "cabinet" -> openCabinet(sender);
             case "guide" -> openGuide(sender);
+            case "rates" -> ratesSubcommand.execute(sender); // рабочий, но скрыт из tab/help
             case "pay" -> paySubcommand.execute(sender, args);
             case "convert" -> convertSubcommand.execute(sender, args);
             case "confirm" -> confirm(sender);
@@ -101,6 +106,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         send(sender, "&f/rv guide &7— справка по кошельку");
         send(sender, "&f/rv convert <из> <в> <сумма> &7→ &f/rv confirm");
         send(sender, "&f/rv admin … &7— админ-блок");
+        // /rv rates намеренно НЕ показан здесь (скрыт), но команда работает
     }
 
     private String[] prepend(String sub, String[] args) {
@@ -112,6 +118,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
+            // "rates" намеренно отсутствует в подсказке
             List<String> subs = new ArrayList<>(Arrays.asList(
                     "wallet", "exchange", "cabinet", "guide", "convert", "confirm", "nation", "admin", "help"));
             if (!sender.hasPermission("raskolvault.admin")) subs.remove("admin");
