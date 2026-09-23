@@ -3,21 +3,19 @@ package dev.raskol.vault.command.sub;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.util.Formatter;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.UUID;
 
 /**
- * /rv admin (1.2.4.1): + selftest (EconomicInvariantAuditor).
+ * /rv admin (1.2.4.1): + selftest. FIX: удалён случайный внутренний enum CurrencyType,
+ * используется dev.raskol.vault.api.currency.CurrencyType.
  */
 public final class AdminSubcommand {
 
@@ -116,6 +114,7 @@ public final class AdminSubcommand {
     private void mintBurn(CommandSender sender, String[] args, boolean mint) {
         if (args.length < 4) { send(sender, "&f/rv admin " + (mint ? "mint" : "burn") + " <валюта> <сумма>"); return; }
         Currency cur = plugin.getCurrencies().get(args[2].toUpperCase(Locale.ROOT)).orElse(null);
+        // FIX: используем API CurrencyType (внутренний enum удалён)
         if (cur == null || cur.type() != CurrencyType.NATIONAL) { send(sender, "&cТолько национальные"); return; }
         double amount;
         try { amount = Double.parseDouble(args[3]); } catch (NumberFormatException e) { send(sender, "&cСумма"); return; }
@@ -155,6 +154,4 @@ public final class AdminSubcommand {
     private int parseInt(String s, int def) {
         try { return Integer.parseInt(s); } catch (NumberFormatException e) { return def; }
     }
-
-    private enum CurrencyType { NATIONAL }
 }
