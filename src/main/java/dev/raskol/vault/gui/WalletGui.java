@@ -22,11 +22,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Кошелёк как банковское приложение (1.2.1-fix).
- * Секции: ВАЛЮТЫ (глобальная сверху, национальные ниже) / ОБМЕН / КУРСЫ /
- * ПЕРЕВОД (игроки ≤6 блоков) / ИСТОРИЯ / СПРАВКА.
- * Все кнопки в строгой сетке, у каждой lore-описание, «Назад» на каждой странице.
- * Кабинет и команда /rv rates из кошелька убраны.
+ * Кошелёк как банковское приложение (1.2.4.2).
+ * FIX: исправлены скобки в заголовке главной страницы (compile error).
  */
 public final class WalletGui {
 
@@ -34,8 +31,8 @@ public final class WalletGui {
 
     public static final class Holder implements InventoryHolder {
         public final String page;
-        public final String fromId;   // для конверта: исходная валюта
-        public final String toId;     // для конверта: целевая валюта; для перевода: ник цели
+        public final String fromId;
+        public final String toId;
         public final double amount;
         public final int pageIndex;
         Holder(String page, String fromId, String toId, double amount, int pageIndex) {
@@ -58,7 +55,6 @@ public final class WalletGui {
             List<String> l = new ArrayList<>();
             for (String x : lore) l.add(c(x));
             meta.setLore(l);
-            // Скрываем ванильные атрибуты/подсказки (убирает «+2 Броня / Когда надето»)
             meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS,
                     ItemFlag.HIDE_ADDITIONAL_TOOLTIP, ItemFlag.HIDE_DYE);
             s.setItemMeta(meta);
@@ -97,12 +93,12 @@ public final class WalletGui {
         frame(inv);
 
         double glbBal = plugin.getWallets().getBalance(p.getUniqueId(), plugin.getCurrencies().globalId());
+        // FIX: три закрывающие скобки (List.of -> item -> setItem)
         inv.setItem(4, item(Material.GOLD_BLOCK, "&6RaskolVault · Банк", List.of(
                 "&7Владелец: &f" + p.getName(),
                 "&7Глобальный баланс: &f" + fmt(glbBal) + " GLD",
-                "&7Разделы: валюты / обмен / курсы / перевод / история"))));
+                "&7Разделы: валюты / обмен / курсы / перевод / история")));
 
-        // ВАЛЮТЫ: глобальная сверху (центр), национальные ниже
         Currency global = plugin.getCurrencies().get(plugin.getCurrencies().globalId()).orElse(null);
         if (global != null) {
             inv.setItem(13, item(iconOf(global.id()), "&6" + global.displayName() + " &7(" + global.id() + ")", List.of(
@@ -112,7 +108,7 @@ public final class WalletGui {
         }
         int natSlot = 20;
         for (Currency cur : plugin.getCurrencies().all()) {
-            if (cur.type() != CurrencyType.NATIONAL) continue;
+            if (cur.type() != dev.raskol.vault.api.currency.CurrencyType.NATIONAL) continue;
             if (natSlot > 24) break;
             inv.setItem(natSlot, item(iconOf(cur.id()), "&6" + cur.displayName() + " &7(" + cur.id() + ")", List.of(
                     "&7Баланс: &f" + fmt(plugin.getWallets().getBalance(p.getUniqueId(), cur.id())) + " " + cur.id(),
@@ -121,7 +117,6 @@ public final class WalletGui {
             natSlot += 2;
         }
 
-        // МЕНЮ (строгая сетка)
         inv.setItem(27, item(Material.EMERALD, "&aОбмен валют", List.of("&7Поменять одну валюту на другую", "&eКлик — открыть")));
         inv.setItem(29, item(Material.MAP, "&6Курс валют", List.of("&7Таблица курсов и комиссий", "&eКлик — открыть")));
         inv.setItem(31, item(Material.GOLD_INGOT, "&eПеревод", List.of("&7Передать деньги игроку рядом (≤6 блоков)", "&eКлик — открыть")));
@@ -299,7 +294,7 @@ public final class WalletGui {
                     "&7" + tx.type(),
                     "&7" + tx.reason())));
         }
-        for (int i = Math.min(perPage, txs.size() - start); i < 45; i++) inv.setItem(i, pane());
+        for (int i = Math.min(perPage, Math.max(0, txs.size() - start)); i < 45; i++) inv.setItem(i, pane());
         if (page > 0) inv.setItem(45, item(Material.ARROW, "&7Назад (стр.)", List.of()));
         if ((page + 1) * perPage < txs.size()) inv.setItem(53, item(Material.ARROW, "&7Вперёд (стр.)", List.of()));
         inv.setItem(49, item(Material.ARROW, "&7Назад", List.of("&7Вернуться в кошелёк")));
@@ -340,6 +335,4 @@ public final class WalletGui {
             default: return Material.GOLD_NUGGET;
         }
     }
-
-    private enum CurrencyType { NATIONAL }
 }
