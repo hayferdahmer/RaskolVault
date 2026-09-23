@@ -15,7 +15,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Конвертация через резерв (1.1.3): + эмбарго-проверка + комиссии пар из RatesService.
+ * Конвертация через резерв (1.2.4.1): + пол комиссии (G1), мин-сумма и кап суммы (G2).
  */
 public final class ConvertEngine {
 
@@ -25,8 +25,6 @@ public final class ConvertEngine {
             String taxNation, double taxInTo, double goldFlow
     ) {
     }
-
-    private static final double EPS = 1.0E-9D;
 
     private final RaskolVault plugin;
     private final WalletService wallets;
@@ -41,17 +39,17 @@ public final class ConvertEngine {
         this.bank = bank;
     }
 
+    private double minAmount() { return plugin.getConfig().getDouble("exchange.min-amount", 1.0D); }
+    private double minFee() { return plugin.getConfig().getDouble("exchange.min-fee", 0.01D); }
+    private double maxTx() { return plugin.getConfig().getDouble("safety.max-transaction", 1_000_000_000.0D); }
+
     public double rate(String fromId, String toId) {
         Currency from = currencies.get(fromId).orElse(null);
         Currency to = currencies.get(toId).orElse(null);
-        if (from == null || to == null) {
-            return 0.0D;
-        }
+        if (from == null || to == null) return 0.0D;
         double pf = bank.priceOf(from);
         double pt = bank.priceOf(to);
-        if (pf <= 0.0D || pt <= 0.0D) {
-            return 0.0D;
-        }
+        if (pf <= 0.0D || pt <= 0.0D) return 0.0D;
         double r = pf / pt;
         return Double.isFinite(r) && r > 0.0D ? r : 0.0D;
     }
@@ -59,53 +57,41 @@ public final class ConvertEngine {
     public String blockReason(UUID owner, String fromId, String toId, double amount) {
         Currency from = currencies.get(fromId).orElse(null);
         Currency to = currencies.get(toId).orElse(null);
-        if (from == null || to == null) {
-            return "валюта не найдена";
-        }
-        if (from.id().equals(to.id())) {
-            return "нельзя менять валюту на саму себя";
-        }
-        if (plugin.getRates().isEmbargoed(from.id(), to.id())) {
+        if (from == null || to == null) return "валюта не найдена";
+        if (from.id().equals(to.id())) return "нельзя менять валюту на саму себя";
+        if (!Double.isFinite(amount) || !(amount > 0.0D)) return "некорректная сумма";
+        if (amount < minAmount()) return "слишком маленькая сумма (минимум " + fmt(minAmount()) + ")";
+        if (amount > maxTx()) return "слишком большая сумма (максимум " + fmt(maxTx()) + ")";
+        if (plugin.getRates().isEmbargoed(from.id(), to.id()))
             return "эмбарго: пара " + from.id() + "↔" + to.id() + " закрыта политикой";
-        }
-        if (!(amount > 0.0D) || !Double.isFinite(amount)) {
-            return "некорректная сумма";
-        }
         double pf = bank.priceOf(from);
         double pt = bank.priceOf(to);
-        if (from.type() != CurrencyType.GLOBAL && pf <= 0.0D) {
+        if (from.type() != CurrencyType.GLOBAL && pf <= 0.0D)
             return from.id() + " не обеспечена резервом — конверт закрыт";
-        }
-        if (to.type() != CurrencyType.GLOBAL && pt <= 0.0D) {
+        if (to.type() != CurrencyType.GLOBAL && pt <= 0.0D)
             return to.id() + " не обеспечена резервом — конверт закрыт";
-        }
         double r = pf / pt;
-        if (!Double.isFinite(r) || r <= 0.0D) {
-            return "курс не определён";
-        }
+        if (!Double.isFinite(r) || r <= 0.0D) return "курс не определён";
         if (from.type() != CurrencyType.GLOBAL) {
             double goldOut = goldOutFor(from, amount);
-            if (bank.reserveOf(from.nationId()) + EPS < goldOut) {
+            if (bank.reserveOf(from.nationId()) + 1e-9D < goldOut)
                 return "резерв нации " + from.nationId() + " исчерпан для этой суммы";
-            }
         }
-        if (!wallets.has(owner, from.id(), amount)) {
-            return "недостаточно " + from.id();
-        }
+        if (!wallets.has(owner, from.id(), amount)) return "недостаточно " + from.id();
         return "";
     }
 
     public Optional<Quote> quote(UUID owner, String fromId, String toId, double amount) {
-        String reason = blockReason(owner, fromId, toId, amount);
-        if (!reason.isEmpty()) {
-            return Optional.empty();
-        }
+        if (!blockReason(owner, fromId, toId, amount).isEmpty()) return Optional.empty();
         Currency from = currencies.get(fromId).orElseThrow();
         Currency to = currencies.get(toId).orElseThrow();
         double baseRate = plugin.getRates().feeFor(fromId, toId);
-        double taxRate = to.type() == CurrencyType.NATIONAL ? bank.taxOf(to.nationId()) : 0.0D;
-        double feeBase = round2dec(amount * baseRate, from);
+        double taxRate = to.type() == CurrencyType.NATIONAL && to.nationId() != null
+                ? bank.taxOf(to.nationId()) : 0.0D;
+        // G1: пол комиссии — dust-конверты больше не обходят комиссию
+        double feeBase = round2dec(Math.max(amount * baseRate, minFee()), from);
         double feeTax = round2dec(amount * taxRate, from);
+        if (feeBase + feeTax >= amount) return Optional.empty(); // комиссия съедает всё
         double pf = bank.priceOf(from);
         double pt = bank.priceOf(to);
         double rate = pf / pt;
@@ -118,16 +104,12 @@ public final class ConvertEngine {
 
     public Optional<Quote> execute(UUID owner, String fromId, String toId, double amount) {
         Optional<Quote> q = quote(owner, fromId, toId, amount);
-        if (q.isEmpty()) {
-            return q;
-        }
+        if (q.isEmpty()) return q;
         Quote quote = q.get();
         boolean fromNat = !fromId.equals(currencies.globalId());
         boolean toNat = !toId.equals(currencies.globalId());
 
-        if (fromNat && !bank.reserveDebit(fromNation(fromId), quote.goldFlow())) {
-            return Optional.empty();
-        }
+        if (fromNat && !bank.reserveDebit(fromNation(fromId), quote.goldFlow())) return Optional.empty();
         if (toNat && !bank.reserveCredit(toNation(toId), quote.goldFlow())) {
             if (fromNat) bank.reserveCredit(fromNation(fromId), quote.goldFlow());
             return Optional.empty();
@@ -156,22 +138,18 @@ public final class ConvertEngine {
     private String fromNation(String currencyId) {
         return currencies.get(currencyId).map(Currency::nationId).orElse("");
     }
-
     private String toNation(String currencyId) {
         return currencies.get(currencyId).map(Currency::nationId).orElse("");
     }
-
     private double goldOutFor(Currency from, double amount) {
-        if (from.type() == CurrencyType.GLOBAL) {
-            return amount;
-        }
+        if (from.type() == CurrencyType.GLOBAL) return amount;
         double baseRate = plugin.getRates().feeFor(from.id(), from.id());
         return (amount - amount * baseRate) * bank.priceOf(from);
     }
-
     private double round2dec(double v, Currency c) {
         int scale = c == null ? 2 : c.decimals();
         double factor = Math.pow(10, scale);
         return Math.round(v * factor) / factor;
     }
+    private static String fmt(double v) { return String.format(Locale.ROOT, "%.2f", v); }
 }
