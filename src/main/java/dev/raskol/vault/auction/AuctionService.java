@@ -17,7 +17,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,15 +24,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Аукцион (1.2.5): создание лотов, ставки, buyout, отмена, истечение, возврат.
- * Комиссии:
- *  - listingFee: 1% от buyout (мин 0.1 GLD), взимается сразу
- *  - sellFee: 3% от финальной цены при продаже
- * Формула минимального инкремента: max(1.0 GLD, 5% от текущей ставки)
- *
- * Хранение:
- *  - data/auction-lots.yml (мета-данные)
- *  - data/auction-items.yml (физические ItemStacks в base64)
+ * Аукцион (1.2.5, FIX: обращения к полям через геттеры).
  */
 public final class AuctionService {
 
@@ -52,14 +43,12 @@ public final class AuctionService {
         load();
     }
 
-    // ---------- Конфигурация ----------
     private double listingFeeRate() { return plugin.getConfig().getDouble("auction.listing-fee-rate", 0.01D); }
     private double listingFeeMin() { return plugin.getConfig().getDouble("auction.listing-fee-min", 0.1D); }
     private double sellFeeRate() { return plugin.getConfig().getDouble("auction.sell-fee-rate", 0.03D); }
     private int maxDurationHours() { return plugin.getConfig().getInt("auction.max-duration-hours", 72); }
     private int maxLotsPerPlayer() { return plugin.getConfig().getInt("auction.max-lots-per-player", 10); }
 
-    // ---------- Персистентность ----------
     public void load() {
         if (!lotsFile.getParentFile().exists()) lotsFile.getParentFile().mkdirs();
         if (!itemsFile.exists()) { save(); return; }
@@ -92,17 +81,16 @@ public final class AuctionService {
                         s.getDouble("buyoutPrice", 0),
                         s.getLong("createdAt", 0L),
                         s.getLong("expiresAt", 0L));
-                lot.currentBid = s.getDouble("currentBid", 0);
-                String bidderStr = s.getString("currentBidder", "");
-                if (bidderStr != null && !bidderStr.isEmpty()) {
-                    lot.currentBidder = UUID.fromString(bidderStr);
-                    lot.currentBidderName = s.getString("currentBidderName", "");
-                }
-                lot.status = status;
-                String buyerStr = s.getString("buyer", "");
-                if (buyerStr != null && !buyerStr.isEmpty()) {
-                    lot.buyerName = s.getString("buyerName", "");
-                    lot.finalPrice = s.getDouble("finalPrice", 0);
+                lot.placeBid(
+                        s.getString("currentBidder", "").isEmpty() ? null : UUID.fromString(s.getString("currentBidder")),
+                        s.getString("currentBidderName", ""),
+                        s.getDouble("currentBid", 0));
+                if (status == AuctionLot.Status.SOLD) {
+                    lot.markSold(null, s.getString("buyerName", ""), s.getDouble("finalPrice", 0));
+                } else if (status == AuctionLot.Status.EXPIRED) {
+                    lot.markExpired();
+                } else if (status == AuctionLot.Status.CANCELLED) {
+                    lot.markCancelled();
                 }
                 ConfigurationSection hist = s.getConfigurationSection("history");
                 if (hist != null) {
@@ -147,7 +135,6 @@ public final class AuctionService {
             s.set("currentBidder", l.currentBidder() == null ? "" : l.currentBidder().toString());
             s.set("currentBidderName", l.currentBidderName() == null ? "" : l.currentBidderName());
             s.set("status", l.status().name());
-            s.set("buyer", l.buyerName() == null ? "" : "");
             s.set("buyerName", l.buyerName() == null ? "" : l.buyerName());
             s.set("finalPrice", l.finalPrice());
             ConfigurationSection hist = s.createSection("history");
@@ -163,8 +150,6 @@ public final class AuctionService {
         SafeStorage.saveAtomic(lotsYaml, lotsFile, plugin);
     }
 
-    // ---------- Создание ----------
-    /** Создать лот. Возвращает лот или null, если отказ. Предмет уходит в аукцион-эскроу. */
     public AuctionLot create(UUID seller, ItemStack item, AuctionLot.LotType type,
                              double startPrice, double buyoutPrice, int durationHours) {
         if (item == null || item.getType().isAir()) return null;
@@ -173,21 +158,17 @@ public final class AuctionService {
         if (type != AuctionLot.LotType.AUCTION && !(buyoutPrice > 0.0D)) return null;
         if (type == AuctionLot.LotType.AUCTION_BUYOUT && buyoutPrice <= startPrice) return null;
 
-        // Лимит лотов на игрока (только ACTIVE)
         int activeCount = 0;
         for (AuctionLot l : lots.values())
             if (l.seller().equals(seller) && l.status() == AuctionLot.Status.ACTIVE) activeCount++;
         if (activeCount >= maxLotsPerPlayer()) return null;
 
-        // Комиссия листинга = max(listingFeeMin, startPrice × listingFeeRate) для аукциона
-        // или buyoutPrice × listingFeeRate для buyout
         double refPrice = (type == AuctionLot.LotType.AUCTION) ? startPrice : buyoutPrice;
         double listingFee = Math.max(listingFeeMin(), round2(refPrice * listingFeeRate()));
         String glb = plugin.getCurrencies().globalId();
-        if (!wallets.withdraw(seller, glb, listingFee, TransactionType.PAY, "auction:listing:" + "fee")) {
+        if (!wallets.withdraw(seller, glb, listingFee, TransactionType.PAY, "auction:listing:fee")) {
             return null;
         }
-        // Деньги за листинг сжигаются (сток)
 
         String id = UUID.randomUUID().toString();
         long now = System.currentTimeMillis();
@@ -201,8 +182,6 @@ public final class AuctionService {
         return lot;
     }
 
-    // ---------- Ставка ----------
-    /** Сделать ставку. Возвращает null при успехе, строку-причину отказа при ошибке. */
     public String bid(UUID bidder, String lotId, double amount) {
         AuctionLot lot = lots.get(lotId);
         if (lot == null) return "лот не найден";
@@ -214,18 +193,15 @@ public final class AuctionService {
         if (amount < minNext - 1e-9D) return "минимальная ставка: " + fmt(minNext);
 
         String glb = plugin.getCurrencies().globalId();
-        // Проверка баланса (включая возвращаемую предыдущую ставку)
         UUID prevBidder = lot.currentBidder();
         double available = wallets.getBalance(bidder, glb);
         if (prevBidder != null && prevBidder.equals(bidder)) available += lot.currentBid();
         if (available < amount - 1e-9D) return "недостаточно средств (нужно " + fmt(amount) + ")";
 
-        // Возврат предыдущей ставки прежнему лидеру
         if (prevBidder != null && !prevBidder.equals(bidder)) {
             if (!wallets.deposit(prevBidder, glb, lot.currentBid(), TransactionType.PAY, "auction:bid:return:" + lotId))
                 return "системная ошибка возврата ставки";
         }
-        // Списание новой ставки
         if (!wallets.withdraw(bidder, glb, amount, TransactionType.PAY, "auction:bid:" + lotId))
             return "не удалось списать ставку";
 
@@ -234,8 +210,6 @@ public final class AuctionService {
         return null;
     }
 
-    // ---------- Buyout ----------
-    /** Немедленная покупка по buyout-цене. */
     public String buyout(UUID buyer, String lotId) {
         AuctionLot lot = lots.get(lotId);
         if (lot == null) return "лот не найден";
@@ -249,18 +223,15 @@ public final class AuctionService {
         if (!wallets.withdraw(buyer, glb, price, TransactionType.PAY, "auction:buyout:" + lotId))
             return "недостаточно средств";
 
-        // Возврат предыдущей ставки (если была)
         if (lot.currentBidder() != null) {
             wallets.deposit(lot.currentBidder(), glb, lot.currentBid(),
                     TransactionType.PAY, "auction:buyout:return:" + lotId);
         }
 
-        // Передача предмета покупателю
         if (!giveItem(buyer, lot.item())) {
             wallets.deposit(buyer, glb, price, TransactionType.PAY, "auction:buyout:rollback:" + lotId);
             return "не удалось передать предмет (инвентарь полон)";
         }
-        // Деньги продавцу минус комиссия
         double sellFee = round2(price * sellFeeRate());
         double net = round2(price - sellFee);
         wallets.deposit(lot.seller(), glb, net, TransactionType.PAY, "auction:sold:" + lotId);
@@ -271,15 +242,12 @@ public final class AuctionService {
         return null;
     }
 
-    // ---------- Отмена ----------
-    /** Продавец отменяет свой активный лот. */
     public String cancel(UUID seller, String lotId) {
         AuctionLot lot = lots.get(lotId);
         if (lot == null) return "лот не найден";
         if (lot.status() != AuctionLot.Status.ACTIVE) return "лот не активен";
         if (!lot.seller().equals(seller)) return "это не ваш лот";
 
-        // Возврат текущей ставки лидеру
         if (lot.currentBidder() != null) {
             String glb = plugin.getCurrencies().globalId();
             wallets.deposit(lot.currentBidder(), glb, lot.currentBid(),
@@ -290,7 +258,6 @@ public final class AuctionService {
         return null;
     }
 
-    // ---------- Забрать возвращённый предмет ----------
     public boolean collect(UUID owner, String lotId) {
         AuctionLot lot = lots.get(lotId);
         if (lot == null) return false;
@@ -305,8 +272,6 @@ public final class AuctionService {
         return true;
     }
 
-    // ---------- Периодика: истечение ----------
-    /** Обрабатывает все просроченные активные лоты. Возвращает количество обработанных. */
     public int expireAll() {
         long now = System.currentTimeMillis();
         int count = 0;
@@ -316,7 +281,6 @@ public final class AuctionService {
             if (!lot.isExpired(now)) continue;
             count++;
             if (lot.type() == AuctionLot.LotType.AUCTION && lot.currentBidder() != null) {
-                // Аукцион со ставкой: продажа лидеру по текущей ставке
                 double price = lot.currentBid();
                 double sellFee = round2(price * sellFeeRate());
                 double net = round2(price - sellFee);
@@ -325,12 +289,10 @@ public final class AuctionService {
                     lot.markSold(lot.currentBidder(), lot.currentBidderName(), price);
                     items.remove(lot.id());
                 } else {
-                    // Инвентарь победителя полон — возврат денег победителю, предмет остаётся у продавца (EXPIRED)
                     wallets.deposit(lot.currentBidder(), glb, price, TransactionType.PAY, "auction:expired:return:" + lot.id());
                     lot.markExpired();
                 }
             } else {
-                // Нет ставки или был buyout без покупки — истечение
                 lot.markExpired();
             }
         }
@@ -338,7 +300,6 @@ public final class AuctionService {
         return count;
     }
 
-    // ---------- Запросы ----------
     public List<AuctionLot> listActive() {
         List<AuctionLot> out = new ArrayList<>();
         long now = System.currentTimeMillis();
@@ -373,13 +334,11 @@ public final class AuctionService {
 
     public AuctionLot get(String id) { return lots.get(id); }
 
-    // ---------- Хелперы ----------
     private boolean giveItem(UUID player, ItemStack item) {
         org.bukkit.entity.Player p = Bukkit.getPlayer(player);
         if (p == null) return false;
         HashMap<Integer, ItemStack> overflow = p.getInventory().addItem(item.clone());
         if (overflow.isEmpty()) return true;
-        // Инвентарь полон — выкидываем остаток у ног
         for (ItemStack left : overflow.values()) p.getWorld().dropItemNaturally(p.getLocation(), left);
         return true;
     }
