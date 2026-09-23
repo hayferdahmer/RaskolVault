@@ -4,6 +4,7 @@ package dev.raskol.vault.command;
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.command.sub.AdminSubcommand;
+import dev.raskol.vault.command.sub.AuctionAdminCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.command.sub.ExchangeSubcommand;
 import dev.raskol.vault.command.sub.PaySubcommand;
@@ -23,6 +24,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * /rv — роутер (1.2.5-a.3): + /rv auction admin|stats.
+ */
 public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
 
     private final RaskolVault plugin;
@@ -31,6 +35,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     private final ExchangeSubcommand exchangeSubcommand;
     private final RatesSubcommand ratesSubcommand;
     private final AdminSubcommand adminSubcommand;
+    private final AuctionAdminCommand auctionAdminSubcommand;
 
     public RaskolVaultCommand(RaskolVault plugin, ConvertSubcommand convertSubcommand) {
         this.plugin = plugin;
@@ -41,6 +46,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
                         plugin.getWallets(), plugin.getCurrencies(), plugin.getEscrow()));
         this.ratesSubcommand = new RatesSubcommand(plugin);
         this.adminSubcommand = new AdminSubcommand(plugin);
+        this.auctionAdminSubcommand = new AuctionAdminCommand(plugin);
     }
 
     private String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
@@ -56,7 +62,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "wallet" -> openWallet(sender);
             case "exchange" -> openExchange(sender, args);
             case "cabinet" -> openCabinet(sender);
-            case "auction" -> openAuction(sender);
+            case "auction" -> handleAuction(sender, args);
             case "guide" -> openGuide(sender);
             case "rates" -> ratesSubcommand.execute(sender);
             case "pay" -> paySubcommand.execute(sender, args);
@@ -67,6 +73,30 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             default -> help(sender);
         }
         return true;
+    }
+
+    private void handleAuction(CommandSender sender, String[] args) {
+        // /rv auction admin ... — админка
+        if (args.length >= 2 && args[1].equalsIgnoreCase("admin")) {
+            auctionAdminSubcommand.execute(sender, args);
+            return;
+        }
+        // /rv auction stats — алиас на /rv auction admin stats
+        if (args.length >= 2 && args[1].equalsIgnoreCase("stats")) {
+            if (!sender.hasPermission("raskolvault.admin")) {
+                send(sender, plugin.getMessages().get("error.no-permission", null));
+                return;
+            }
+            String[] rewired = new String[args.length];
+            rewired[0] = "auction";
+            rewired[1] = "admin";
+            rewired[2] = "stats";
+            for (int i = 3; i < args.length; i++) rewired[i] = args[i];
+            auctionAdminSubcommand.execute(sender, rewired);
+            return;
+        }
+        // /rv auction — открывает GUI
+        openAuction(sender);
     }
 
     private void openWallet(CommandSender sender) {
@@ -108,6 +138,9 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         send(sender, "&f/rv guide &7— справка");
         send(sender, "&f/rv convert <из> <в> <сумма> &7→ &f/rv confirm");
         send(sender, "&f/rv admin … &7— админ-блок");
+        if (sender.hasPermission("raskolvault.admin")) {
+            send(sender, "&f/rv auction admin remove|ban|unban|stats|blacklist");
+        }
     }
 
     private String[] prepend(String sub, String[] args) {
@@ -125,6 +158,8 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             return filter(subs, args[0]);
         }
         String op = args[0].toLowerCase(Locale.ROOT);
+        if (op.equals("auction")) return auctionAdminSubcommand.tabComplete(sender, args);
+
         OfflinePlayerRegistry offline = plugin.getOfflinePlayerRegistry();
         if (args.length == 2) {
             if (op.equals("convert")) return currencyTab(args[1]);
