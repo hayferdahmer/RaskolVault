@@ -27,7 +27,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Аукцион (1.2.5-a.2): мультивалютность, налог нации, sniping protection, репутация.
+ * Аукцион (1.2.5-a.3): + модерация (adminRemove), blacklist, ban, статистика.
  */
 public final class AuctionService {
 
@@ -35,16 +35,21 @@ public final class AuctionService {
     private final WalletService wallets;
     private final ReserveBank bank;
     private final AuctionReputation reputation;
+    private final AuctionBanService bans;
+    private final AuctionStats stats;
     private final File lotsFile;
     private final File itemsFile;
     private final Map<String, AuctionLot> lots = new ConcurrentHashMap<>();
     private final Map<String, ItemStack> items = new ConcurrentHashMap<>();
 
-    public AuctionService(RaskolVault plugin, WalletService wallets, ReserveBank bank, AuctionReputation reputation) {
+    public AuctionService(RaskolVault plugin, WalletService wallets, ReserveBank bank,
+                          AuctionReputation reputation, AuctionBanService bans, AuctionStats stats) {
         this.plugin = plugin;
         this.wallets = wallets;
         this.bank = bank;
         this.reputation = reputation;
+        this.bans = bans;
+        this.stats = stats;
         this.lotsFile = new File(plugin.getDataFolder(), "data/auction-lots.yml");
         this.itemsFile = new File(plugin.getDataFolder(), "data/auction-items.yml");
         load();
@@ -165,6 +170,11 @@ public final class AuctionService {
         if (type == AuctionLot.LotType.AUCTION_BUYOUT && buyoutPrice <= startPrice) return null;
         if (currencyId == null || currencyId.isBlank()) currencyId = plugin.getCurrencies().globalId();
 
+        // Ban check
+        if (bans.isBanned(seller)) return null;
+        // Blacklist check
+        if (bans.isBlacklisted(item.getType())) return null;
+
         int activeCount = 0;
         for (AuctionLot l : lots.values())
             if (l.seller().equals(seller) && l.status() == AuctionLot.Status.ACTIVE) activeCount++;
@@ -215,7 +225,6 @@ public final class AuctionService {
 
         lot.placeBid(bidder, nameOf(bidder), amount);
 
-        // Sniping protection: продление при ставке в последние 30 сек
         long now = System.currentTimeMillis();
         long timeLeft = lot.expiresAt() - now;
         if (timeLeft > 0 && timeLeft < snipingWindowMillis()) {
@@ -255,17 +264,14 @@ public final class AuctionService {
             return "не удалось передать предмет (инвентарь полон)";
         }
 
-        // Налог нации продавца (auctionRate)
         String sellerNation = plugin.getTownyHook().isAvailable() ? plugin.getTownyHook().nationOf(lot.seller()) : null;
         double nationTaxRate = (sellerNation != null) ? plugin.getTaxService().getAuctionRate(sellerNation) : 0.0D;
         double nationTax = round2(price * nationTaxRate);
         UUID treasury = (sellerNation != null) ? ReserveBank.treasuryUuid(sellerNation) : null;
 
-        // Комиссия платформы
         double sellFee = round2(price * sellFeeRate());
         double net = round2(price - sellFee - nationTax);
 
-        // Переводы: налог в казну, остаток продавцу
         if (treasury != null && nationTax > 0) {
             wallets.deposit(treasury, currencyId, nationTax, TransactionType.PAY, "auction:tax:" + sellerNation);
         }
@@ -274,6 +280,7 @@ public final class AuctionService {
         lot.markSold(buyer, nameOf(buyer), price);
         items.remove(lotId);
         reputation.incrementSuccess(lot.seller());
+        recordSale(lot, buyer, nameOf(buyer), price);
         save();
 
         playSound(buyer, Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
@@ -291,17 +298,37 @@ public final class AuctionService {
         if (lot == null) return "лот не найден";
         if (lot.status() != AuctionLot.Status.ACTIVE) return "лот не активен";
         if (!lot.seller().equals(seller)) return "это не ваш лот";
+        return doCancel(lot, "продавцом");
+    }
 
+    /** Административное снятие лота (любым игроком с raskolvault.admin). */
+    public String adminRemove(UUID admin, String lotId, String reason) {
+        AuctionLot lot = lots.get(lotId);
+        if (lot == null) return "лот не найден";
+        if (lot.status() != AuctionLot.Status.ACTIVE) return "лот не активен";
+        plugin.getLogger().info("RaskolVault auction: admin " + nameOf(admin)
+                + " снял лот " + lotId + " продавца " + lot.sellerName() + ", причина: " + reason);
+        String r = doCancel(lot, "модератором " + nameOf(admin) + " (причина: " + reason + ")");
+        if (r == null) {
+            notify(lot.seller(), "&cВаш лот &f" + lotId.substring(0, 8)
+                    + " &cснят модератором. Причина: &7" + reason
+                    + "&c. Предмет доступен в разделе «Забрать»");
+            notify(admin, "&aЛот &f" + lotId.substring(0, 8) + " &aснят. Продавец уведомлён.");
+        }
+        return r;
+    }
+
+    private String doCancel(AuctionLot lot, String cancelledBy) {
         if (lot.currentBidder() != null) {
             String currencyId = lot.currencyId();
             wallets.deposit(lot.currentBidder(), currencyId, lot.currentBid(),
-                    TransactionType.PAY, "auction:cancel:return:" + lotId);
-            notify(lot.currentBidder(), "&7Ваша ставка на лот &6" + lotId.substring(0, 8)
-                    + " &7возвращена (лот отменён продавцом)");
+                    TransactionType.PAY, "auction:cancel:return:" + lot.id());
+            notify(lot.currentBidder(), "&7Ваша ставка на лот &6" + lot.id().substring(0, 8)
+                    + " &7возвращена (лот отменён " + cancelledBy + ")");
         }
         lot.markCancelled();
         save();
-        playSound(seller, Sound.BLOCK_ANVIL_LAND, 1.0f, 0.8f);
+        playSound(lot.seller(), Sound.BLOCK_ANVIL_LAND, 1.0f, 0.8f);
         return null;
     }
 
@@ -344,6 +371,7 @@ public final class AuctionService {
                     lot.markSold(lot.currentBidder(), lot.currentBidderName(), price);
                     items.remove(lot.id());
                     reputation.incrementSuccess(lot.seller());
+                    recordSale(lot, lot.currentBidder(), lot.currentBidderName(), price);
                     notify(lot.currentBidder(), "&aВы выиграли аукцион &f" + lot.id().substring(0, 8)
                             + " &aза &f" + fmt(price) + " " + currencyId);
                     notify(lot.seller(), "&aВаш лот &f" + lot.id().substring(0, 8)
@@ -363,6 +391,14 @@ public final class AuctionService {
         }
         if (count > 0) save();
         return count;
+    }
+
+    private void recordSale(AuctionLot lot, UUID buyer, String buyerName, double amount) {
+        String itemName = AuctionFilter.itemDisplayName(lot);
+        stats.recordSale(new AuctionStats.SaleRecord(
+                lot.id(), lot.seller(), lot.sellerName(),
+                buyer, buyerName, itemName,
+                amount, lot.currencyId(), System.currentTimeMillis()));
     }
 
     public List<AuctionLot> listActive() { return listActive(AuctionFilter.empty()); }
@@ -404,6 +440,15 @@ public final class AuctionService {
 
     public AuctionLot get(String id) { return lots.get(id); }
     public AuctionReputation getReputation() { return reputation; }
+    public AuctionBanService getBans() { return bans; }
+    public AuctionStats getStats() { return stats; }
+    public int activeCount() {
+        int c = 0;
+        long now = System.currentTimeMillis();
+        for (AuctionLot l : lots.values())
+            if (l.status() == AuctionLot.Status.ACTIVE && !l.isExpired(now)) c++;
+        return c;
+    }
 
     private boolean giveItem(UUID player, ItemStack item) {
         Player p = Bukkit.getPlayer(player);
