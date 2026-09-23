@@ -3,7 +3,7 @@ package dev.raskol.vault;
 
 import dev.raskol.vault.api.RaskolVaultAPI;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
-import dev.raskol.vault.bond.BondService;
+import dev.raskol.vault.audit.EconomicInvariantAuditor;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
 import dev.raskol.vault.config.ConfigValidator;
@@ -57,7 +57,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.4-SNAPSHOT: Доли и Ужиток.
+ * RaskolVault 1.2.4.1: + EconomicInvariantAuditor (selftest + плановая проверка),
+ * EscrowService с CurrencyRegistry (dust-free).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -83,10 +84,11 @@ public final class RaskolVault extends JavaPlugin {
     private RestoreService restoreService;
     private EscrowService escrowService;
     private TaxService taxService;
-    private BondService bondService;
+    private dev.raskol.vault.bond.BondService bondService;
     private TradePolicyService tradePolicy;
     private ShareService shareService;
-    private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask;
+    private EconomicInvariantAuditor auditor;
+    private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask, auditTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
     private ReserveBank reserveBank;
@@ -115,7 +117,6 @@ public final class RaskolVault extends JavaPlugin {
 
         messages = new MessagesConfig(this);
         messages.load(new File(getDataFolder(), getConfig().getString("messages.file", "messages.yml")));
-
         detectHooks();
 
         File dbFile = new File(getDataFolder(), getConfig().getString("storage.sqlite.file", "data/ledger.sqlite"));
@@ -162,12 +163,13 @@ public final class RaskolVault extends JavaPlugin {
         convertEngine = new ConvertEngine(this, wallets, currencies, reserveBank);
         exchange = new ExchangeService(this, wallets, currencies, rates);
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
-        escrowService = new EscrowService(this, wallets, ledger);
+        escrowService = new EscrowService(this, wallets, ledger, currencies);
         taxService = new TaxService(this, wallets);
         taxService.load();
-        bondService = new BondService(this, wallets);
+        bondService = new dev.raskol.vault.bond.BondService(this, wallets);
         tradePolicy = new TradePolicyService(this);
         shareService = new ShareService(this, wallets, reserveBank);
+        auditor = new EconomicInvariantAuditor(this);
 
         luckPermsHook = new LuckPermsHook(this);
         if (luckPermsPresent && getConfig().getBoolean("hooks.luckperms.enabled", true)) luckPermsHook.init();
@@ -246,6 +248,7 @@ public final class RaskolVault extends JavaPlugin {
             }, period, period);
         }
         taxSaveTask = getServer().getScheduler().runTaskTimerAsynchronously(this, taxService::save, 6000L, 6000L);
+
         long[] alarm = new long[]{0};
         writerAlarmTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
             int q = writer.queueSize(); long f = writer.failed();
@@ -253,17 +256,30 @@ public final class RaskolVault extends JavaPlugin {
             if (f > alarm[0]) { getLogger().warning("writer failed +" + (f - alarm[0])); alarm[0] = f; }
         }, 600L, 600L);
 
+        // 1.2.4.1: плановая самопроверка инвариантов
+        long auditMinutes = getConfig().getLong("audit.interval-minutes", 60);
+        if (auditMinutes > 0) {
+            long period = auditMinutes * 60L * 20L;
+            auditTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+                var report = auditor.run();
+                if (auditor.hasFailures(report)) {
+                    for (String line : report) if (line.startsWith("&c[FAIL]")) getLogger().warning("selftest: " + line);
+                }
+            }, period, period);
+        }
+
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
         convertSubcommand = new ConvertSubcommand(this);
         RaskolVaultCommand executor = new RaskolVaultCommand(this, convertSubcommand);
         PluginCommand command = getCommand("rv");
         if (command != null) { command.setExecutor(executor); command.setTabCompleter(executor); }
 
-        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.4 — Доли и Ужиток)");
+        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.4.1 audit)");
     }
 
     @Override
     public void onDisable() {
+        if (auditTask != null) auditTask.cancel();
         if (writerAlarmTask != null) writerAlarmTask.cancel();
         if (reconcileTask != null) reconcileTask.cancel();
         if (taxSaveTask != null) taxSaveTask.cancel();
@@ -324,9 +340,10 @@ public final class RaskolVault extends JavaPlugin {
     public RestoreService getRestoreService() { return restoreService; }
     public EscrowService getEscrow() { return escrowService; }
     public TaxService getTaxService() { return taxService; }
-    public BondService getBondService() { return bondService; }
+    public dev.raskol.vault.bond.BondService getBondService() { return bondService; }
     public TradePolicyService getTradePolicy() { return tradePolicy; }
     public ShareService getShareService() { return shareService; }
+    public EconomicInvariantAuditor getAuditor() { return auditor; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public SparkHook getSparkHook() { return sparkHook; }
     public ReserveBank getReserveBank() { return reserveBank; }
