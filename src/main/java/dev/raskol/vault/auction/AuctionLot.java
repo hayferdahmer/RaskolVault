@@ -9,17 +9,6 @@ import java.util.UUID;
 
 /**
  * Лот аукциона (1.2.5).
- *
- * Типы:
- *  - BUYOUT: фиксированная цена, кто первый заплатит — тот и купил
- *  - AUCTION: аукцион со ставками, побеждает максимальная ставка к моменту истечения
- *  - AUCTION_BUYOUT: аукцион со ставками + кнопка buyout (немедленная покупка)
- *
- * Статусы:
- *  - ACTIVE: активен на рынке
- *  - SOLD: продан, деньги переданы продавцу, предмет — покупателю
- *  - EXPIRED: истёк, предмет вернётся продавцу
- *  - CANCELLED: отменён продавцом, предмет вернётся продавцу
  */
 public final class AuctionLot {
 
@@ -89,7 +78,6 @@ public final class AuctionLot {
     public void markCancelled() { this.status = Status.CANCELLED; }
     public boolean isExpired(long now) { return now >= expiresAt; }
 
-    /** Минимальный инкремент ставки: max(1.0 GLD, 5% от текущей ставки). */
     public double minNextBid() {
         double base = currentBid > 0 ? currentBid : startPrice;
         return base + Math.max(1.0D, base * 0.05D);
