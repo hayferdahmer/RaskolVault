@@ -8,6 +8,8 @@ import dev.raskol.vault.auction.AuctionBanService;
 import dev.raskol.vault.auction.AuctionReputation;
 import dev.raskol.vault.auction.AuctionService;
 import dev.raskol.vault.auction.AuctionStats;
+import dev.raskol.vault.bank.BankService;
+import dev.raskol.vault.bank.BankGui;
 import dev.raskol.vault.bond.BondService;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
@@ -63,7 +65,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.5-a.3: аукцион + админка (remove/ban/stats/blacklist).
+ * RaskolVault 1.2.5-b: банк (вклады/кредиты/ликвидация) + таски начисления и авто-ликвидации.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -96,8 +98,10 @@ public final class RaskolVault extends JavaPlugin {
     private AuctionReputation auctionReputation;
     private AuctionBanService auctionBans;
     private AuctionStats auctionStats;
+    private BankService bankService;
     private EconomicInvariantAuditor auditor;
-    private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask, auditTask, auctionTask;
+    private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask,
+            auditTask, auctionTask, bankAccrualTask, bankLiquidationTask;
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
     private ReserveBank reserveBank;
@@ -111,6 +115,7 @@ public final class RaskolVault extends JavaPlugin {
     private BondGui bondGui;
     private ShareGui shareGui;
     private AuctionGui auctionGui;
+    private BankGui bankGui;
     private long startTimeMillis;
     private volatile long lastReconcileMillis;
 
@@ -183,6 +188,7 @@ public final class RaskolVault extends JavaPlugin {
         auctionBans = new AuctionBanService(this);
         auctionStats = new AuctionStats(this);
         auctionService = new AuctionService(this, wallets, reserveBank, auctionReputation, auctionBans, auctionStats);
+        bankService = new BankService(this, wallets, reserveBank);
         auditor = new EconomicInvariantAuditor(this);
 
         luckPermsHook = new LuckPermsHook(this);
@@ -216,6 +222,8 @@ public final class RaskolVault extends JavaPlugin {
         getServer().getPluginManager().registerEvents(shareGui, this);
         auctionGui = new AuctionGui(this, auctionService);
         getServer().getPluginManager().registerEvents(auctionGui, this);
+        bankGui = new BankGui(this);
+        getServer().getPluginManager().registerEvents(bankGui, this);
 
         if (townyHook.isAvailable()) {
             new TownyNationLifecycleListener(this, currencies, ledger).register();
@@ -288,17 +296,38 @@ public final class RaskolVault extends JavaPlugin {
                 getLogger().info("auction: просрочено лотов " + expired);
         }, 1200L, 1200L);
 
+        // 1.2.5-b: начисление процентов по вкладам
+        long accrualMinutes = getConfig().getLong("bank.accrual-interval-minutes", 60);
+        if (accrualMinutes > 0) {
+            long period = accrualMinutes * 60L * 20L;
+            bankAccrualTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+                bankService.accrueAll();
+                if (getConfig().getBoolean("general.debug", false)) getLogger().info("bank: начислены проценты");
+            }, period, period);
+        }
+        // 1.2.5-b: авто-ликвидация просроченных кредитов
+        long liqMinutes = getConfig().getLong("bank.liquidation-check-minutes", 60);
+        if (liqMinutes > 0) {
+            long period = liqMinutes * 60L * 20L;
+            bankLiquidationTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+                int liq = bankService.autoLiquidateOverdue();
+                if (liq > 0) getLogger().warning("bank: ликвидировано просроченных кредитов: " + liq);
+            }, period, period);
+        }
+
         loadSimulator = new LoadSimulator(this, wallets, currencies.globalId());
         convertSubcommand = new ConvertSubcommand(this);
         RaskolVaultCommand executor = new RaskolVaultCommand(this, convertSubcommand);
         PluginCommand command = getCommand("rv");
         if (command != null) { command.setExecutor(executor); command.setTabCompleter(executor); }
 
-        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.5-a.3 auction admin)");
+        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.5-b bank)");
     }
 
     @Override
     public void onDisable() {
+        if (bankLiquidationTask != null) bankLiquidationTask.cancel();
+        if (bankAccrualTask != null) bankAccrualTask.cancel();
         if (auctionTask != null) auctionTask.cancel();
         if (auditTask != null) auditTask.cancel();
         if (writerAlarmTask != null) writerAlarmTask.cancel();
@@ -316,6 +345,7 @@ public final class RaskolVault extends JavaPlugin {
         if (auctionReputation != null) auctionReputation.save();
         if (auctionBans != null) auctionBans.save();
         if (auctionStats != null) auctionStats.save();
+        if (bankService != null) bankService.saveAll();
         if (backups != null) backups.stop();
         if (getConfig().getBoolean("storage.yaml-backup.enabled", true) && wallets != null) saveBalancesBackup();
         if (writer != null) writer.close(10000L);
@@ -372,6 +402,7 @@ public final class RaskolVault extends JavaPlugin {
     public AuctionReputation getAuctionReputation() { return auctionReputation; }
     public AuctionBanService getAuctionBans() { return auctionBans; }
     public AuctionStats getAuctionStats() { return auctionStats; }
+    public BankService getBankService() { return bankService; }
     public EconomicInvariantAuditor getAuditor() { return auditor; }
     public ConvertSubcommand getConvertSubcommand() { return convertSubcommand; }
     public SparkHook getSparkHook() { return sparkHook; }
@@ -387,6 +418,7 @@ public final class RaskolVault extends JavaPlugin {
     public BondGui getBondGui() { return bondGui; }
     public ShareGui getShareGui() { return shareGui; }
     public AuctionGui getAuctionGui() { return auctionGui; }
+    public BankGui getBankGui() { return bankGui; }
     public long getStartTimeMillis() { return startTimeMillis; }
     public long getLastReconcileMillis() { return lastReconcileMillis; }
     public boolean isCorePresent() { return corePresent; }
