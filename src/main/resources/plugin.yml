@@ -3,8 +3,8 @@ version: '1.2.6'
 main: dev.raskol.vault.RaskolVault
 api-version: '1.21'
 author: hayferdahmer
-description: Многовалютное экономическое ядро: золотой стандарт, биржа, аукцион, банк, налоги.
-website: https://github.com/hayferdahmer/RaskolVault
+description: 'Многовалютное экономическое ядро: золотой стандарт, биржа, аукцион, банк, налоги.'
+website: 'https://github.com/hayferdahmer/RaskolVault'
 
 softdepend:
   - Essentials
@@ -15,35 +15,36 @@ softdepend:
 
 commands:
   rv:
-    description: Корневая команда RaskolVault
-    usage: /rv <wallet|pay|convert|confirm|rates|exchange|auction|bank|cabinet|guide|admin>
-    aliases: [raskolvault, rvault]
+    description: 'Корневая команда RaskolVault'
+    usage: '/rv <wallet|pay|convert|confirm|rates|exchange|auction|bank|cabinet|guide|admin>'
+    aliases:
+      - raskolvault
+      - rvault
   raskolvault:
-    description: Алиас корневой команды
-    usage: /raskolvault <sub>
-    aliases: []
+    description: 'Алиас корневой команды'
+    usage: '/raskolvault <sub>'
 
 permissions:
   raskolvault.use:
-    description: Базовый доступ (кошелёк, переводы, обмен, ставки, кредиты)
+    description: 'Базовый доступ: кошелёк, переводы, обмен, ставки, кредиты'
     default: true
   raskolvault.convert:
-    description: Конвертация валют
+    description: 'Конвертация валют'
     default: true
   raskolvault.exchange:
-    description: Биржа ордеров
+    description: 'Биржа ордеров'
     default: true
   raskolvault.auction:
-    description: Аукцион (создание/ставки/покупка)
+    description: 'Аукцион: создание, ставки, покупка'
     default: true
   raskolvault.bank:
-    description: Банк (вклады/кредиты)
+    description: 'Банк: вклады и кредиты'
     default: true
   raskolvault.cabinet:
-    description: Кабинет правителя (только король/мэр)
+    description: 'Кабинет правителя (только король или мэр)'
     default: op
   raskolvault.admin:
-    description: Полный админ-доступ
+    description: 'Полный админ-доступ'
     default: op
     children:
       raskolvault.admin.view: true
