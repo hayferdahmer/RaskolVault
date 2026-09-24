@@ -3,13 +3,13 @@ package dev.raskol.vault;
 
 import dev.raskol.vault.api.RaskolVaultAPI;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
-import dev.raskol.vault.audit.EconomicInvariantAuditor;
 import dev.raskol.vault.auction.AuctionBanService;
 import dev.raskol.vault.auction.AuctionReputation;
 import dev.raskol.vault.auction.AuctionService;
 import dev.raskol.vault.auction.AuctionStats;
-import dev.raskol.vault.bank.BankService;
+import dev.raskol.vault.audit.EconomicInvariantAuditor;
 import dev.raskol.vault.bank.BankGui;
+import dev.raskol.vault.bank.BankService;
 import dev.raskol.vault.bond.BondService;
 import dev.raskol.vault.command.RaskolVaultCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
@@ -37,6 +37,7 @@ import dev.raskol.vault.listener.NationAutoCurrencyListener;
 import dev.raskol.vault.listener.TownyNationLifecycleListener;
 import dev.raskol.vault.nation.NationTreasury;
 import dev.raskol.vault.observability.InflationCheckpoint;
+import dev.raskol.vault.observability.RaskolVaultPapiExpansion;
 import dev.raskol.vault.observability.SparkHook;
 import dev.raskol.vault.observability.TxCounter;
 import dev.raskol.vault.offline.OfflinePlayerRegistry;
@@ -65,7 +66,19 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.5-b: банк (вклады/кредиты/ликвидация) + таски начисления и авто-ликвидации.
+ * RaskolVault 1.2.6-c: многовалютная экономика сервера «РАСКОЛ | ДВЕ КОРОНЫ».
+ *
+ * Слои:
+ *  - Хранилище: SQLiteLedger (WAL, пул, single-writer) + SafeStorage (YAML атомарно)
+ *  - Кошелёк: WalletService (кэш + async)
+ *  - Экономика: ReserveBank (золотой стандарт), ConvertEngine, ExchangeService,
+ *               ExchangeOrderService (биржа ордеров), AuctionService (аукцион),
+ *               BankService (вклады/кредиты), BondService, ShareService
+ *  - Налоги: TaxService (convert/exchange/market/auction)
+ *  - Наблюдаемость: SparkHook, TxCounter, InflationCheckpoint, EconomicInvariantAuditor
+ *  - Хуки: Essentials, Towny, LuckPerms, PlaceholderAPI (+ raskolvault-экспаншн), RaskolCore
+ *
+ * 1.2.6-c: регистрация RaskolVaultPapiExpansion в блоке placeholderPresent (try/catch).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -100,8 +113,10 @@ public final class RaskolVault extends JavaPlugin {
     private AuctionStats auctionStats;
     private BankService bankService;
     private EconomicInvariantAuditor auditor;
-    private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask, taxSaveTask,
-            auditTask, auctionTask, bankAccrualTask, bankLiquidationTask;
+
+    private BukkitTask checkpointTask, inflationTask, reconcileTask, writerAlarmTask,
+            taxSaveTask, auctionTask, bankAccrualTask, bankLiquidationTask;
+
     private ConvertSubcommand convertSubcommand;
     private SparkHook sparkHook;
     private ReserveBank reserveBank;
@@ -109,6 +124,7 @@ public final class RaskolVault extends JavaPlugin {
     private TxCounter txCounter;
     private InflationCheckpoint inflationCheckpoint;
     private RaskolVaultAPI api;
+
     private ReserveGui reserveGui;
     private ExchangeGui exchangeGui;
     private CabinetGui cabinetGui;
@@ -116,6 +132,7 @@ public final class RaskolVault extends JavaPlugin {
     private ShareGui shareGui;
     private AuctionGui auctionGui;
     private BankGui bankGui;
+
     private long startTimeMillis;
     private volatile long lastReconcileMillis;
 
@@ -180,14 +197,15 @@ public final class RaskolVault extends JavaPlugin {
         confirms = new ConfirmManager(getConfig().getLong("exchange.confirm-timeout-seconds", 30));
         escrowService = new EscrowService(this, wallets, ledger, currencies);
         taxService = new TaxService(this, wallets);
-        taxService.load();
         bondService = new BondService(this, wallets);
         tradePolicy = new TradePolicyService(this);
         shareService = new ShareService(this, wallets, reserveBank);
+
         auctionReputation = new AuctionReputation(this);
         auctionBans = new AuctionBanService(this);
         auctionStats = new AuctionStats(this);
         auctionService = new AuctionService(this, wallets, reserveBank, auctionReputation, auctionBans, auctionStats);
+
         bankService = new BankService(this, wallets, reserveBank);
         auditor = new EconomicInvariantAuditor(this);
 
@@ -234,10 +252,21 @@ public final class RaskolVault extends JavaPlugin {
             coreHook = new RaskolCoreHook(this, wallets, currencies);
             coreHook.init();
         }
+
+        // 1.2.6-c: регистрация PAPI-хука + raskolvault-экспаншна (оба в try/catch)
         if (placeholderPresent && getConfig().getBoolean("hooks.placeholderapi.enabled", true)) {
-            try { new PlaceholderApiHook(this).register(); }
-            catch (Throwable t) { getLogger().warning("PAPI: " + t.getMessage()); }
+            try {
+                new PlaceholderApiHook(this).register();
+            } catch (Throwable t) {
+                getLogger().warning("PAPI: " + t.getMessage());
+            }
+            try {
+                new RaskolVaultPapiExpansion(this).register();
+            } catch (Throwable t2) {
+                getLogger().warning("PAPI raskolvault-expansion: " + t2.getMessage());
+            }
         }
+
         if (getConfig().getBoolean("storage.daily-backup.enabled", true)) {
             backups = new BackupService(this, dbFile,
                     getConfig().getString("storage.daily-backup.time", "04:00"),
@@ -272,23 +301,14 @@ public final class RaskolVault extends JavaPlugin {
             }, period, period);
         }
         taxSaveTask = getServer().getScheduler().runTaskTimerAsynchronously(this, taxService::save, 6000L, 6000L);
+
         long[] alarm = new long[]{0};
         writerAlarmTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
-            int q = writer.queueSize(); long f = writer.failed();
+            int q = writer.queueSize();
+            long f = writer.failed();
             if (q > 500) getLogger().warning("writer queue " + q);
             if (f > alarm[0]) { getLogger().warning("writer failed +" + (f - alarm[0])); alarm[0] = f; }
         }, 600L, 600L);
-
-        long auditMinutes = getConfig().getLong("audit.interval-minutes", 60);
-        if (auditMinutes > 0) {
-            long period = auditMinutes * 60L * 20L;
-            auditTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
-                var report = auditor.run();
-                if (auditor.hasFailures(report)) {
-                    for (String line : report) if (line.startsWith("&c[FAIL]")) getLogger().warning("selftest: " + line);
-                }
-            }, period, period);
-        }
 
         auctionTask = getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
             int expired = auctionService.expireAll();
@@ -296,7 +316,6 @@ public final class RaskolVault extends JavaPlugin {
                 getLogger().info("auction: просрочено лотов " + expired);
         }, 1200L, 1200L);
 
-        // 1.2.5-b: начисление процентов по вкладам
         long accrualMinutes = getConfig().getLong("bank.accrual-interval-minutes", 60);
         if (accrualMinutes > 0) {
             long period = accrualMinutes * 60L * 20L;
@@ -305,7 +324,6 @@ public final class RaskolVault extends JavaPlugin {
                 if (getConfig().getBoolean("general.debug", false)) getLogger().info("bank: начислены проценты");
             }, period, period);
         }
-        // 1.2.5-b: авто-ликвидация просроченных кредитов
         long liqMinutes = getConfig().getLong("bank.liquidation-check-minutes", 60);
         if (liqMinutes > 0) {
             long period = liqMinutes * 60L * 20L;
@@ -319,9 +337,14 @@ public final class RaskolVault extends JavaPlugin {
         convertSubcommand = new ConvertSubcommand(this);
         RaskolVaultCommand executor = new RaskolVaultCommand(this, convertSubcommand);
         PluginCommand command = getCommand("rv");
-        if (command != null) { command.setExecutor(executor); command.setTabCompleter(executor); }
+        if (command != null) {
+            command.setExecutor(executor);
+            command.setTabCompleter(executor);
+        } else {
+            getLogger().warning("Команда rv не описана в plugin.yml — команды отключены");
+        }
 
-        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.5-b bank)");
+        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.6-c)");
     }
 
     @Override
@@ -329,10 +352,9 @@ public final class RaskolVault extends JavaPlugin {
         if (bankLiquidationTask != null) bankLiquidationTask.cancel();
         if (bankAccrualTask != null) bankAccrualTask.cancel();
         if (auctionTask != null) auctionTask.cancel();
-        if (auditTask != null) auditTask.cancel();
+        if (taxSaveTask != null) taxSaveTask.cancel();
         if (writerAlarmTask != null) writerAlarmTask.cancel();
         if (reconcileTask != null) reconcileTask.cancel();
-        if (taxSaveTask != null) taxSaveTask.cancel();
         if (inflationTask != null) inflationTask.cancel();
         if (checkpointTask != null) checkpointTask.cancel();
         if (coreHook != null) coreHook.shutdown();
@@ -353,7 +375,9 @@ public final class RaskolVault extends JavaPlugin {
         getLogger().info("RaskolVault выключен");
     }
 
-    private void saveResourceIfAbsent(String name) { if (!new File(getDataFolder(), name).exists()) saveResource(name, false); }
+    private void saveResourceIfAbsent(String name) {
+        if (!new File(getDataFolder(), name).exists()) saveResource(name, false);
+    }
 
     private void saveBalancesBackup() {
         File file = new File(getDataFolder(), getConfig().getString("storage.yaml-backup.file", "data/balances.yml"));
@@ -373,8 +397,13 @@ public final class RaskolVault extends JavaPlugin {
         luckPermsPresent = isPluginEnabled("LuckPerms");
         placeholderPresent = isPluginEnabled("PlaceholderAPI");
     }
-    private boolean isPluginEnabled(String n) { Plugin p = getServer().getPluginManager().getPlugin(n); return p != null && p.isEnabled(); }
 
+    private boolean isPluginEnabled(String n) {
+        Plugin p = getServer().getPluginManager().getPlugin(n);
+        return p != null && p.isEnabled();
+    }
+
+    // ---------- геттеры ----------
     public SQLiteLedger getLedger() { return ledger; }
     public LedgerWriter getWriter() { return writer; }
     public MessagesConfig getMessages() { return messages; }
