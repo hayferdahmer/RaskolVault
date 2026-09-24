@@ -27,7 +27,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Аукцион (1.2.5-a.3): + модерация (adminRemove), blacklist, ban, статистика.
+ * Аукцион (1.2.6-b): порядок проверок в create — ВСЕ проверки ДО списания комиссии,
+ * чтобы при отказе игрок не терял деньги.
  */
 public final class AuctionService {
 
@@ -161,8 +162,10 @@ public final class AuctionService {
         SafeStorage.saveAtomic(lotsYaml, lotsFile, plugin);
     }
 
+    /** FIX 1.2.6-b: ВСЕ проверки ДО списания комиссии. */
     public AuctionLot create(UUID seller, ItemStack item, AuctionLot.LotType type,
                              double startPrice, double buyoutPrice, int durationHours, String currencyId) {
+        // 1. Валидация входных данных
         if (item == null || item.getType().isAir()) return null;
         if (!(startPrice > 0.0D)) return null;
         if (durationHours < 1 || durationHours > maxDurationHours()) return null;
@@ -170,22 +173,29 @@ public final class AuctionService {
         if (type == AuctionLot.LotType.AUCTION_BUYOUT && buyoutPrice <= startPrice) return null;
         if (currencyId == null || currencyId.isBlank()) currencyId = plugin.getCurrencies().globalId();
 
-        // Ban check
+        // 2. Ban check
         if (bans.isBanned(seller)) return null;
-        // Blacklist check
+
+        // 3. Blacklist check
         if (bans.isBlacklisted(item.getType())) return null;
 
+        // 4. Лимит лотов
         int activeCount = 0;
         for (AuctionLot l : lots.values())
             if (l.seller().equals(seller) && l.status() == AuctionLot.Status.ACTIVE) activeCount++;
         if (activeCount >= maxLotsPerPlayer()) return null;
 
+        // 5. Проверка баланса ДО списания
         double refPrice = (type == AuctionLot.LotType.AUCTION) ? startPrice : buyoutPrice;
         double listingFee = Math.max(listingFeeMin(), round2(refPrice * listingFeeRate()));
+        if (!wallets.has(seller, currencyId, listingFee)) return null;
+
+        // 6. Только теперь списываем комиссию
         if (!wallets.withdraw(seller, currencyId, listingFee, TransactionType.PAY, "auction:listing:fee")) {
             return null;
         }
 
+        // 7. Создание лота
         String id = UUID.randomUUID().toString();
         long now = System.currentTimeMillis();
         long expires = now + durationHours * 3600_000L;
@@ -229,7 +239,7 @@ public final class AuctionService {
         long timeLeft = lot.expiresAt() - now;
         if (timeLeft > 0 && timeLeft < snipingWindowMillis()) {
             lot.extend(snipingExtendMillis());
-            notify(bidder, "&7Лот продлён на 5 минут (анти-снайпинг)");
+            notify(bidder, "&7Лот продлён (анти-снайпинг)");
         }
 
         save();
@@ -301,7 +311,6 @@ public final class AuctionService {
         return doCancel(lot, "продавцом");
     }
 
-    /** Административное снятие лота (любым игроком с raskolvault.admin). */
     public String adminRemove(UUID admin, String lotId, String reason) {
         AuctionLot lot = lots.get(lotId);
         if (lot == null) return "лот не найден";
