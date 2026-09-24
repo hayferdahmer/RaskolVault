@@ -4,16 +4,14 @@ package dev.raskol.vault.bank;
 import java.util.UUID;
 
 /**
- * Вклад (1.2.5-b).
- * Term: DEMAND (до востребования, низкая ставка, снятие в любой момент),
- *       TERM_7/30/90 (срочные, ставка выше, снятие в срок без потерь).
- * Проценты — простые (simple interest), начисляются ежедневно в accrued.
- * Досрочное закрытие срочного вклада: потеря начисленных процентов + штраф X% от тела.
+ * Вклад (1.2.6-b): accrued cap на 200% от тела (защита от бесконечного накопления demand).
  */
 public final class BankAccount {
 
     public enum Term { DEMAND, TERM_7, TERM_30, TERM_90 }
     public enum Status { ACTIVE, CLOSED }
+
+    private static final double MAX_ACCRUED_RATIO = 2.0D;
 
     private final String id;
     private final UUID owner;
@@ -24,7 +22,7 @@ public final class BankAccount {
     private final Term term;
     private final double rateAnnual;
     private final long openedAt;
-    private final long maturesAt; // 0 для DEMAND
+    private final long maturesAt;
     private Status status;
     private double accrued;
     private long lastAccrualAt;
@@ -66,7 +64,7 @@ public final class BankAccount {
         };
     }
 
-    /** Начислить простые проценты за прошедшее время. demandRate — текущая ставка до востребования. */
+    /** Начислить проценты с cap accrued на MAX_ACCRUED_RATIO × principal. */
     public void accrue(long now, double demandRate) {
         if (status != Status.ACTIVE) return;
         double rate = isDemand() ? demandRate : rateAnnual;
@@ -78,13 +76,14 @@ public final class BankAccount {
         }
         double days = (to - from) / 86_400_000.0D;
         accrued += principal * rate * days / 365.0D;
+        double cap = principal * MAX_ACCRUED_RATIO;
+        if (accrued > cap) accrued = cap;
         lastAccrualAt = to;
     }
 
     public void payOutAccrued() { accrued = 0.0D; }
     public void close() { status = Status.CLOSED; }
 
-    /** Штраф досрочного закрытия срочного вклада: потеря процентов + earlyPenaltyRate от тела. */
     public double earlyPenalty(double earlyPenaltyRate) {
         if (isDemand()) return 0.0D;
         return principal * earlyPenaltyRate;
