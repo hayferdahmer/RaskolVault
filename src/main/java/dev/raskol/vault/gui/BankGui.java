@@ -26,7 +26,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Банк GUI (1.2.6 part2): кошелёк ВНУТРИ банка; вклады/кредиты двух типов; back-навигация.
+ * Банк GUI (fix): «Мои вклады» показывает ТОЛЬКО активные вклады (закрытые исчезают).
  */
 public final class BankGui implements Listener {
 
@@ -49,7 +49,6 @@ public final class BankGui implements Listener {
     private String nationOf(Player p) { return plugin.getTownyHook().isAvailable() ? plugin.getTownyHook().nationOf(p.getUniqueId()) : null; }
     private String glb() { return plugin.getCurrencies().globalId(); }
 
-    // ---------- ГЛАВНАЯ ----------
     public void openBank(Player p) {
         BankHolder h = new BankHolder();
         Inventory inv = Bukkit.createInventory(h, 54, GuiItems.c("&8▌&6 Банк &8▌"));
@@ -61,22 +60,21 @@ public final class BankGui implements Listener {
         inv.setItem(14, it(Material.GOLD_BLOCK, "&aОткрыть вклад", List.of("&7Процент по сроку", "&eКлик")));
         inv.setItem(16, it(Material.PAPER, "&6Мои кредиты", List.of("&eКлик")));
         inv.setItem(20, it(Material.EMERALD, "&6Взять кредит", List.of("&7Необеспеченный или под залог", "&eКлик")));
-        inv.setItem(22, it(Material.BOOK, "&6Условия", List.of(
-                "&7Ставки и лимиты нации",
+        inv.setItem(22, it(Material.BOOK, "&6Условия", List.of("&7Ставки и лимиты нации",
                 nation == null ? "&cВы вне нации" : "&7Нация: &f" + nation)));
         if (nation != null && plugin.getTownyHook().isKing(p.getUniqueId(), nation))
-            inv.setItem(24, it(Material.BEACON, "&6Банк нации", List.of("&7Пул, резерв, ставки", "&eКлик (король)")));
+            inv.setItem(24, it(Material.BEACON, "&6Банк нации", List.of("&7Пул, резерв, лимиты", "&eКлик (король)")));
         inv.setItem(49, it(Material.BARRIER, "&cЗакрыть", List.of()));
         p.openInventory(inv);
     }
 
-    // ---------- ВКЛАДЫ ----------
     private void openDeposits(Player p) {
         DepositsHolder h = new DepositsHolder();
         Inventory inv = Bukkit.createInventory(h, 54, GuiItems.c("&8▌&6 Мои вклады &8▌"));
         h.inv = inv;
         GuiItems.frame54(inv);
-        List<BankAccount> deps = bank().myDeposits(p.getUniqueId());
+        // FIX: только АКТИВНЫЕ вклады (закрытые исчезают из списка)
+        List<BankAccount> deps = bank().myDeposits(p.getUniqueId()).stream().filter(BankAccount::isActive).toList();
         long now = System.currentTimeMillis();
         for (int i = 0; i < GRID.length && i < deps.size(); i++) {
             BankAccount a = deps.get(i);
@@ -88,6 +86,7 @@ public final class BankGui implements Listener {
                     "&cКлик = закрыть вклад")));
         }
         for (int i = deps.size(); i < GRID.length; i++) inv.setItem(GRID[i], GuiItems.pane());
+        if (deps.isEmpty()) inv.setItem(22, it(Material.BARRIER, "&7Активных вкладов нет", List.of()));
         inv.setItem(49, it(Material.ARROW, "&7Назад", List.of()));
         p.openInventory(inv);
     }
@@ -105,7 +104,6 @@ public final class BankGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- КРЕДИТЫ ----------
     private void openLoans(Player p) {
         LoansHolder h = new LoansHolder();
         Inventory inv = Bukkit.createInventory(h, 54, GuiItems.c("&8▌&6 Мои кредиты &8▌"));
@@ -170,7 +168,6 @@ public final class BankGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- КЛИКИ ----------
     @EventHandler
     public void onClick(InventoryClickEvent e) {
         InventoryHolder raw = e.getInventory().getHolder();
@@ -185,21 +182,21 @@ public final class BankGui implements Listener {
 
         if (raw instanceof BankHolder) {
             if (slot == 49) { p.closeInventory(); return; }
-            if (slot == 10) { WalletGui.openMain(plugin, p); return; }   // кошелёк внутри банка
+            if (slot == 10) { WalletGui.openMain(plugin, p); return; }
             if (slot == 12) { openDeposits(p); return; }
             if (slot == 14) { openDepositTerm(p); return; }
             if (slot == 16) { openLoans(p); return; }
             if (slot == 20) { openLoanType(p); return; }
-            if (slot == 22) { msg(p, "&7Ставки и лимиты смотрите в «Условия» / у короля"); return; }
-            if (slot == 24 && nation != null) { msg(p, "&7Банк нации: пул " + Numbers.fmt(bank().pool(nation, glb()))
-                    + " · резерв-лимит " + Numbers.fmt(bank().maxLoans(nation))); return; }
+            if (slot == 22) { msg(p, "&7Ставки и лимиты нации смотри в Кабинете (король) или у короля"); return; }
+            if (slot == 24 && nation != null) { msg(p, "&7Пул: &f" + Numbers.fmt(bank().pool(nation, glb()))
+                    + " &7· Лимит выдач: &f" + Numbers.fmt(bank().maxLoans(nation))); return; }
             return;
         }
         if (raw instanceof DepositsHolder) {
             if (slot == 49) { openBank(p); return; }
+            List<BankAccount> deps = bank().myDeposits(uuid).stream().filter(BankAccount::isActive).toList();
             for (int i = 0; i < GRID.length; i++) {
                 if (GRID[i] != slot) continue;
-                List<BankAccount> deps = bank().myDeposits(uuid);
                 if (i < deps.size()) {
                     String err = bank().closeDeposit(uuid, deps.get(i).id());
                     msg(p, err == null ? "&aВклад закрыт, выплата зачислена" : "&c" + err);
@@ -222,9 +219,9 @@ public final class BankGui implements Listener {
         }
         if (raw instanceof LoansHolder) {
             if (slot == 49) { openBank(p); return; }
+            List<BankLoan> loans = bank().myLoans(uuid);
             for (int i = 0; i < GRID.length; i++) {
                 if (GRID[i] != slot) continue;
-                List<BankLoan> loans = bank().myLoans(uuid);
                 if (i < loans.size()) openLoanDetail(p, loans.get(i).id());
                 return;
             }
@@ -244,19 +241,18 @@ public final class BankGui implements Listener {
         }
         if (raw instanceof LoanTypeHolder) {
             if (slot == 22) { openBank(p); return; }
-            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "loan-unsecured"); msg(p, "&7Введите сумму необеспеченного кредита (лимит " + Numbers.fmt(bank().unsecuredMax(uuid, nation)) + "):"); return; }
+            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "loan-unsecured"); msg(p, "&7Сумма необеспеченного кредита (лимит " + Numbers.fmt(bank().unsecuredMax(uuid, nation)) + "):"); return; }
             if (slot == 13) { openLoanCollateral(p); return; }
             return;
         }
         if (raw instanceof LoanCollateralHolder) {
             if (slot == 22) { openLoanType(p); return; }
-            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "loan-sec-currency"); msg(p, "&7Введите сумму кредита под залог валютой:"); return; }
-            if (slot == 13) { p.closeInventory(); chatField.put(uuid, "loan-sec-item"); msg(p, "&7Введите сумму кредита под залог предмета в руке:"); return; }
+            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "loan-sec-currency"); msg(p, "&7Сумма кредита под залог валютой:"); return; }
+            if (slot == 13) { p.closeInventory(); chatField.put(uuid, "loan-sec-item"); msg(p, "&7Сумма кредита под залог предмета в руке:"); return; }
             return;
         }
     }
 
-    // ---------- ЧАТ ----------
     @EventHandler(priority = EventPriority.LOWEST)
     public void onChat(AsyncPlayerChatEvent e) {
         String field = chatField.remove(e.getPlayer().getUniqueId());
@@ -297,7 +293,7 @@ public final class BankGui implements Listener {
                 ItemStack hand = p.getInventory().getItemInMainHand();
                 if (hand == null || hand.getType().isAir()) { msg(p, "&cПустая рука"); openBank(p); return; }
                 ItemStack taken = hand.clone();
-                p.getInventory().setItemInMainHand(new org.bukkit.inventory.ItemStack(Material.AIR));
+                p.getInventory().setItemInMainHand(new ItemStack(Material.AIR));
                 String err = bank().applyLoan(uuid, p.getName(), nation, glb(), v, 30,
                         BankLoan.CollateralType.ITEM, null, taken);
                 if (err != null) p.getInventory().setItemInMainHand(taken);
