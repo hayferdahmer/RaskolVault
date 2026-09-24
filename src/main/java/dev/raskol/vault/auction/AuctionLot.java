@@ -8,7 +8,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Лот аукциона (1.2.5-a.2): + currencyId (валюта лота).
+ * Лот аукциона (1.2.6-b):
+ *  - bidHistory ограничен 50 записями (последние 50 ставок)
+ *  - extend() с абсолютным cap на 30 дней от createdAt
  */
 public final class AuctionLot {
 
@@ -16,6 +18,9 @@ public final class AuctionLot {
     public enum Status { ACTIVE, SOLD, EXPIRED, CANCELLED }
 
     public record BidHistoryEntry(UUID bidder, String bidderName, double amount, long timestamp) {}
+
+    private static final int MAX_BID_HISTORY = 50;
+    private static final long MAX_EXTENSION_DAYS = 30L;
 
     private final String id;
     private final UUID seller;
@@ -28,7 +33,7 @@ public final class AuctionLot {
     private double currentBid;
     private UUID currentBidder;
     private String currentBidderName;
-    private long createdAt;
+    private final long createdAt;
     private long expiresAt;
     private Status status;
     private final List<BidHistoryEntry> bidHistory = new ArrayList<>();
@@ -38,11 +43,16 @@ public final class AuctionLot {
     public AuctionLot(String id, UUID seller, String sellerName, ItemStack item, LotType type,
                       double startPrice, double buyoutPrice, String currencyId,
                       long createdAt, long expiresAt) {
-        this.id = id; this.seller = seller; this.sellerName = sellerName;
-        this.item = item; this.type = type;
-        this.startPrice = startPrice; this.buyoutPrice = buyoutPrice;
+        this.id = id;
+        this.seller = seller;
+        this.sellerName = sellerName;
+        this.item = item;
+        this.type = type;
+        this.startPrice = startPrice;
+        this.buyoutPrice = buyoutPrice;
         this.currencyId = currencyId;
-        this.createdAt = createdAt; this.expiresAt = expiresAt;
+        this.createdAt = createdAt;
+        this.expiresAt = expiresAt;
         this.status = Status.ACTIVE;
         this.currentBid = 0.0D;
     }
@@ -65,11 +75,21 @@ public final class AuctionLot {
     public String buyerName() { return buyerName; }
     public double finalPrice() { return finalPrice; }
 
+    /** Добавить ставку в историю (cap 50 записей). */
     public void placeBid(UUID bidder, String bidderName, double amount) {
         this.currentBid = amount;
         this.currentBidder = bidder;
         this.currentBidderName = bidderName;
         this.bidHistory.add(new BidHistoryEntry(bidder, bidderName, amount, System.currentTimeMillis()));
+        while (this.bidHistory.size() > MAX_BID_HISTORY) {
+            this.bidHistory.remove(0);
+        }
+    }
+
+    /** Продлить лот на milliseconds, но не более MAX_EXTENSION_DAYS от createdAt. */
+    public void extend(long milliseconds) {
+        long maxExpires = createdAt + MAX_EXTENSION_DAYS * 86_400_000L;
+        this.expiresAt = Math.min(this.expiresAt + milliseconds, maxExpires);
     }
 
     public void markSold(UUID buyer, String buyerName, double finalPrice) {
@@ -81,9 +101,6 @@ public final class AuctionLot {
     public void markExpired() { this.status = Status.EXPIRED; }
     public void markCancelled() { this.status = Status.CANCELLED; }
     public boolean isExpired(long now) { return now >= expiresAt; }
-
-    /** Продлевает лот на 5 минут (sniping protection). */
-    public void extend(long milliseconds) { this.expiresAt += milliseconds; }
 
     public double minNextBid() {
         double base = currentBid > 0 ? currentBid : startPrice;
