@@ -30,11 +30,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Аукцион GUI (auction-polish):
- *  + репутация продавца (★) в лоре лота и в деталях
- *  + страница «Мои ставки» (лоты, где ты лидер)
- *  + складываемые ПЕРСИСТЕНТНЫЕ фильтры per-player (мин+макс+поиск+категория+тип вместе)
- * Сохранены: категории-ряд, GUI фильтров, осмотр, мастер с изъятием предмета, оба конструктора.
+ * Аукцион GUI (fix): ВОЗВРАЩЕНЫ шаги ввода цены (чат) между выбором валюты и подтверждением.
+ * Ранее startPrice/buyoutPrice оставались 0 → create() возвращал null → «предмет возвращён».
  */
 public final class AuctionGui implements Listener {
 
@@ -42,7 +39,6 @@ public final class AuctionGui implements Listener {
     private final AuctionService auctions;
     private final Map<UUID, CreateWizard> wizards = new ConcurrentHashMap<>();
     private final Map<UUID, String> chatField = new ConcurrentHashMap<>();
-    // ПЕРСИСТЕНТНЫЕ фильтры per-player (auction-polish)
     private final Map<UUID, AuctionFilter> playerFilters = new ConcurrentHashMap<>();
 
     private static final class CreateWizard {
@@ -60,36 +56,18 @@ public final class AuctionGui implements Listener {
         private Inventory inv;
         @Override public Inventory getInventory() { return inv; }
     }
-    public static final class FilterHolder implements InventoryHolder {
-        private Inventory inv;
-        @Override public Inventory getInventory() { return inv; }
-    }
+    public static final class FilterHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
     public static final class InspectHolder implements InventoryHolder {
         final String lotId;
         InspectHolder(String lotId) { this.lotId = lotId; }
         private Inventory inv;
         @Override public Inventory getInventory() { return inv; }
     }
-    public static final class MyListingsHolder implements InventoryHolder {
-        private Inventory inv;
-        @Override public Inventory getInventory() { return inv; }
-    }
-    public static final class MyBidsHolder implements InventoryHolder {
-        private Inventory inv;
-        @Override public Inventory getInventory() { return inv; }
-    }
-    public static final class CreateTypeHolder implements InventoryHolder {
-        private Inventory inv;
-        @Override public Inventory getInventory() { return inv; }
-    }
-    public static final class CreateCurrencyHolder implements InventoryHolder {
-        private Inventory inv;
-        @Override public Inventory getInventory() { return inv; }
-    }
-    public static final class CreateConfirmHolder implements InventoryHolder {
-        private Inventory inv;
-        @Override public Inventory getInventory() { return inv; }
-    }
+    public static final class MyListingsHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
+    public static final class MyBidsHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
+    public static final class CreateTypeHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
+    public static final class CreateCurrencyHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
+    public static final class CreateConfirmHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
     public static final class DetailHolder implements InventoryHolder {
         final String lotId;
         DetailHolder(String lotId) { this.lotId = lotId; }
@@ -137,7 +115,6 @@ public final class AuctionGui implements Listener {
                 meta.setDisplayName(GuiItems.c("&6" + base));
                 List<String> lore = meta.getLore() == null ? new ArrayList<>() : new ArrayList<>(meta.getLore());
                 lore.add("");
-                // auction-polish: репутация продавца
                 lore.add(GuiItems.c("&7Продавец: &f" + lot.sellerName() + " &7★" + repOf(lot.seller())));
                 lore.add(GuiItems.c("&7Валюта: &f" + lot.currencyId()));
                 if (lot.type() != AuctionLot.LotType.AUCTION)
@@ -162,22 +139,17 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- ФИЛЬТРЫ (читают персистентный фильтр игрока) ----------
+    // ---------- ФИЛЬТРЫ ----------
     private void openFilters(Player p) {
         AuctionFilter f = filterOf(p.getUniqueId());
         FilterHolder h = new FilterHolder();
         Inventory inv = Bukkit.createInventory(h, 27, GuiItems.c("&8▌&6 Фильтры аукциона &8▌"));
         h.inv = inv;
-        inv.setItem(10, it(Material.BOOK, "&6Категория", List.of(
-                "&7: &f" + (f.category() == null ? "любая" : f.category().displayName()), "&eКлик → ввод")));
-        inv.setItem(11, it(Material.COMPASS, "&6Тип лота", List.of(
-                "&7: &f" + (f.type() == null ? "любой" : f.type().name()), "&eКлик → ввод")));
-        inv.setItem(12, it(Material.GOLD_NUGGET, "&6Мин. цена", List.of(
-                "&7: &f" + (f.minPrice() == null ? "—" : Numbers.fmt(f.minPrice())), "&eКлик → ввод")));
-        inv.setItem(13, it(Material.GOLD_BLOCK, "&6Макс. цена", List.of(
-                "&7: &f" + (f.maxPrice() == null ? "—" : Numbers.fmt(f.maxPrice())), "&eКлик → ввод")));
-        inv.setItem(14, it(Material.NAME_TAG, "&bПоиск", List.of(
-                "&7: &f" + (f.searchQuery() == null ? "—" : f.searchQuery()), "&eКлик → ввод")));
+        inv.setItem(10, it(Material.BOOK, "&6Категория", List.of("&7: &f" + (f.category() == null ? "любая" : f.category().displayName()), "&eКлик → ввод")));
+        inv.setItem(11, it(Material.COMPASS, "&6Тип лота", List.of("&7: &f" + (f.type() == null ? "любой" : f.type().name()), "&eКлик → ввод")));
+        inv.setItem(12, it(Material.GOLD_NUGGET, "&6Мин. цена", List.of("&7: &f" + (f.minPrice() == null ? "—" : Numbers.fmt(f.minPrice())), "&eКлик → ввод")));
+        inv.setItem(13, it(Material.GOLD_BLOCK, "&6Макс. цена", List.of("&7: &f" + (f.maxPrice() == null ? "—" : Numbers.fmt(f.maxPrice())), "&eКлик → ввод")));
+        inv.setItem(14, it(Material.NAME_TAG, "&bПоиск", List.of("&7: &f" + (f.searchQuery() == null ? "—" : f.searchQuery()), "&eКлик → ввод")));
         inv.setItem(15, it(Material.RED_CONCRETE, "&cСбросить всё", List.of("&eКлик")));
         inv.setItem(22, it(Material.ARROW, "&7Применить/назад", List.of()));
         p.openInventory(inv);
@@ -208,7 +180,7 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- МОИ ЛОТЫ ----------
+    // ---------- МОИ ЛОТЫ / СТАВКИ ----------
     private void openMyListings(Player p) {
         MyListingsHolder h = new MyListingsHolder();
         Inventory inv = Bukkit.createInventory(h, 54, GuiItems.c("&8▌&6 Мои лоты &8▌"));
@@ -228,7 +200,6 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- МОИ СТАВКИ (auction-polish) ----------
     private void openMyBids(Player p) {
         MyBidsHolder h = new MyBidsHolder();
         Inventory inv = Bukkit.createInventory(h, 54, GuiItems.c("&8▌&6 Мои ставки &8▌"));
@@ -278,7 +249,7 @@ public final class AuctionGui implements Listener {
         p.openInventory(inv);
     }
 
-    // ---------- МАСТЕР СОЗДАНИЯ ----------
+    // ---------- МАСТЕР СОЗДАНИЯ (тип → валюта → ЦЕНА → подтверждение) ----------
     private void openCreateType(Player p) {
         ItemStack held = p.getInventory().getItemInMainHand();
         if (held == null || held.getType().isAir()) { msg(p, "&cВозьмите предмет в основную руку"); return; }
@@ -293,6 +264,7 @@ public final class AuctionGui implements Listener {
         inv.setItem(22, it(Material.ARROW, "&7Назад", List.of()));
         p.openInventory(inv);
     }
+
     private void openCreateCurrency(Player p) {
         CreateCurrencyHolder h = new CreateCurrencyHolder();
         Inventory inv = Bukkit.createInventory(h, 27, GuiItems.c("&8▌&6 Валюта лота &8▌"));
@@ -306,17 +278,34 @@ public final class AuctionGui implements Listener {
         inv.setItem(22, it(Material.ARROW, "&7Назад", List.of()));
         p.openInventory(inv);
     }
+
+    /** FIX: шаг ввода цены через чат. */
+    private void askPrice(Player p, CreateWizard w) {
+        p.closeInventory();
+        if (w.type == AuctionLot.LotType.BUYOUT) {
+            chatField.put(p.getUniqueId(), "create-buyout");
+            msg(p, "&7Введите цену buyout (" + w.currencyId + "):");
+        } else {
+            chatField.put(p.getUniqueId(), "create-price");
+            msg(p, "&7Введите стартовую цену (" + w.currencyId + "):");
+        }
+    }
+
     private void openCreateConfirm(Player p) {
         CreateWizard w = wizards.get(p.getUniqueId());
         if (w == null) { openCreateType(p); return; }
         CreateConfirmHolder h = new CreateConfirmHolder();
         Inventory inv = Bukkit.createInventory(h, 27, GuiItems.c("&8▌&6 Подтверждение &8▌"));
         h.inv = inv;
-        inv.setItem(13, it(Material.BOOK, "&6Сводка лота", List.of(
-                "&7Предмет: &f" + w.item.getType().name() + " x" + w.item.getAmount(),
-                "&7Тип: &f" + w.type.name(),
-                "&7Валюта: &f" + w.currencyId,
-                "&cВНИМАНИЕ: предмет будет изъят")));
+        List<String> lore = new ArrayList<>();
+        lore.add("&7Предмет: &f" + w.item.getType().name() + " x" + w.item.getAmount());
+        lore.add("&7Тип: &f" + w.type.name());
+        lore.add("&7Валюта: &f" + w.currencyId);
+        if (w.type != AuctionLot.LotType.BUYOUT) lore.add("&7Старт: &f" + Numbers.fmt(w.startPrice));
+        if (w.type != AuctionLot.LotType.AUCTION) lore.add("&7Buyout: &f" + Numbers.fmt(w.buyoutPrice));
+        lore.add("&7Срок: &f" + w.durationHours + "ч");
+        lore.add("&cВНИМАНИЕ: предмет будет изъят");
+        inv.setItem(13, it(Material.BOOK, "&6Сводка лота", lore));
         inv.setItem(11, it(Material.LIME_CONCRETE, "&a✔ Выставить", List.of()));
         inv.setItem(15, it(Material.RED_CONCRETE, "&cОтмена", List.of()));
         p.openInventory(inv);
@@ -348,7 +337,7 @@ public final class AuctionGui implements Listener {
                 AuctionCategory clicked = cats[slot];
                 AuctionFilter cur = filterOf(uuid);
                 AuctionFilter next = cur.category() == clicked ? cur.withCategory(null) : cur.withCategory(clicked);
-                playerFilters.put(uuid, next);   // персистентно
+                playerFilters.put(uuid, next);
                 openMarket(p, 0, next);
                 return;
             }
@@ -415,7 +404,10 @@ public final class AuctionGui implements Listener {
             if (w == null) return;
             int idx = (slot - 10) / 2;
             List<Currency> all = plugin.getCurrencies().all();
-            if (idx >= 0 && idx < all.size()) { w.currencyId = all.get(idx).id(); openCreateConfirm(p); }
+            if (idx >= 0 && idx < all.size()) {
+                w.currencyId = all.get(idx).id();
+                askPrice(p, w);   // FIX: переход к вводу цены
+            }
             return;
         }
         if (raw instanceof CreateConfirmHolder) {
@@ -464,7 +456,7 @@ public final class AuctionGui implements Listener {
         }
     }
 
-    // ---------- ЧАТ: ставки + СКЛАДЫВАЕМЫЕ фильтры ----------
+    // ---------- ЧАТ: ставки + фильтры + ЦЕНЫ создания ----------
     @EventHandler(priority = EventPriority.LOWEST)
     public void onChat(AsyncPlayerChatEvent e) {
         String field = chatField.remove(e.getPlayer().getUniqueId());
@@ -475,6 +467,37 @@ public final class AuctionGui implements Listener {
         String text = e.getMessage().trim();
         Bukkit.getScheduler().runTask(plugin, () -> {
             boolean cancel = text.equalsIgnoreCase("отмена") || text.equalsIgnoreCase("cancel");
+            CreateWizard w = wizards.get(uuid);
+
+            // FIX: ввод цен создания
+            if (field.equals("create-price") && w != null) {
+                if (cancel) { wizards.remove(uuid); openMarket(p, 0); return; }
+                double v = Numbers.parseDouble(text, -1);
+                if (!(v > 0)) { msg(p, "&cЦена > 0"); askPrice(p, w); return; }
+                w.startPrice = v;
+                if (w.type == AuctionLot.LotType.AUCTION_BUYOUT) {
+                    chatField.put(uuid, "create-buyout");
+                    msg(p, "&7Введите цену buyout (больше стартовой):");
+                } else {
+                    openCreateConfirm(p);
+                }
+                return;
+            }
+            if (field.equals("create-buyout") && w != null) {
+                if (cancel) { wizards.remove(uuid); openMarket(p, 0); return; }
+                double v = Numbers.parseDouble(text, -1);
+                if (!(v > 0)) { msg(p, "&cЦена > 0"); chatField.put(uuid, "create-buyout"); msg(p, "&7Введите цену buyout:"); return; }
+                if (w.type == AuctionLot.LotType.AUCTION_BUYOUT && v <= w.startPrice) {
+                    msg(p, "&cBuyout должен быть больше стартовой");
+                    chatField.put(uuid, "create-buyout");
+                    msg(p, "&7Введите цену buyout (больше " + Numbers.fmt(w.startPrice) + "):");
+                    return;
+                }
+                w.buyoutPrice = v;
+                openCreateConfirm(p);
+                return;
+            }
+
             if (field.startsWith("bid:")) {
                 if (cancel) { openMarket(p, 0); return; }
                 double v = Numbers.parseDouble(text, -1);
@@ -484,7 +507,6 @@ public final class AuctionGui implements Listener {
                 openMarket(p, 0);
                 return;
             }
-            // Складывание: берём ТЕКУЩИЙ фильтр игрока и мутируем одно поле
             AuctionFilter cur = filterOf(uuid);
             AuctionFilter next = cur;
             switch (field) {
@@ -500,21 +522,12 @@ public final class AuctionGui implements Listener {
                     try { next = cur.withType(AuctionLot.LotType.valueOf(text.toUpperCase())); }
                     catch (IllegalArgumentException ex) { msg(p, "&cНеверный тип"); openFilters(p); return; }
                 }
-                case "f-min" -> {
-                    if (cancel) { openFilters(p); return; }
-                    next = cur.withMinPrice(Numbers.parseDouble(text, 0));
-                }
-                case "f-max" -> {
-                    if (cancel) { openFilters(p); return; }
-                    next = cur.withMaxPrice(Numbers.parseDouble(text, 0));
-                }
-                case "f-search" -> {
-                    if (cancel) { openFilters(p); return; }
-                    next = cur.withSearch(text);
-                }
+                case "f-min" -> { if (cancel) { openFilters(p); return; } next = cur.withMinPrice(Numbers.parseDouble(text, 0)); }
+                case "f-max" -> { if (cancel) { openFilters(p); return; } next = cur.withMaxPrice(Numbers.parseDouble(text, 0)); }
+                case "f-search" -> { if (cancel) { openFilters(p); return; } next = cur.withSearch(text); }
                 default -> { openFilters(p); return; }
             }
-            playerFilters.put(uuid, next);   // персистентно между открытиями
+            playerFilters.put(uuid, next);
             openMarket(p, 0, next);
         });
     }
