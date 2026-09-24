@@ -1,80 +1,11 @@
 # ============================================================
-#  RaskolVault — config.yml (v1.2.5-b)
-#  Многовалютная экономика сервера «РАСКОЛ | ДВЕ КОРОНЫ»
-#  Все суммы — в единицах валюты; ставки — доли (0.02 = 2%)
+#  RaskolVault 1.2.6 — config.yml
+#  Многовалютное экономическое ядро (Paper 1.21)
+#  Все ставки — доли (0.02 = 2%). Время — минуты/мс, если не указано иное.
 # ============================================================
 
 general:
   debug: false
-  locale: ru
-  auto-save-minutes: 5
-
-# ---------- Глобальная валюта (прокси в EssentialsX) ----------
-global-currency:
-  id: GLD
-  display-name: 'Золото'
-  symbol: 'GLD'
-  decimals: 2
-  essentials-sync: true
-
-# ---------- Обмен валют ----------
-exchange:
-  enabled: true
-  default-fee: 0.02          # базовая комиссия обмена (сжигается)
-  min-fee: 0.01              # пол комиссии (анти-dust)
-  min-amount: 1.0            # минимальная сумма обмена
-  require-confirm: true
-  confirm-timeout-seconds: 30
-  rates-file: rates.yml
-
-# ---------- Авто-конверт при входе в нацию (опционально) ----------
-auto-convert:
-  enabled: false
-  require-confirm: true
-
-# ---------- Хуки ----------
-hooks:
-  essentials:
-    enabled: true
-  towny:
-    enabled: true
-    auto-create-national: true   # авто-создание нацвалюты при появлении нации
-  luckperms:
-    enabled: true
-  raskolcore:
-    enabled: true
-    register-as-provider: true   # регистрировать RaskolVault как Economy-провайдер
-  placeholderapi:
-    enabled: true
-
-# ---------- Валютный совет (резерв / паритет / налоги) ----------
-reserve:
-  coverage-floor: 0.5        # покрытие < 50% = КРИЗИС
-  parity-min: 0.5
-  parity-max: 2.0
-  tax-max: 0.05              # максимум налога нации (5%)
-  withdraw-daily-share: 0.25 # лимит вывода из резерва в сутки (25%)
-  check-interval-minutes: 60 # проверка покрытия / кризис-broadcast
-  seigniorage: 0.02          # сеньораж при минте (сжигается)
-  file: nations.yml
-  bulletin:
-    enabled: true
-    interval-minutes: 10080  # еженедельный экономический бюллетень
-  # Runtime-ключи (пишутся плагином автоматически, вручную не трогать):
-  # parity:
-  #   вальрадис: 1.00
-  # tax:
-  #   вальрадис: 0.02
-
-# ---------- Безопасность ----------
-safety:
-  rate-limit:                # конверты
-    capacity: 5.0
-    refill-per-second: 0.5
-  pay-rate-limit:            # переводы
-    capacity: 5.0
-    refill-per-second: 0.5
-  max-transaction: 1000000000 # анти-overflow кап любой операции
 
 # ---------- Хранилище ----------
 storage:
@@ -83,9 +14,8 @@ storage:
     pool-size: 5
     synchronous: NORMAL
     borrow-timeout-ms: 5000
-    checkpoint-interval-minutes: 5
     writer-queue-cap: 10000
-  reconcile-interval-minutes: 30   # сверка кэш↔леджер
+    checkpoint-interval-minutes: 5
   yaml-backup:
     enabled: true
     file: data/balances.yml
@@ -93,59 +23,100 @@ storage:
     enabled: true
     time: '04:00'
     keep-days: 7
+  reconcile-interval-minutes: 30
 
-# ---------- Аудит и самопроверка ----------
-audit:
-  log-to-file: true
-  log-to-console: false
-  rotation-mb: 5
-  interval-minutes: 60       # период EconomicInvariantAuditor (selftest)
+# ---------- Сообщения ----------
+messages:
+  file: messages.yml
 
-# ---------- Аукцион (1.2.5-a) ----------
+# ---------- Глобальная валюта ----------
+global-currency:
+  id: GLD
+  display-name: 'Золото'
+  symbol: 'GLD'
+  decimals: 2
+
+# ---------- Обмен ----------
+exchange:
+  default-fee: 0.02
+  min-fee: 0.01
+  min-amount: 1.0
+  confirm-timeout-seconds: 30
+  rates-file: rates.yml
+
+# ---------- Резерв / золотой стандарт ----------
+reserve:
+  check-interval-minutes: 60
+  coverage-floor: 0.5
+  parity-min: 0.5
+  parity-max: 2.0
+  tax-max: 0.05
+  withdraw-daily-share: 0.25
+  seigniorage: 0.02
+
+# ---------- Безопасность ----------
+safety:
+  rate-limit:
+    capacity: 5.0
+    refill-per-second: 0.5
+  pay-rate-limit:
+    capacity: 5.0
+    refill-per-second: 0.5
+  max-transaction: 1000000000
+
+# ---------- Аукцион ----------
 auction:
-  listing-fee-rate: 0.01     # комиссия листинга (сжигается)
+  listing-fee-rate: 0.01
   listing-fee-min: 0.1
-  sell-fee-rate: 0.03        # комиссия продажи
+  sell-fee-rate: 0.03
   max-duration-hours: 72
   max-lots-per-player: 10
   sounds-enabled: true
   chat-notify: true
-  sniping-window-ms: 30000   # окно анти-снайпинга (ставка в последние 30 сек)
-  sniping-extend-ms: 300000  # продление лота при снайпинге (+5 мин)
-  blacklist-items:           # материалы, запрещённые к продаже
+  sniping-window-ms: 30000
+  sniping-extend-ms: 300000
+  blacklist-items:
     - BEDROCK
     - BARRIER
     - COMMAND_BLOCK
     - STRUCTURE_BLOCK
     - DEBUG_STICK
 
-# ---------- Банк (1.2.5-b) ----------
+# ---------- Банк ----------
 bank:
   defaults:
-    demand-rate: 0.01        # до востребования, годовых
-    rate-7: 0.02             # срочный 7 дней
-    rate-30: 0.035           # срочный 30 дней
-    rate-90: 0.05            # срочный 90 дней
-    loan-rate: 0.10          # базовая ставка кредита, годовых
-    collateral-ratio: 1.5    # залог = 150% суммы кредита
-    reserve-multiplier: 3.0  # maxLoans = резерв нации × 3 (фракционное резервирование)
-    early-penalty: 0.02      # штраф досрочного закрытия вклада (% от тела)
-  accrual-interval-minutes: 60      # начисление процентов по вкладам
-  liquidation-check-minutes: 60     # авто-ликвидация просроченных кредитов
-  appraisal:                 # оценка предметов залога (цена за 1 шт, GLD)
+    demand-rate: 0.01
+    rate-7: 0.02
+    rate-30: 0.035
+    rate-90: 0.05
+    loan-rate: 0.10
+    collateral-ratio: 1.5
+    reserve-multiplier: 3.0
+    early-penalty: 0.02
+  accrual-interval-minutes: 60
+  liquidation-check-minutes: 60
+  appraisal:
     DIAMOND: 100.0
     DIAMOND_BLOCK: 900.0
     NETHERITE_INGOT: 500.0
     GOLD_BLOCK: 90.0
     EMERALD: 60.0
     ENCHANTED_GOLDEN_APPLE: 250.0
-  # Переопределение параметров для конкретной нации (опционально):
-  # nations:
-  #   вальрадис:
-  #     loan-rate: 0.08
-  #     collateral-ratio: 1.3
-  #     reserve-multiplier: 4.0
 
-# ---------- Сообщения ----------
-messages:
-  file: messages.yml
+# ---------- Аудит ----------
+audit:
+  interval-minutes: 60
+
+# ---------- Хуки ----------
+hooks:
+  essentials:
+    enabled: true
+  towny:
+    enabled: true
+    auto-create-national: true
+  luckperms:
+    enabled: true
+  placeholderapi:
+    enabled: true
+  raskolcore:
+    register-as-provider: true
