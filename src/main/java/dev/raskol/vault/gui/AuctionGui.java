@@ -30,12 +30,14 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * GUI аукциона (1.2.6-a fix): Баг 1 — предмет ИЗЫМАЕТСЯ из инвентаря в момент
- * подтверждения создания лота (дюп закрыт). При ошибке создания — возврат.
+ * GUI аукциона (1.2.6-a fix): конструктор принимает ИЛИ (RaskolVault), ИЛИ
+ * (RaskolVault, AuctionService) — любой вызов в RaskolVault компилируется.
+ * Баг 1 (дюп): предмет изымается из инвентаря при подтверждении создания лота.
  */
 public final class AuctionGui implements Listener {
 
     private final RaskolVault plugin;
+    private final AuctionService auctions;
     private final Map<UUID, CreateWizard> loanWizards = new ConcurrentHashMap<>();
     private final Map<UUID, String> chatField = new ConcurrentHashMap<>();
 
@@ -47,6 +49,18 @@ public final class AuctionGui implements Listener {
         int durationHours = 24;
         String currencyId = "GLD";
     }
+
+    // FIX: оба конструктора, чтобы любой вызов в RaskolVault компилировался
+    public AuctionGui(RaskolVault plugin) {
+        this(plugin, plugin.getAuctionService());
+    }
+
+    public AuctionGui(RaskolVault plugin, AuctionService auctions) {
+        this.plugin = plugin;
+        this.auctions = auctions;
+    }
+
+    private AuctionService auctions() { return auctions; }
 
     public static final class MarketHolder implements InventoryHolder {
         final int page; final AuctionFilter filter;
@@ -77,9 +91,6 @@ public final class AuctionGui implements Listener {
         @Override public Inventory getInventory() { return inv; }
     }
 
-    public AuctionGui(RaskolVault plugin) { this.plugin = plugin; }
-
-    private AuctionService auctions() { return plugin.getAuctionService(); }
     private static String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
     private void msg(Player p, String raw) { p.sendMessage(c(plugin.getMessages().prefix() + raw)); }
     private static ItemStack item(Material m, String name, List<String> lore) {
@@ -302,7 +313,6 @@ public final class AuctionGui implements Listener {
             CreateWizard w = loanWizards.get(p.getUniqueId());
             if (slot == 15) { p.closeInventory(); loanWizards.remove(p.getUniqueId()); return; }
             if (slot == 11 && w != null) {
-                // БАГ 1 FIX: изымаем предмет ИЗ ИНВЕНТАРЯ в момент создания
                 ItemStack live = p.getInventory().getItemInMainHand();
                 if (live == null || live.getType().isAir()) {
                     msg(p, "&cПредмет не в руке — создание отменено");
@@ -314,7 +324,7 @@ public final class AuctionGui implements Listener {
                 AuctionLot lot = auctions().create(p.getUniqueId(), lotItem, w.type,
                         w.startPrice, w.buyoutPrice, w.durationHours, w.currencyId);
                 if (lot == null) {
-                    p.getInventory().setItemInMainHand(lotItem); // возврат при ошибке
+                    p.getInventory().setItemInMainHand(lotItem);
                     msg(p, "&cНе удалось создать лот — предмет возвращён");
                 } else {
                     msg(p, "&aЛот &f" + lot.id().substring(0, 8) + " &aвыставлен");
