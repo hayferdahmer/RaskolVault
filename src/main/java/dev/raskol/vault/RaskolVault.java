@@ -20,7 +20,7 @@ import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.gui.AuctionGui;
-import dev.raskol.vault.gui.BankGui;          // FIX 1.2.6: был dev.raskol.vault.bank.BankGui
+import dev.raskol.vault.gui.BankGui;
 import dev.raskol.vault.gui.BondGui;
 import dev.raskol.vault.gui.CabinetGui;
 import dev.raskol.vault.gui.ExchangeGui;
@@ -53,6 +53,8 @@ import dev.raskol.vault.tax.TaxService;
 import dev.raskol.vault.test.LoadSimulator;
 import dev.raskol.vault.trade.TradePolicyService;
 import dev.raskol.vault.wallet.WalletService;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -67,7 +69,7 @@ import java.util.UUID;
 
 /**
  * RaskolVault 1.2.6: многовалютная экономика, биржа, аукцион, банк, налоги.
- * FIX: импорт BankGui из dev.raskol.vault.gui (класс переехал из bank-пакета).
+ * + стартовый ASCII-баннер в консоли.
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -326,7 +328,26 @@ public final class RaskolVault extends JavaPlugin {
             getLogger().warning("Команда rv не описана в plugin.yml — команды отключены");
         }
 
+        printBanner();
         getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.6)");
+    }
+
+    /** Цветной ASCII-баннер в консоль при старте. */
+    private void printBanner() {
+        String[] art = {
+            "&6 ██████╗  █████╗  ███████╗ ██╗  ██╗  ██████╗  ██╗",
+            "&6 ██╔══██╗ ██╔══██╗ ██╔════╝ ██║ ██╔╝ ██╔═══██╗ ██║",
+            "&e ██████╔╝ ███████║ ███████╗ █████╔╝  ██║   ██║ ██║",
+            "&e ██╔══██╗ ██╔══██║ ╚════██║ ██╔═██╗  ██║   ██║ ██║",
+            "&6 ██║  ██║ ██║  ██║ ███████║ ██║  ██╗ ╚██████╔╝ ███████╗",
+            "&6 ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚══════╝ ╚═╝  ╚═╝  ╚═════╝  ╚══════╝",
+            "&8 ────────────────────────────────────────────────",
+            "&7        VAULT &8· &fзолотой стандарт &8· &6v" + getPluginMeta().getVersion(),
+            "&7        РАСКОЛ &8| &fДВЕ КОРОНЫ &8· &6Paper 1.21",
+            "&8 ────────────────────────────────────────────────"
+        };
+        var console = Bukkit.getConsoleSender();
+        for (String line : art) console.sendMessage(ChatColor.translateAlternateColorCodes('&', line));
     }
 
     @Override
