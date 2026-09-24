@@ -1,32 +1,49 @@
 name: RaskolVault
-version: '1.2.1'
+version: '1.2.6'
 main: dev.raskol.vault.RaskolVault
 api-version: '1.21'
 author: hayferdahmer
-description: 'Многовалютный экономический слой поверх EssentialsX: национальные валюты с золотым покрытием, биржа королей, escrow, SQLite-аудит'
+description: Многовалютное экономическое ядро: золотой стандарт, биржа, аукцион, банк, налоги.
+website: https://github.com/hayferdahmer/RaskolVault
 
-# RaskolVault стартует ПОСЛЕ зависимостей и ДО плагинов-друзей
-softdepend: [RaskolCore, Vault, Essentials, Towny, LuckPerms, PlaceholderAPI, spark]
-loadbefore: [RaskolMarket, RaskolCaravans, RaskolCharters, EconomyShopGUI, ChestShop]
+softdepend:
+  - Essentials
+  - Towny
+  - LuckPerms
+  - PlaceholderAPI
+  - RaskolCore
 
 commands:
   rv:
-    description: 'Команды RaskolVault'
-    usage: '/rv [help|wallet|pay|convert|confirm|rates|exchange|nation|admin]'
-    aliases: [raskolvault, wallet]
+    description: Корневая команда RaskolVault
+    usage: /rv <wallet|pay|convert|confirm|rates|exchange|auction|bank|cabinet|guide|admin>
+    aliases: [raskolvault, rvault]
+  raskolvault:
+    description: Алиас корневой команды
+    usage: /raskolvault <sub>
+    aliases: []
 
 permissions:
   raskolvault.use:
-    description: 'Базовые команды кошелька (balance, pay, wallet)'
+    description: Базовый доступ (кошелёк, переводы, обмен, ставки, кредиты)
     default: true
   raskolvault.convert:
-    description: 'Обмен валют'
+    description: Конвертация валют
     default: true
   raskolvault.exchange:
-    description: 'Просмотр стакана биржи (ордера — только короли)'
+    description: Биржа ордеров
     default: true
+  raskolvault.auction:
+    description: Аукцион (создание/ставки/покупка)
+    default: true
+  raskolvault.bank:
+    description: Банк (вклады/кредиты)
+    default: true
+  raskolvault.cabinet:
+    description: Кабинет правителя (только король/мэр)
+    default: op
   raskolvault.admin:
-    description: 'Все админские подкоманды'
+    description: Полный админ-доступ
     default: op
     children:
       raskolvault.admin.view: true
@@ -39,12 +56,8 @@ permissions:
       raskolvault.admin.burn: true
       raskolvault.admin.audit: true
       raskolvault.admin.reload: true
-      raskolvault.admin.debug: true
       raskolvault.admin.backup: true
+      raskolvault.admin.restore: true
       raskolvault.admin.health: true
-  raskolvault.api.use:
-    description: 'Доступ к публичному API для плагинов-друзей'
-    default: true
-  raskolvault.api.admin:
-    description: 'Админ-операции через API (без лимитов)'
-    default: op
+      raskolvault.admin.auction: true
+      raskolvault.admin.bank: true
