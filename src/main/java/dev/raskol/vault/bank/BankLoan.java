@@ -4,10 +4,8 @@ package dev.raskol.vault.bank;
 import java.util.UUID;
 
 /**
- * Кредит (1.2.5-b).
- * Залог: CURRENCY (замороженная валюта) или ITEM (предмет, base64, оценка по конфигу).
- * Проценты простые; начисляются до dueAt. После dueAt — просрочка → ликвидация залога.
- * Кредитная история влияет на лимит и ставку (creditScore).
+ * Кредит (1.2.6-a fix): проценты накапливаются в accrued через accrueTo(),
+ * а не пересчитываются от начального тела → корректное частичное погашение (Баг 6).
  */
 public final class BankLoan {
 
@@ -18,17 +16,19 @@ public final class BankLoan {
     private final UUID borrower;
     private final String borrowerName;
     private final String nation;
-    private final double principal;
+    private double principal;          // теперь mutable (уменьшается при погашении)
     private final String currencyId;
     private final double rateAnnual;
     private final int termDays;
     private final long openedAt;
     private final long dueAt;
     private double repaid;
+    private double accrued;            // накопленные проценты (Баг 6)
+    private long lastAccrualAt;        // момент последнего начисления
     private Status status;
     private final CollateralType collateralType;
-    private final String collateralCurrency;   // для CURRENCY
-    private final String collateralItemBase64; // для ITEM
+    private final String collateralCurrency;
+    private final String collateralItemBase64;
     private final double collateralValue;
     private final int creditScoreAtOpen;
 
@@ -41,7 +41,8 @@ public final class BankLoan {
         this.nation = nation; this.principal = principal; this.currencyId = currencyId;
         this.rateAnnual = rateAnnual; this.termDays = termDays;
         this.openedAt = openedAt; this.dueAt = dueAt;
-        this.repaid = 0.0D; this.status = Status.ACTIVE;
+        this.repaid = 0.0D; this.accrued = 0.0D; this.lastAccrualAt = openedAt;
+        this.status = Status.ACTIVE;
         this.collateralType = collateralType;
         this.collateralCurrency = collateralCurrency;
         this.collateralItemBase64 = collateralItemBase64;
@@ -60,6 +61,8 @@ public final class BankLoan {
     public long openedAt() { return openedAt; }
     public long dueAt() { return dueAt; }
     public double repaid() { return repaid; }
+    public double accrued() { return accrued; }
+    public long lastAccrualAt() { return lastAccrualAt; }
     public Status status() { return status; }
     public CollateralType collateralType() { return collateralType; }
     public String collateralCurrency() { return collateralCurrency; }
@@ -70,21 +73,31 @@ public final class BankLoan {
     public boolean isActive() { return status == Status.ACTIVE; }
     public boolean isOverdue(long now) { return status == Status.ACTIVE && now > dueAt; }
 
-    /** Начисленные проценты на момент now (кап до dueAt). */
-    public double accruedInterest(long now) {
+    /** Начислить проценты от ТЕКУЩЕГО тела за период с lastAccrualAt до min(now,dueAt). */
+    public void accrueTo(long now) {
+        if (status != Status.ACTIVE) return;
         long to = Math.min(now, dueAt);
-        if (to <= openedAt) return 0.0D;
-        double days = (to - openedAt) / 86_400_000.0D;
-        return principal * rateAnnual * days / 365.0D;
+        if (to <= lastAccrualAt) return;
+        double days = (to - lastAccrualAt) / 86_400_000.0D;
+        accrued += principal * rateAnnual * days / 365.0D;
+        lastAccrualAt = to;
     }
 
-    /** Полная сумма к возврату на момент now = тело + проценты − уже выплачено. */
+    /** Полная сумма к возврату: тело + накопленные проценты − выплачено. */
     public double outstanding(long now) {
-        double total = principal + accruedInterest(now);
-        return Math.max(0.0D, total - repaid);
+        accrueTo(now);
+        return Math.max(0.0D, principal + accrued - repaid);
     }
 
-    public void addRepayment(double amount) { this.repaid += amount; }
+    /** Применить погашение: сначала гасит накопленные проценты, остаток уменьшает тело. */
+    public void applyRepayment(double pay) {
+        double interestPart = Math.min(pay, accrued);
+        double principalPart = pay - interestPart;
+        accrued -= interestPart;
+        principal = Math.max(0.0D, principal - principalPart);
+        repaid += pay;
+    }
+
     public void markRepaid() { this.status = Status.REPAID; }
     public void markDefaulted() { this.status = Status.DEFAULTED; }
     public void markLiquidated() { this.status = Status.LIQUIDATED; }
