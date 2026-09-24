@@ -12,7 +12,6 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -20,13 +19,12 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Налоговая система наций (1.2.5-a.2 fix): ставки (convert/exchange/market/auction)
- * + методы сбора (collect/collectExchange/collectMarket) + дневные отчёты (DailyReport).
- * Конструктор (plugin, wallets) — wallets нужен для зачисления в казну.
+ * Налоги наций (1.2.6-a fix): collectAuction пишет в бакет "auction" (Баг 5),
+ * а не в "exchange".
  */
 public final class TaxService {
 
-    public record DailyReport(String nation, double convert, double exchange, double market, double total) {}
+    public record DailyReport(String nation, double convert, double exchange, double market, double auction, double total) {}
 
     private static final double MAX_RATE = 0.05D;
 
@@ -64,6 +62,7 @@ public final class TaxService {
                     n.getDouble("today.convert", 0.0D),
                     n.getDouble("today.exchange", 0.0D),
                     n.getDouble("today.market", 0.0D),
+                    n.getDouble("today.auction", 0.0D),
                     n.getDouble("today.total", 0.0D)));
         }
     }
@@ -77,16 +76,16 @@ public final class TaxService {
             n.set("exchange", exchangeRates.getOrDefault(key, 0.0D));
             n.set("market", marketRates.getOrDefault(key, 0.0D));
             n.set("auction", auctionRates.getOrDefault(key, 0.02D));
-            DailyReport r = today.getOrDefault(key, new DailyReport(key, 0, 0, 0, 0));
+            DailyReport r = today.getOrDefault(key, new DailyReport(key, 0, 0, 0, 0, 0));
             n.set("today.convert", r.convert());
             n.set("today.exchange", r.exchange());
             n.set("today.market", r.market());
+            n.set("today.auction", r.auction());
             n.set("today.total", r.total());
         }
         SafeStorage.saveAtomic(yaml, file, plugin);
     }
 
-    // ---------- ставки ----------
     public double getConvertRate(String nation) { return convertRates.getOrDefault(low(nation), 0.0D); }
     public double getExchangeRate(String nation) { return exchangeRates.getOrDefault(low(nation), 0.0D); }
     public double getMarketRate(String nation) { return marketRates.getOrDefault(low(nation), 0.0D); }
@@ -97,9 +96,6 @@ public final class TaxService {
     public void setMarketRate(String nation, double rate) { marketRates.put(low(nation), clamp(rate)); save(); }
     public void setAuctionRate(String nation, double rate) { auctionRates.put(low(nation), clamp(rate)); save(); }
 
-    // ---------- сбор налогов ----------
-
-    /** Конверсионный налог: при входе в национальную валюту нации. */
     public double collect(String nation, String toCurrency, double amount, String reason) {
         if (nation == null || amount <= 0.0D) return 0.0D;
         Currency cur = plugin.getCurrencies().get(toCurrency).orElse(null);
@@ -115,7 +111,6 @@ public final class TaxService {
         return tax;
     }
 
-    /** Торговый налог: сделки на бирже ордеров. */
     public double collectExchange(String nation, String currency, double amount) {
         if (nation == null || amount <= 0.0D) return 0.0D;
         double rate = getExchangeRate(nation);
@@ -128,7 +123,6 @@ public final class TaxService {
         return tax;
     }
 
-    /** Рыночный налог: ChestShop/ESGUI-сделки в черте нации. */
     public double collectMarket(String nation, String currency, double amount) {
         if (nation == null || amount <= 0.0D) return 0.0D;
         double rate = getMarketRate(nation);
@@ -141,7 +135,7 @@ public final class TaxService {
         return tax;
     }
 
-    /** Аукционный налог: продажи на аукционе (используется AuctionService). */
+    /** Баг 5: пишем в бакет "auction". */
     public double collectAuction(String nation, String currency, double amount) {
         if (nation == null || amount <= 0.0D) return 0.0D;
         double rate = getAuctionRate(nation);
@@ -150,27 +144,24 @@ public final class TaxService {
         if (!(tax > 0.0D)) return 0.0D;
         UUID treasury = ReserveBank.treasuryUuid(nation);
         if (!wallets.deposit(treasury, currency, tax, TransactionType.PAY, "tax:auction")) return 0.0D;
-        recordTax(nation, "exchange", tax);
+        recordTax(nation, "auction", tax);
         return tax;
     }
 
-    // ---------- отчёты ----------
     public DailyReport todayReport(String nation) {
-        return today.getOrDefault(low(nation), new DailyReport(low(nation), 0, 0, 0, 0));
+        return today.getOrDefault(low(nation), new DailyReport(low(nation), 0, 0, 0, 0, 0));
     }
 
-    public void resetDaily() {
-        today.clear();
-        save();
-    }
+    public void resetDaily() { today.clear(); save(); }
 
     private void recordTax(String nation, String kind, double amount) {
         String key = low(nation);
-        DailyReport cur = today.getOrDefault(key, new DailyReport(key, 0, 0, 0, 0));
+        DailyReport cur = today.getOrDefault(key, new DailyReport(key, 0, 0, 0, 0, 0));
         double c = "convert".equals(kind) ? cur.convert() + amount : cur.convert();
         double x = "exchange".equals(kind) ? cur.exchange() + amount : cur.exchange();
         double m = "market".equals(kind) ? cur.market() + amount : cur.market();
-        today.put(key, new DailyReport(key, c, x, m, c + x + m));
+        double a = "auction".equals(kind) ? cur.auction() + amount : cur.auction();
+        today.put(key, new DailyReport(key, c, x, m, a, c + x + m + a));
         save();
     }
 
