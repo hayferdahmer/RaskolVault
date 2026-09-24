@@ -28,12 +28,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Банк нации (1.2.6-a fix):
- *  Баг 2: кредитная история (repaid/defaulted) персистится в data/bank-credit.yml
- *  Баг 3: возврат залога-предмета оффлайн-игроку через pendingReturns + PlayerJoinEvent
- *  Баг 4: totalOutstandingLoans конвертирует всё в GLD через priceOf
- *  Баг 6: проценты через loan.accrueTo/applyRepayment (от текущего тела)
- * Сам регистрируется как Listener для PlayerJoinEvent.
+ * Банк нации (1.2.6-b): bank run защита — проверка pool перед выплатой demand.
  */
 public final class BankService implements Listener {
 
@@ -49,8 +44,8 @@ public final class BankService implements Listener {
     private final File accountsFile;
     private final File loansFile;
     private final File poolsFile;
-    private final File creditFile;   // Баг 2
-    private final File pendingFile;  // Баг 3
+    private final File creditFile;
+    private final File pendingFile;
     private final Map<String, BankAccount> accounts = new ConcurrentHashMap<>();
     private final Map<String, BankLoan> loans = new ConcurrentHashMap<>();
     private final Map<String, Double> pools = new ConcurrentHashMap<>();
@@ -81,7 +76,6 @@ public final class BankService implements Listener {
         };
     }
 
-    // ---------- параметры ----------
     public BankParams params(String nation) {
         String n = nation == null ? "" : nation.toLowerCase();
         double def = plugin.getConfig().getDouble("bank.defaults.demand-rate", 0.01D);
@@ -108,7 +102,6 @@ public final class BankService implements Listener {
         plugin.saveConfig();
     }
 
-    // ---------- пул ----------
     private String poolKey(String nation, String currency) { return nation.toLowerCase() + "|" + currency; }
     public double pool(String nation, String currency) { return pools.getOrDefault(poolKey(nation, currency), 0.0D); }
     public double interestReserve(String nation, String currency) { return interestReserves.getOrDefault(poolKey(nation, currency), 0.0D); }
@@ -117,7 +110,6 @@ public final class BankService implements Listener {
 
     public double maxLoans(String nation) { return bank.reserveOf(nation) * params(nation).reserveMultiplier(); }
 
-    /** Баг 4: конвертируем outstanding каждой валюты в GLD перед суммой. */
     public double totalOutstandingLoans(String nation) {
         long now = System.currentTimeMillis();
         double sum = 0;
@@ -142,7 +134,6 @@ public final class BankService implements Listener {
         return sum;
     }
 
-    // ---------- кредитная история (Баг 2) ----------
     public int creditScore(UUID player) {
         return repaidCount.getOrDefault(player, 0) - 2 * defaultedCount.getOrDefault(player, 0);
     }
@@ -151,7 +142,6 @@ public final class BankService implements Listener {
         return -Math.min(0.02D, score * 0.002D) + Math.max(0.0D, -score * 0.005D);
     }
 
-    // ---------- вклады ----------
     public String openDeposit(UUID owner, String ownerName, String nation, String currency,
                               double amount, BankAccount.Term term) {
         if (!(amount > 0.0D)) return "сумма должна быть > 0";
@@ -174,6 +164,7 @@ public final class BankService implements Listener {
         return null;
     }
 
+    /** FIX 1.2.6-b: проверка pool перед выплатой demand (bank run защита). */
     public String closeDeposit(UUID owner, String accountId) {
         BankAccount a = accounts.get(accountId);
         if (a == null || !a.owner().equals(owner)) return "вклад не найден";
@@ -182,6 +173,10 @@ public final class BankService implements Listener {
         a.accrue(now, params(a.nation()).demandRate());
         double payout;
         if (a.isDemand() || a.isMatured(now)) {
+            double currentPool = pool(a.nation(), a.currencyId());
+            if (currentPool < a.principal()) {
+                return "недостаточно ликвидности в банке — обратитесь к королю нации";
+            }
             addPool(a.nation(), a.currencyId(), -a.principal());
             double ir = interestReserve(a.nation(), a.currencyId());
             double interest = Math.min(a.accrued(), Math.max(0, ir));
@@ -199,7 +194,6 @@ public final class BankService implements Listener {
         return null;
     }
 
-    // ---------- кредиты ----------
     public String applyLoan(UUID borrower, String borrowerName, String nation, String currency,
                             double amount, int termDays,
                             BankLoan.CollateralType collateralType, String collateralCurrency,
@@ -237,7 +231,6 @@ public final class BankService implements Listener {
         return null;
     }
 
-    /** Баг 6: погашение через applyRepayment (сначала проценты, потом тело). */
     public String repayLoan(UUID borrower, String loanId, double amount) {
         BankLoan l = loans.get(loanId);
         if (l == null || !l.borrower().equals(borrower)) return "кредит не найден";
@@ -290,7 +283,6 @@ public final class BankService implements Listener {
         return count;
     }
 
-    /** Начисление: вклады (demand) + кредиты (accrueTo). */
     public void accrueAll() {
         long now = System.currentTimeMillis();
         for (BankAccount a : accounts.values()) if (a.isActive()) a.accrue(now, params(a.nation()).demandRate());
@@ -299,7 +291,6 @@ public final class BankService implements Listener {
         saveLoans();
     }
 
-    /** Баг 3: возврат залога; если игрок оффлайн — в pendingReturns. */
     private void releaseCollateral(BankLoan l) {
         if (l.collateralType() == BankLoan.CollateralType.CURRENCY && l.collateralCurrency() != null) {
             wallets.deposit(l.borrower(), l.collateralCurrency(), l.collateralValue(),
@@ -320,7 +311,6 @@ public final class BankService implements Listener {
         }
     }
 
-    /** Баг 3: при входе вернуть накопленные предметы залога. */
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         UUID u = e.getPlayer().getUniqueId();
@@ -344,7 +334,6 @@ public final class BankService implements Listener {
         return unit * item.getAmount();
     }
 
-    // ---------- запросы ----------
     public List<BankAccount> myDeposits(UUID owner) {
         List<BankAccount> out = new ArrayList<>();
         for (BankAccount a : accounts.values()) if (a.owner().equals(owner)) out.add(a);
@@ -363,7 +352,6 @@ public final class BankService implements Listener {
         return out;
     }
 
-    // ---------- персистентность ----------
     public void load() {
         for (File f : new File[]{accountsFile, loansFile, poolsFile, creditFile, pendingFile})
             if (!f.getParentFile().exists()) f.getParentFile().mkdirs();
@@ -394,8 +382,6 @@ public final class BankService implements Listener {
                         BankLoan.CollateralType.valueOf(s.getString("collateralType", "CURRENCY")),
                         s.getString("collateralCurrency", null), s.getString("collateralItem", null),
                         s.getDouble("collateralValue", 0), s.getInt("creditScore", 0));
-                l.applyRepayment(0); // init
-                // восстанов repaid/accrued/lastAccrual через прямые поля
                 restoreLoanState(l, s);
                 String st = s.getString("status", "ACTIVE");
                 if ("REPAID".equals(st)) l.markRepaid();
@@ -427,8 +413,6 @@ public final class BankService implements Listener {
     }
 
     private void restoreLoanState(BankLoan l, ConfigurationSection s) {
-        // применяем сохранённые repaid/accrued через внутренние сеттеры через reflection-free подход:
-        // используем публичные mutator'ы
         double repaid = s.getDouble("repaid", 0);
         double accrued = s.getDouble("accrued", 0);
         long lastAcc = s.getLong("lastAccrualAt", l.openedAt());
