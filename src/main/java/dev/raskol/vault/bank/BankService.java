@@ -2,12 +2,17 @@
 package dev.raskol.vault.bank;
 
 import dev.raskol.vault.RaskolVault;
+import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.wallet.WalletService;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
@@ -23,11 +28,14 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Банк нации (1.2.5-b fix): вклады, кредиты под залог, фракционное резервирование,
- * спред как прибыль нации, кредитная история, ликвидация.
- * FIX: дни срока вычисляются локальным switch по enum Term (не term.termDays()).
+ * Банк нации (1.2.6-a fix):
+ *  Баг 2: кредитная история (repaid/defaulted) персистится в data/bank-credit.yml
+ *  Баг 3: возврат залога-предмета оффлайн-игроку через pendingReturns + PlayerJoinEvent
+ *  Баг 4: totalOutstandingLoans конвертирует всё в GLD через priceOf
+ *  Баг 6: проценты через loan.accrueTo/applyRepayment (от текущего тела)
+ * Сам регистрируется как Listener для PlayerJoinEvent.
  */
-public final class BankService {
+public final class BankService implements Listener {
 
     public record BankParams(
             double demandRate, double r7, double r30, double r90,
@@ -41,12 +49,15 @@ public final class BankService {
     private final File accountsFile;
     private final File loansFile;
     private final File poolsFile;
+    private final File creditFile;   // Баг 2
+    private final File pendingFile;  // Баг 3
     private final Map<String, BankAccount> accounts = new ConcurrentHashMap<>();
     private final Map<String, BankLoan> loans = new ConcurrentHashMap<>();
     private final Map<String, Double> pools = new ConcurrentHashMap<>();
     private final Map<String, Double> interestReserves = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> repaidCount = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> defaultedCount = new ConcurrentHashMap<>();
+    private final Map<UUID, List<String>> pendingReturns = new ConcurrentHashMap<>();
 
     public BankService(RaskolVault plugin, WalletService wallets, ReserveBank bank) {
         this.plugin = plugin;
@@ -55,10 +66,12 @@ public final class BankService {
         this.accountsFile = new File(plugin.getDataFolder(), "data/bank-accounts.yml");
         this.loansFile = new File(plugin.getDataFolder(), "data/bank-loans.yml");
         this.poolsFile = new File(plugin.getDataFolder(), "data/bank-pools.yml");
+        this.creditFile = new File(plugin.getDataFolder(), "data/bank-credit.yml");
+        this.pendingFile = new File(plugin.getDataFolder(), "data/bank-pending.yml");
         load();
+        plugin.getServer().getPluginManager().registerEvents(this, plugin);
     }
 
-    /** FIX: дни срока из enum Term локальным switch. */
     private static int termDaysOf(BankAccount.Term term) {
         return switch (term) {
             case DEMAND -> 0;
@@ -68,7 +81,7 @@ public final class BankService {
         };
     }
 
-    // ---------- параметры нации ----------
+    // ---------- параметры ----------
     public BankParams params(String nation) {
         String n = nation == null ? "" : nation.toLowerCase();
         double def = plugin.getConfig().getDouble("bank.defaults.demand-rate", 0.01D);
@@ -91,28 +104,37 @@ public final class BankService {
     }
 
     public void setParam(String nation, String key, double value) {
-        String n = nation.toLowerCase();
-        plugin.getConfig().set("bank.nations." + n + "." + key, value);
+        plugin.getConfig().set("bank.nations." + nation.toLowerCase() + "." + key, value);
         plugin.saveConfig();
     }
 
-    // ---------- пул ликвидности ----------
+    // ---------- пул ----------
     private String poolKey(String nation, String currency) { return nation.toLowerCase() + "|" + currency; }
     public double pool(String nation, String currency) { return pools.getOrDefault(poolKey(nation, currency), 0.0D); }
     public double interestReserve(String nation, String currency) { return interestReserves.getOrDefault(poolKey(nation, currency), 0.0D); }
-    private void addPool(String nation, String currency, double d) { pools.merge(poolKey(nation, currency), d, Double::sum); savePools(); }
-    private void addInterestReserve(String nation, String currency, double d) { interestReserves.merge(poolKey(nation, currency), d, Double::sum); savePools(); }
+    private void addPool(String n, String c, double d) { pools.merge(poolKey(n, c), d, Double::sum); savePools(); }
+    private void addInterestReserve(String n, String c, double d) { interestReserves.merge(poolKey(n, c), d, Double::sum); savePools(); }
 
-    public double maxLoans(String nation) {
-        return bank.reserveOf(nation) * params(nation).reserveMultiplier();
-    }
+    public double maxLoans(String nation) { return bank.reserveOf(nation) * params(nation).reserveMultiplier(); }
+
+    /** Баг 4: конвертируем outstanding каждой валюты в GLD перед суммой. */
     public double totalOutstandingLoans(String nation) {
         long now = System.currentTimeMillis();
         double sum = 0;
-        for (BankLoan l : loans.values())
-            if (l.nation().equalsIgnoreCase(nation) && l.isActive()) sum += l.outstanding(now);
+        for (BankLoan l : loans.values()) {
+            if (l.nation().equalsIgnoreCase(nation) && l.isActive())
+                sum += l.outstanding(now) * priceInGld(l.currencyId());
+        }
         return sum;
     }
+
+    private double priceInGld(String currencyId) {
+        Currency c = plugin.getCurrencies().get(currencyId).orElse(null);
+        if (c == null) return 1.0D;
+        double p = bank.priceOf(c);
+        return p > 0 ? p : 1.0D;
+    }
+
     public double totalDeposits(String nation) {
         double sum = 0;
         for (BankAccount a : accounts.values())
@@ -120,7 +142,7 @@ public final class BankService {
         return sum;
     }
 
-    // ---------- кредитная история ----------
+    // ---------- кредитная история (Баг 2) ----------
     public int creditScore(UUID player) {
         return repaidCount.getOrDefault(player, 0) - 2 * defaultedCount.getOrDefault(player, 0);
     }
@@ -143,7 +165,6 @@ public final class BankService {
         };
         if (!wallets.withdraw(owner, currency, amount, TransactionType.PAY, "bank:deposit")) return "не удалось списать";
         long now = System.currentTimeMillis();
-        // FIX: дни срока через локальный switch, а не term.termDays()
         int days = termDaysOf(term);
         long matures = (term == BankAccount.Term.DEMAND) ? 0L : now + days * 86_400_000L;
         String id = UUID.randomUUID().toString();
@@ -186,20 +207,22 @@ public final class BankService {
         if (!(amount > 0.0D)) return "сумма должна быть > 0";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
         BankParams p = params(nation);
-        if (totalOutstandingLoans(nation) + amount > maxLoans(nation)) return "банк исчерпал лимит выдачи (резерв)";
+        if (totalOutstandingLoans(nation) + amount * priceInGld(currency) > maxLoans(nation))
+            return "банк исчерпал лимит выдачи (резерв)";
         if (pool(nation, currency) < amount) return "недостаточно ликвидности в пуле";
         double required = amount * p.collateralRatio();
         double collateralValue = 0;
         String itemB64 = null;
         if (collateralType == BankLoan.CollateralType.CURRENCY) {
             if (collateralCurrency == null) return "укажите валюту залога";
-            if (!wallets.has(borrower, collateralCurrency, required)) return "недостаточно залога (" + fmt(required) + " " + collateralCurrency + ")";
+            if (collateralCurrency.equalsIgnoreCase(currency)) return "нельзя брать кредит под залог той же валюты";
+            if (!wallets.has(borrower, collateralCurrency, required)) return "недостаточно залога";
             collateralValue = required;
             if (!wallets.withdraw(borrower, collateralCurrency, required, TransactionType.PAY, "bank:collateral:lock")) return "не удалось заблокировать залог";
         } else {
             if (collateralItem == null) return "предмет залога не передан";
             collateralValue = appraisal(collateralItem);
-            if (collateralValue < required) return "оценка залога " + fmt(collateralValue) + " < требуемых " + fmt(required);
+            if (collateralValue < required) return "оценка залога мала";
             itemB64 = serialize(collateralItem);
         }
         double rate = p.loanRate() + creditRateBonus(borrower);
@@ -214,6 +237,7 @@ public final class BankService {
         return null;
     }
 
+    /** Баг 6: погашение через applyRepayment (сначала проценты, потом тело). */
     public String repayLoan(UUID borrower, String loanId, double amount) {
         BankLoan l = loans.get(loanId);
         if (l == null || !l.borrower().equals(borrower)) return "кредит не найден";
@@ -224,14 +248,15 @@ public final class BankService {
         if (!(pay > 0.0D)) return "нечего погашать";
         if (!wallets.has(borrower, l.currencyId(), pay)) return "недостаточно средств";
         if (!wallets.withdraw(borrower, l.currencyId(), pay, TransactionType.PAY, "bank:loan:repay")) return "не удалось списать";
-        double interestPart = Math.min(pay, l.accruedInterest(now));
+        double interestPart = Math.min(pay, l.accrued());
         double principalPart = pay - interestPart;
         addInterestReserve(l.nation(), l.currencyId(), interestPart);
         addPool(l.nation(), l.currencyId(), principalPart);
-        l.addRepayment(pay);
+        l.applyRepayment(pay);
         if (l.outstanding(now) <= 1e-6D) {
             l.markRepaid();
             repaidCount.merge(borrower, 1, Integer::sum);
+            saveCredit();
             releaseCollateral(l);
         }
         saveLoans();
@@ -251,6 +276,7 @@ public final class BankService {
         addPool(l.nation(), l.currencyId(), remainder);
         l.markLiquidated();
         defaultedCount.merge(l.borrower(), 1, Integer::sum);
+        saveCredit();
         saveLoans();
         return null;
     }
@@ -259,37 +285,57 @@ public final class BankService {
         long now = System.currentTimeMillis();
         int count = 0;
         for (BankLoan l : new ArrayList<>(loans.values())) {
-            if (l.isOverdue(now)) {
-                liquidate(l.id());
-                count++;
-            }
+            if (l.isOverdue(now)) { liquidate(l.id()); count++; }
         }
         return count;
     }
 
+    /** Начисление: вклады (demand) + кредиты (accrueTo). */
     public void accrueAll() {
         long now = System.currentTimeMillis();
-        for (BankAccount a : accounts.values()) {
-            if (a.isActive()) a.accrue(now, params(a.nation()).demandRate());
-        }
+        for (BankAccount a : accounts.values()) if (a.isActive()) a.accrue(now, params(a.nation()).demandRate());
+        for (BankLoan l : loans.values()) if (l.isActive()) l.accrueTo(now);
         saveAccounts();
+        saveLoans();
     }
 
+    /** Баг 3: возврат залога; если игрок оффлайн — в pendingReturns. */
     private void releaseCollateral(BankLoan l) {
         if (l.collateralType() == BankLoan.CollateralType.CURRENCY && l.collateralCurrency() != null) {
             wallets.deposit(l.borrower(), l.collateralCurrency(), l.collateralValue(),
                     TransactionType.PAY, "bank:collateral:release");
         }
         if (l.collateralType() == BankLoan.CollateralType.ITEM && l.collateralItemBase64() != null) {
-            ItemStack item = deserialize(l.collateralItemBase64());
-            if (item != null) {
-                org.bukkit.entity.Player p = plugin.getServer().getPlayer(l.borrower());
-                if (p != null) {
-                    var overflow = p.getInventory().addItem(item);
-                    for (ItemStack left : overflow.values()) p.getWorld().dropItemNaturally(p.getLocation(), left);
+            Player p = plugin.getServer().getPlayer(l.borrower());
+            if (p != null && p.isOnline()) {
+                ItemStack item = deserialize(l.collateralItemBase64());
+                if (item != null) {
+                    var ov = p.getInventory().addItem(item);
+                    for (ItemStack left : ov.values()) p.getWorld().dropItemNaturally(p.getLocation(), left);
                 }
+            } else {
+                pendingReturns.computeIfAbsent(l.borrower(), k -> new ArrayList<>()).add(l.collateralItemBase64());
+                savePending();
             }
         }
+    }
+
+    /** Баг 3: при входе вернуть накопленные предметы залога. */
+    @EventHandler
+    public void onJoin(PlayerJoinEvent e) {
+        UUID u = e.getPlayer().getUniqueId();
+        List<String> b64 = pendingReturns.remove(u);
+        if (b64 == null || b64.isEmpty()) return;
+        for (String b : b64) {
+            ItemStack it = deserialize(b);
+            if (it != null) {
+                var ov = e.getPlayer().getInventory().addItem(it);
+                for (ItemStack left : ov.values()) e.getPlayer().getWorld().dropItemNaturally(e.getPlayer().getLocation(), left);
+            }
+        }
+        savePending();
+        e.getPlayer().sendMessage(org.bukkit.ChatColor.translateAlternateColorCodes('&',
+                plugin.getMessages().prefix() + "&aВам возвращён залог по погашенному кредиту"));
     }
 
     public double appraisal(ItemStack item) {
@@ -319,7 +365,7 @@ public final class BankService {
 
     // ---------- персистентность ----------
     public void load() {
-        for (File f : new File[]{accountsFile, loansFile, poolsFile})
+        for (File f : new File[]{accountsFile, loansFile, poolsFile, creditFile, pendingFile})
             if (!f.getParentFile().exists()) f.getParentFile().mkdirs();
         if (accountsFile.exists()) {
             YamlConfiguration y = YamlConfiguration.loadConfiguration(accountsFile);
@@ -327,8 +373,7 @@ public final class BankService {
             if (r != null) for (String id : r.getKeys(false)) {
                 ConfigurationSection s = r.getConfigurationSection(id);
                 if (s == null) continue;
-                BankAccount a = new BankAccount(id,
-                        UUID.fromString(s.getString("owner")), s.getString("ownerName", ""),
+                BankAccount a = new BankAccount(id, UUID.fromString(s.getString("owner")), s.getString("ownerName", ""),
                         s.getString("nation", ""), s.getString("currency", "GLD"),
                         s.getDouble("principal", 0), BankAccount.Term.valueOf(s.getString("term", "DEMAND")),
                         s.getDouble("rate", 0), s.getLong("openedAt", 0), s.getLong("maturesAt", 0));
@@ -342,15 +387,16 @@ public final class BankService {
             if (r != null) for (String id : r.getKeys(false)) {
                 ConfigurationSection s = r.getConfigurationSection(id);
                 if (s == null) continue;
-                BankLoan l = new BankLoan(id,
-                        UUID.fromString(s.getString("borrower")), s.getString("borrowerName", ""),
+                BankLoan l = new BankLoan(id, UUID.fromString(s.getString("borrower")), s.getString("borrowerName", ""),
                         s.getString("nation", ""), s.getDouble("principal", 0),
                         s.getString("currency", "GLD"), s.getDouble("rate", 0), s.getInt("termDays", 30),
                         s.getLong("openedAt", 0), s.getLong("dueAt", 0),
                         BankLoan.CollateralType.valueOf(s.getString("collateralType", "CURRENCY")),
                         s.getString("collateralCurrency", null), s.getString("collateralItem", null),
                         s.getDouble("collateralValue", 0), s.getInt("creditScore", 0));
-                l.addRepayment(s.getDouble("repaid", 0));
+                l.applyRepayment(0); // init
+                // восстанов repaid/accrued/lastAccrual через прямые поля
+                restoreLoanState(l, s);
                 String st = s.getString("status", "ACTIVE");
                 if ("REPAID".equals(st)) l.markRepaid();
                 else if ("DEFAULTED".equals(st)) l.markDefaulted();
@@ -365,6 +411,30 @@ public final class BankService {
             ConfigurationSection ir = y.getConfigurationSection("interest");
             if (ir != null) for (String k : ir.getKeys(false)) interestReserves.put(k, ir.getDouble(k, 0));
         }
+        if (creditFile.exists()) {
+            YamlConfiguration y = YamlConfiguration.loadConfiguration(creditFile);
+            ConfigurationSection rp = y.getConfigurationSection("repaid");
+            if (rp != null) for (String k : rp.getKeys(false)) repaidCount.put(UUID.fromString(k), rp.getInt(k, 0));
+            ConfigurationSection df = y.getConfigurationSection("defaulted");
+            if (df != null) for (String k : df.getKeys(false)) defaultedCount.put(UUID.fromString(k), df.getInt(k, 0));
+        }
+        if (pendingFile.exists()) {
+            YamlConfiguration y = YamlConfiguration.loadConfiguration(pendingFile);
+            ConfigurationSection pr = y.getConfigurationSection("pending");
+            if (pr != null) for (String k : pr.getKeys(false))
+                pendingReturns.put(UUID.fromString(k), new ArrayList<>(pr.getStringList(k)));
+        }
+    }
+
+    private void restoreLoanState(BankLoan l, ConfigurationSection s) {
+        // применяем сохранённые repaid/accrued через внутренние сеттеры через reflection-free подход:
+        // используем публичные mutator'ы
+        double repaid = s.getDouble("repaid", 0);
+        double accrued = s.getDouble("accrued", 0);
+        long lastAcc = s.getLong("lastAccrualAt", l.openedAt());
+        l.setRepaid(repaid);
+        l.setAccrued(accrued);
+        l.setLastAccrualAt(lastAcc);
     }
 
     public void saveAccounts() {
@@ -401,6 +471,8 @@ public final class BankService {
             s.set("openedAt", l.openedAt());
             s.set("dueAt", l.dueAt());
             s.set("repaid", l.repaid());
+            s.set("accrued", l.accrued());
+            s.set("lastAccrualAt", l.lastAccrualAt());
             s.set("status", l.status().name());
             s.set("collateralType", l.collateralType().name());
             s.set("collateralCurrency", l.collateralCurrency());
@@ -420,7 +492,23 @@ public final class BankService {
         SafeStorage.saveAtomic(y, poolsFile, plugin);
     }
 
-    public void saveAll() { saveAccounts(); saveLoans(); savePools(); }
+    private void saveCredit() {
+        YamlConfiguration y = new YamlConfiguration();
+        ConfigurationSection rp = y.createSection("repaid");
+        for (Map.Entry<UUID, Integer> e : repaidCount.entrySet()) rp.set(e.getKey().toString(), e.getValue());
+        ConfigurationSection df = y.createSection("defaulted");
+        for (Map.Entry<UUID, Integer> e : defaultedCount.entrySet()) df.set(e.getKey().toString(), e.getValue());
+        SafeStorage.saveAtomic(y, creditFile, plugin);
+    }
+
+    private void savePending() {
+        YamlConfiguration y = new YamlConfiguration();
+        ConfigurationSection pr = y.createSection("pending");
+        for (Map.Entry<UUID, List<String>> e : pendingReturns.entrySet()) pr.set(e.getKey().toString(), e.getValue());
+        SafeStorage.saveAtomic(y, pendingFile, plugin);
+    }
+
+    public void saveAll() { saveAccounts(); saveLoans(); savePools(); saveCredit(); savePending(); }
 
     private static String serialize(ItemStack item) {
         try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
