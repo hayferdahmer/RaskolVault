@@ -67,8 +67,6 @@
             <version>3.46.0.0</version>
             <scope>compile</scope>
         </dependency>
-
-        <!-- TEST: восстановлено (1.2.6 fix) — требуется для src/test/java/.../EconMathTest.java -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -78,7 +76,8 @@
     </dependencies>
 
     <build>
-        <finalName>RaskolVault-${project.version}</finalName>
+        <!-- FIX 1.2.6: нижний регистр + дефис, как ожидает workflow upload-artifact -->
+        <finalName>raskol-vault-${project.version}</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
