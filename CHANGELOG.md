@@ -1,75 +1,93 @@
-# Changelog
+# Changelog — RaskolVault
 
-Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/).
-Версионирование: [SemVer](https://semver.org/lang/ru/).
-Лицензия: RASKOL Proprietary License v1.0 (см. LICENSE).
+Формат: [Keep a Changelog](https://keepachangelog.com/). Версионирование: SemVer.
 
-## [1.2.1] — 2026-09-21 — Стабилизация биржи + документы
+---
 
-### Исправлено
-- `ExchangeOrderService`: конфликт record-аксессора (`ok()/fail()` → `success()/failure()`), ломавший компиляцию.
-- `WalletGui.openMain/openCabinet`: приведены к сигнатуре `(RaskolVault, Player)`.
-- Каскадные compile-фиксы в `ExchangeSubcommand`, `ReserveGui`, `RaskolVaultCommand`.
+## [1.2.6] — 2026-09-24
 
-### Изменено
-- Полная переработка `README.md` (бейджи, архитектура, команды, права, плейсхолдеры, интеграция, roadmap).
-- `CHANGELOG.md` приведён к формату Keep a Changelog для всей истории 1.0.0 → 1.2.1.
-- Версия поднята до 1.2.1 (pom.xml, plugin.yml).
+### Added
+- **util-пакет**: `Numbers`, `ItemCodec`, `GuiItems`, `TimeFormat` (единые числовые/предметные/GUI/временные утилиты).
+- **PlaceholderAPI-экспаншн** `raskolvault`: balance, auction, bank, nation-плейсхолдеры.
+- **docs/FORMULAS.md**: полная документация экономических формул и инвариантов.
 
-## [1.2.0] — 2026-09-21 — Фундамент межгосударственной биржи
+### Fixed
+- `ConvertEngine`: восстановлен контракт `blockReason/quote/execute(UUID,…)` + блок конверта валюты в саму себя.
+- `AuctionGui`: конструктор принимает `(RaskolVault)` и `(RaskolVault, AuctionService)`.
 
-### Добавлено
-- Схема БД v3: таблица `exchange_orders` (статусы OPEN/MATCHED/CANCELLED) + индексы.
-- `ExchangeOrderService`: createSell/createBuy/cancel/take с заморозкой средств через escrow; исполнение all-or-nothing.
-- `/rv exchange list|my|sell|buy|cancel|take` — стакан биржи; ордера выставляют/забирают ТОЛЬКО короли наций (временное ограничение).
-- `ReserveGui` — GUI «Ячейки резерва»: 1 ячейка = 1000 GLD, депозит/вывод через чат-захват суммы.
-- King-gate через Towny (`isKing`), rollback-ветки при частичном сбое исполнения.
+---
 
-## [1.1.0] — 2026-09-21 — Интеграционный слой
+## [1.2.6-b] — 2026-09-24
 
-### Добавлено
-- `RaskolVaultAPI` — публичный API для плагинов-друзей (балансы, конвертация, нации, резервы, права).
-- `LuckPermsHook` (cached data) + `loadbefore` для RaskolMarket/RaskolCaravans/RaskolCharters/ESGUI/ChestShop.
-- `ConvertResult` record + `EscrowService` (escrow-примитив: hold/release/refund).
-- `INTEGRATION.md` — руководство для разработчиков друзей-плагинов.
+### Fixed (реализм и защита)
+- Снайпинг: cap продления лота 30 дней от создания.
+- `bidHistory`: cap 50 записей.
+- Demand-вклады: cap начисления 200% от тела.
+- Bank-run: проверка pool перед выплатой demand-вклада.
+- Листинг-комиссия: списывается только после всех проверок.
+- Конверт в себя: заблокирован.
 
-## [1.0.5] — 2026-09-20 — Анти-дюп контур
+---
 
-### Добавлено
-- Rate-limit (token bucket) на `/rv pay` и `/rv convert`.
-- Оптимистичная блокировка (`commitAbsoluteChecked`).
-- Инфляционный чекпоинт (сверка SUM(balances) ↔ SIGNSUM(transactions)).
-- PAPI: `%raskolvault_inflation_anomalies%`, `%raskolvault_rate_limited%`.
+## [1.2.6-a] — 2026-09-24
 
-## [1.0.4] — 2026-09-20 — Наблюдаемость
+### Fixed (критические)
+- Аукцион: предмет изымается при создании лота (дюп закрыт); возврат при ошибке.
+- Банк: кредитная история персистится (`bank-credit.yml`).
+- Банк: возврат залога-предмета оффлайн-игроку (`bank-pending.yml` + PlayerJoin).
+- Банк: `totalOutstandingLoans` конвертирует в GLD.
+- Налоги: аукционный налог пишется в бакет `auction`.
+- Кредит: проценты от текущего тела (`accrueTo`/`applyRepayment`).
 
-### Добавлено
-- `/rv admin health` (TPS, память, пул, writer, cache, WAL, last tx).
-- PAPI-метрики: tps, ledger_queue, cache_hit, tx_per_min, writer_*, pool_*.
-- SparkHook (тайминги через рефлексию).
+---
 
-## [1.0.3] — 2026-09-20 — Асинхронный леджер
+## [1.2.5-b] — 2026-09-23
 
-### Добавлено
-- `LedgerWriter`: single-writer очередь (10k), backpressure, graceful-stop.
-- Async-API: depositAsync/withdrawAsync/transferAsync/exchangeAsync.
+### Added
+- **Банк**: вклады (DEMAND/7/30/90, простой процент), кредиты (залог валюта/предмет, 150%), ликвидация просрочки, фракционное резервирование (reserve × 3.0), кредитная история, bank-run защита.
+- Таски: bank-accrual, bank-liquidation.
 
-## [1.0.2] — 2026-09-20 — SQLite-пул и WAL-гигиена
+---
 
-### Добавлено
-- ConnectionPool (1..16, дефолт 5), PRAGMAs на соединение.
-- WAL-checkpoint по расписанию и на выключении.
-- Атомарный коммит «баланс + аудит» одной SQL-транзакцией.
+## [1.2.5-a.3] — 2026-09-23
 
-## [1.0.1] — 2026-09-20 — Hotfix + гигиена лога
+### Added
+- Админка аукциона: remove/ban/unban/stats/blacklist.
 
-### Исправлено
-- Арбитражный сканер: tradeable-фильтр, пустой граф = информативный пропуск.
-- Сводка старта без сырых section-кодов; MessagesConfig без deprecated ChatColor.
+---
 
-## [1.0.0] — 2026-09-20 — Первый релиз
+## [1.2.5-a.2] — 2026-09-23
 
-- Многовалютный кошелёк (GLD/RAS/VLR), SQLite-леджер (WAL, схема v1).
-- Рефлексия-хуки: EssentialsX, RaskolCore, Towny, PlaceholderAPI.
-- Авто-создание национальных валют, казны наций, обмен с комиссией.
-- Арбитражный сканер, PAPI-плейсхолдеры, бекапы, нагрузочный тест.
+### Added
+- Мультивалютность аукциона, налог нации с продаж, снайпинг-продление, репутация продавца.
+
+---
+
+## [1.2.5-a] — 2026-09-23
+
+### Added
+- **Аукцион**: лоты предметов (торги/buyout), 8 категорий, фильтры, инспекция предмета, звуки, история ставок.
+
+---
+
+## [1.2.1] — 2026-09-22
+
+### Added
+- Биржа ордеров (P2P-обмен валют), GUI кошелька/кабинета/резерва.
+- Золотой стандарт: резерв нации, покрытие, паритет, кризис-broadcast.
+- Налоги наций (convert/exchange/market).
+- SQLite (WAL) + single-writer + SafeStorage.
+
+---
+
+## [1.1.x] — 2026-09-20…21
+
+### Added
+- Кошелёк, переводы, обмен, курсы, PAPI-хук, Essentials-прокси, Towny-хук, LuckPerms-хук.
+
+---
+
+## [1.0.0] — 2026-09-19
+
+### Added
+- Первый релиз: многовалютное ядро, SQLite-леджер, базовый кошелёк.
