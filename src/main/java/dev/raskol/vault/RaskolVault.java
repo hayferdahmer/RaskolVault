@@ -8,7 +8,6 @@ import dev.raskol.vault.auction.AuctionReputation;
 import dev.raskol.vault.auction.AuctionService;
 import dev.raskol.vault.auction.AuctionStats;
 import dev.raskol.vault.audit.EconomicInvariantAuditor;
-import dev.raskol.vault.bank.BankGui;
 import dev.raskol.vault.bank.BankService;
 import dev.raskol.vault.bond.BondService;
 import dev.raskol.vault.command.RaskolVaultCommand;
@@ -21,6 +20,7 @@ import dev.raskol.vault.exchange.ConvertEngine;
 import dev.raskol.vault.exchange.ExchangeService;
 import dev.raskol.vault.exchange.RatesService;
 import dev.raskol.vault.gui.AuctionGui;
+import dev.raskol.vault.gui.BankGui;          // FIX 1.2.6: был dev.raskol.vault.bank.BankGui
 import dev.raskol.vault.gui.BondGui;
 import dev.raskol.vault.gui.CabinetGui;
 import dev.raskol.vault.gui.ExchangeGui;
@@ -66,19 +66,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * RaskolVault 1.2.6-c: многовалютная экономика сервера «РАСКОЛ | ДВЕ КОРОНЫ».
- *
- * Слои:
- *  - Хранилище: SQLiteLedger (WAL, пул, single-writer) + SafeStorage (YAML атомарно)
- *  - Кошелёк: WalletService (кэш + async)
- *  - Экономика: ReserveBank (золотой стандарт), ConvertEngine, ExchangeService,
- *               ExchangeOrderService (биржа ордеров), AuctionService (аукцион),
- *               BankService (вклады/кредиты), BondService, ShareService
- *  - Налоги: TaxService (convert/exchange/market/auction)
- *  - Наблюдаемость: SparkHook, TxCounter, InflationCheckpoint, EconomicInvariantAuditor
- *  - Хуки: Essentials, Towny, LuckPerms, PlaceholderAPI (+ raskolvault-экспаншн), RaskolCore
- *
- * 1.2.6-c: регистрация RaskolVaultPapiExpansion в блоке placeholderPresent (try/catch).
+ * RaskolVault 1.2.6: многовалютная экономика, биржа, аукцион, банк, налоги.
+ * FIX: импорт BankGui из dev.raskol.vault.gui (класс переехал из bank-пакета).
  */
 public final class RaskolVault extends JavaPlugin {
 
@@ -253,18 +242,11 @@ public final class RaskolVault extends JavaPlugin {
             coreHook.init();
         }
 
-        // 1.2.6-c: регистрация PAPI-хука + raskolvault-экспаншна (оба в try/catch)
         if (placeholderPresent && getConfig().getBoolean("hooks.placeholderapi.enabled", true)) {
-            try {
-                new PlaceholderApiHook(this).register();
-            } catch (Throwable t) {
-                getLogger().warning("PAPI: " + t.getMessage());
-            }
-            try {
-                new RaskolVaultPapiExpansion(this).register();
-            } catch (Throwable t2) {
-                getLogger().warning("PAPI raskolvault-expansion: " + t2.getMessage());
-            }
+            try { new PlaceholderApiHook(this).register(); }
+            catch (Throwable t) { getLogger().warning("PAPI: " + t.getMessage()); }
+            try { new RaskolVaultPapiExpansion(this).register(); }
+            catch (Throwable t2) { getLogger().warning("PAPI raskolvault-expansion: " + t2.getMessage()); }
         }
 
         if (getConfig().getBoolean("storage.daily-backup.enabled", true)) {
@@ -344,7 +326,7 @@ public final class RaskolVault extends JavaPlugin {
             getLogger().warning("Команда rv не описана в plugin.yml — команды отключены");
         }
 
-        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.6-c)");
+        getLogger().info(() -> "RaskolVault v" + getPluginMeta().getVersion() + " включён (1.2.6)");
     }
 
     @Override
