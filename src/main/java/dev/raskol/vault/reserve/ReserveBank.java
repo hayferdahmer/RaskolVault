@@ -80,24 +80,32 @@ public final class ReserveBank {
     }
 
     public boolean reserveCredit(String nation, double gold) {
-        boolean ok = gold <= 0.0D || ledger.reserveAdd(nation, gold);
+        if (gold == 0.0D) return true;
+        if (nation == null || nation.isBlank() || !Double.isFinite(gold) || gold < 0.0D) return false;
+        boolean ok = ledger.reserveAdd(nation, gold);
         if (ok) invalidateCache();
         return ok;
     }
 
     public boolean reserveDebit(String nation, double gold) {
-        boolean ok = gold <= 0.0D || ledger.reserveAdd(nation, -gold);
+        if (gold == 0.0D) return true;
+        if (nation == null || nation.isBlank() || !Double.isFinite(gold) || gold < 0.0D) return false;
+        boolean ok = ledger.reserveAdd(nation, -gold);
         if (ok) invalidateCache();
         return ok;
     }
 
     public void reserveSet(String nation, double amount) {
+        if (nation == null || nation.isBlank() || !Double.isFinite(amount) || amount < 0.0D) {
+            throw new IllegalArgumentException("Некорректное значение резерва");
+        }
         ledger.reserveSet(nation, amount);
         invalidateCache();
     }
 
     public boolean depositToReserve(UUID player, String nation, double amount, String reason) {
-        if (!(amount > 0.0D)) return false;
+        if (player == null || nation == null || nation.isBlank()
+                || !Double.isFinite(amount) || !(amount > 0.0D)) return false;
         String glb = currencies.globalId();
         if (!wallets.has(player, glb, amount)) return false;
         if (!wallets.withdraw(player, glb, amount, TransactionType.PAY, "reserve:deposit:" + reason)) {
@@ -112,7 +120,9 @@ public final class ReserveBank {
     }
 
     public boolean withdrawFromReserve(UUID player, String nation, double amount, String reason) {
-        if (!(amount > 0.0D) || amount > dailyWithdrawLimit(nation) + 1.0E-9D) return false;
+        if (player == null || nation == null || nation.isBlank()
+                || !Double.isFinite(amount) || !(amount > 0.0D)
+                || amount > dailyWithdrawLimit(nation) + 1.0E-9D) return false;
         if (!ledger.reserveAdd(nation, -amount)) return false;
         String glb = currencies.globalId();
         if (!wallets.deposit(player, glb, amount, TransactionType.PAY, "reserve:withdraw:" + reason)) {
@@ -140,6 +150,9 @@ public final class ReserveBank {
             double seigniorage = seigniorageRate();
             double fee = round2dec(amount * seigniorage, currency);
             double net = round2dec(amount - fee, currency);
+            if (!Double.isFinite(fee) || fee < 0.0D || !Double.isFinite(net) || net < 0.0D) {
+                return false;
+            }
             UUID treasury = treasuryUuid(nation);
             if (currency.type() == CurrencyType.GLOBAL) {
                 if (!wallets.deposit(treasury, currency.id(), net,
@@ -251,7 +264,8 @@ public final class ReserveBank {
     }
 
     public boolean setParity(String nation, double value) {
-        if (value < parityMin() || value > parityMax()) return false;
+        if (nation == null || nation.isBlank() || !Double.isFinite(value)
+                || value < parityMin() || value > parityMax()) return false;
         plugin.getConfig().set("reserve.parity." + nation.toLowerCase(Locale.ROOT), round2(value));
         plugin.saveConfig();
         invalidateCache();
@@ -264,19 +278,27 @@ public final class ReserveBank {
     }
 
     public boolean setTax(String nation, double value) {
-        if (value < 0.0D || value > taxMax()) return false;
+        if (nation == null || nation.isBlank() || !Double.isFinite(value)
+                || value < 0.0D || value > taxMax()) return false;
         plugin.getConfig().set("reserve.tax." + nation.toLowerCase(Locale.ROOT), round4(value));
         plugin.saveConfig();
         return true;
     }
 
     public double maxMint(String nation, String currencyId) {
-        double cap = reserveOf(nation) / (parityOf(nation) * coverageFloor());
-        return Math.max(0.0D, cap - supplyOf(currencyId));
+        double parity = parityOf(nation);
+        double floor = coverageFloor();
+        if (!Double.isFinite(parity) || !Double.isFinite(floor) || parity <= 0.0D || floor <= 0.0D) {
+            return 0.0D;
+        }
+        double cap = reserveOf(nation) / (parity * floor);
+        double maximum = cap - supplyOf(currencyId);
+        return Double.isFinite(maximum) ? Math.max(0.0D, maximum) : 0.0D;
     }
 
     public boolean canMint(String nation, String currencyId, double extra) {
-        return extra <= maxMint(nation, currencyId) + 1.0E-9D;
+        return Double.isFinite(extra) && extra >= 0.0D
+                && extra <= maxMint(nation, currencyId) + 1.0E-9D;
     }
 
     public double dailyWithdrawLimit(String nation) {
