@@ -386,16 +386,13 @@ public final class BankService implements Listener {
 
         boolean pendingCollateralReturn = false;
         List<String> previousPending = null;
-        boolean onlineCollateralOwner = false;
         if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM) {
-            Player collateralOwner = plugin.getServer().getPlayer(borrower);
-            onlineCollateralOwner = collateralOwner != null && collateralOwner.isOnline();
-            if (!onlineCollateralOwner) {
-                previousPending = new ArrayList<>(pendingReturns.getOrDefault(borrower, List.of()));
-                pendingReturns.computeIfAbsent(borrower, ignored -> new ArrayList<>())
-                        .add(l.collateralItemBase64());
-                pendingCollateralReturn = true;
-            }
+            // Возврат предмета сначала попадает в тот же SQLite-коммит, что и закрытие кредита.
+            // Доставка выполняется после фиксации, чтобы сбой сервера не потерял залог между операциями.
+            previousPending = new ArrayList<>(pendingReturns.getOrDefault(borrower, List.of()));
+            pendingReturns.computeIfAbsent(borrower, ignored -> new ArrayList<>())
+                    .add(l.collateralItemBase64());
+            pendingCollateralReturn = true;
         }
 
         String operationId = "bank:loan:repay:" + loanId + ":" + UUID.randomUUID();
@@ -415,9 +412,6 @@ public final class BankService implements Listener {
             return "не удалось погасить кредит: транзакция не подтверждена";
         }
 
-        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM && onlineCollateralOwner) {
-            releaseCollateral(l);
-        }
         return null;
     }
 
