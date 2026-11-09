@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 4;
+    public static final int SCHEMA_VERSION = 5;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
