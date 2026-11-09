@@ -54,7 +54,7 @@ jobs:
           cache: maven
 
       - name: Build with Maven
-        run: mvn -B clean package
+        run: mvn -B clean verify
 
       - name: Upload jar artifact
         if: success()
