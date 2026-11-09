@@ -45,6 +45,17 @@ public final class SQLiteLedger {
     public record BankPoolRow(String nation, String currencyId, double pool, double interestReserve) {}
     public record BankCreditRow(UUID player, int repaidCount, int defaultedCount) {}
     public record BankPendingRow(UUID player, String itemBase64) {}
+    public record BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
+                               List<BankPoolRow> pools, List<BankCreditRow> credit,
+                               List<BankPendingRow> pendingReturns) {
+        public BankSnapshot {
+            accounts = List.copyOf(accounts);
+            loans = List.copyOf(loans);
+            pools = List.copyOf(pools);
+            credit = List.copyOf(credit);
+            pendingReturns = List.copyOf(pendingReturns);
+        }
+    }
     public record ExchangeOrderRow(String id, UUID owner, String nation, String sellCurrency,
                                    String buyCurrency, double sellAmount, double buyAmount,
                                    double price, double remaining, String status,
@@ -373,6 +384,19 @@ public final class SQLiteLedger {
                                              List<CheckedReserve> reserves,
                                              List<CheckedEscrow> escrows,
                                              List<Transaction> txs) {
+        return commitAbsoluteCheckedOnce(operationId, fingerprint, balances, reserves, escrows, null, txs);
+    }
+
+    /**
+     * Единый коммит кошельков, резервов, escrow, банковского снимка и финансового журнала.
+     * Банковский снимок записывается тем же соединением и откатывается вместе с кошельком.
+     */
+    public boolean commitAbsoluteCheckedOnce(String operationId, String fingerprint,
+                                             List<CheckedBalance> balances,
+                                             List<CheckedReserve> reserves,
+                                             List<CheckedEscrow> escrows,
+                                             BankSnapshot bankSnapshot,
+                                             List<Transaction> txs) {
         if (operationId == null || operationId.isBlank() || operationId.length() > 128
                 || fingerprint == null || fingerprint.isBlank() || fingerprint.length() > 512) {
             throw new LedgerException("invalid idempotency key or fingerprint");
@@ -382,14 +406,12 @@ public final class SQLiteLedger {
         boolean ok = false;
         try {
             c.setAutoCommit(false);
-
             try (PreparedStatement ps = c.prepareStatement(
                     "SELECT fingerprint FROM operation_requests WHERE operation_id=?")) {
                 ps.setString(1, operationId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
-                        String storedFingerprint = rs.getString(1);
-                        if (!fingerprint.equals(storedFingerprint)) {
+                        if (!fingerprint.equals(rs.getString(1))) {
                             throw new SQLException("idempotency key reused with a different payload");
                         }
                         c.commit();
@@ -406,6 +428,9 @@ public final class SQLiteLedger {
             applyCheckedBalances(c, balances);
             applyCheckedReserves(c, reserves);
             applyCheckedEscrows(c, escrows);
+            if (bankSnapshot != null) {
+                replaceBankSnapshot(c, bankSnapshot);
+            }
 
             try (PreparedStatement ps = c.prepareStatement(
                     "INSERT INTO operation_requests(operation_id, fingerprint, created_at) VALUES(?,?,?)")) {
@@ -414,7 +439,6 @@ public final class SQLiteLedger {
                 ps.setLong(3, System.currentTimeMillis());
                 ps.executeUpdate();
             }
-
             for (Transaction transaction : txs) {
                 insertTx(c, transaction);
             }
@@ -426,6 +450,58 @@ public final class SQLiteLedger {
             throw new LedgerException("commitAbsoluteCheckedOnce: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
+        }
+    }
+
+    private void replaceBankSnapshot(Connection c, BankSnapshot snapshot) throws SQLException {
+        try (Statement st = c.createStatement()) {
+            st.executeUpdate("DELETE FROM bank_accounts");
+            st.executeUpdate("DELETE FROM bank_loans");
+            st.executeUpdate("DELETE FROM bank_pools");
+            st.executeUpdate("DELETE FROM bank_credit");
+            st.executeUpdate("DELETE FROM bank_pending_returns");
+        }
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_accounts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+            for (BankAccountRow r : snapshot.accounts()) {
+                ps.setString(1,r.id()); ps.setString(2,r.owner().toString()); ps.setString(3,r.ownerName());
+                ps.setString(4,r.nation()); ps.setString(5,r.currencyId()); ps.setDouble(6,r.principal());
+                ps.setString(7,r.term()); ps.setDouble(8,r.rateAnnual()); ps.setLong(9,r.openedAt());
+                ps.setLong(10,r.maturesAt()); ps.setDouble(11,r.accrued()); ps.setLong(12,r.lastAccrualAt());
+                ps.setString(13,r.status()); ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_loans VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+            for (BankLoanRow r : snapshot.loans()) {
+                ps.setString(1,r.id()); ps.setString(2,r.borrower().toString()); ps.setString(3,r.borrowerName());
+                ps.setString(4,r.nation()); ps.setDouble(5,r.principal()); ps.setString(6,r.currencyId());
+                ps.setDouble(7,r.rateAnnual()); ps.setInt(8,r.termDays()); ps.setLong(9,r.openedAt());
+                ps.setLong(10,r.dueAt()); ps.setDouble(11,r.repaid()); ps.setDouble(12,r.accrued());
+                ps.setLong(13,r.lastAccrualAt()); ps.setString(14,r.status()); ps.setString(15,r.collateralType());
+                ps.setString(16,r.collateralCurrency()); ps.setString(17,r.collateralItem());
+                ps.setDouble(18,r.collateralValue()); ps.setInt(19,r.creditScoreAtOpen()); ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_pools VALUES(?,?,?,?)")) {
+            for (BankPoolRow r : snapshot.pools()) {
+                ps.setString(1,r.nation()); ps.setString(2,r.currencyId());
+                ps.setDouble(3,r.pool()); ps.setDouble(4,r.interestReserve()); ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_credit VALUES(?,?,?)")) {
+            for (BankCreditRow r : snapshot.credit()) {
+                ps.setString(1,r.player().toString()); ps.setInt(2,r.repaidCount());
+                ps.setInt(3,r.defaultedCount()); ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_pending_returns(player,item_base64) VALUES(?,?)")) {
+            for (BankPendingRow r : snapshot.pendingReturns()) {
+                ps.setString(1,r.player().toString()); ps.setString(2,r.itemBase64()); ps.addBatch();
+            }
+            ps.executeBatch();
         }
     }
 
