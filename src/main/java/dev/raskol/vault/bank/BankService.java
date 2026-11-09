@@ -441,6 +441,15 @@ public final class BankService implements Listener {
         BankLoan loan = new BankLoan(id, borrower, borrowerName, nation, amount, currency, rate, termDays,
                 now, due, ctype, ccur, citem, cvalue, camount, cprice, creditScore(borrower));
         loans.put(id, loan);
+        if (ctype == BankLoan.CollateralType.CURRENCY && ccur != null && camount > 0.0D) {
+            String lotId = "collateral-" + id;
+            assetLots.put(lotId, new SQLiteLedger.BankAssetLotRow(lotId, "CURRENCY", nation,
+                    borrower, id, ccur, camount, cprice, null, currency, cvalue, 0.0D, 0.0D, "PLEDGED"));
+        } else if (ctype == BankLoan.CollateralType.ITEM && citem != null && !citem.isBlank()) {
+            String lotId = "collateral-" + id;
+            assetLots.put(lotId, new SQLiteLedger.BankAssetLotRow(lotId, "ITEM", nation,
+                    borrower, id, null, 1.0D, 1.0D, citem, currency, cvalue, 0.0D, 0.0D, "PLEDGED"));
+        }
         pools.put(key, oldPool - amount);
 
         List<WalletService.WalletDelta> walletChanges = new ArrayList<>();
@@ -458,6 +467,7 @@ public final class BankService implements Listener {
                 walletChanges, List.of(), List.of(), bankSnapshot(), transactions);
         if (!committed) {
             loans.remove(id);
+            assetLots.remove("collateral-" + id);
             pools.put(key, oldPool);
             return "не удалось создать кредит: транзакция не подтверждена";
         }
@@ -500,6 +510,8 @@ public final class BankService implements Listener {
         pools.put(key, oldPool + principalPart);
         interestReserves.put(key, oldInterestReserve + interestPart);
         loans.put(loanId, staged);
+        SQLiteLedger.BankAssetLotRow previousCollateralLot = fullyRepaid
+                ? assetLots.remove("collateral-" + loanId) : null;
 
         List<WalletService.WalletDelta> walletChanges = new ArrayList<>();
         walletChanges.add(new WalletService.WalletDelta(borrower, l.currencyId(), -pay));
@@ -530,7 +542,7 @@ public final class BankService implements Listener {
                 List.of(), bankSnapshot(), transactions);
         if (!committed) {
             loans.put(loanId, l);
-            assetLots.remove("collateral-" + loanId);
+            if (previousCollateralLot != null) assetLots.put(previousCollateralLot.lotId(), previousCollateralLot);
             pools.put(key, oldPool);
             if (oldInterestReserve == 0.0D) interestReserves.remove(key);
             else interestReserves.put(key, oldInterestReserve);
@@ -574,18 +586,22 @@ public final class BankService implements Listener {
 
         staged.markLiquidated();
         if (l.collateralType() == BankLoan.CollateralType.CURRENCY
-                && l.collateralCurrency() != null && l.collateralAmount() > 0.0D) {
+                || l.collateralType() == BankLoan.CollateralType.ITEM) {
             String lotId = "collateral-" + loanId;
-            assetLots.put(lotId, new SQLiteLedger.BankAssetLotRow(lotId, "CURRENCY", l.nation(),
-                    l.borrower(), l.id(), l.collateralCurrency(), l.collateralAmount(),
-                    l.collateralPrice(), null, l.currencyId(), l.collateralValue(),
-                    staged.accrued(), staged.principal(), "HELD"));
-        } else if (l.collateralType() == BankLoan.CollateralType.ITEM
-                && l.collateralItemBase64() != null && !l.collateralItemBase64().isBlank()) {
-            String lotId = "collateral-" + loanId;
-            assetLots.put(lotId, new SQLiteLedger.BankAssetLotRow(lotId, "ITEM", l.nation(),
-                    l.borrower(), l.id(), null, 1.0D, 1.0D, l.collateralItemBase64(),
-                    l.currencyId(), l.collateralValue(), staged.accrued(), staged.principal(), "HELD"));
+            SQLiteLedger.BankAssetLotRow pledged = assetLots.get(lotId);
+            if (pledged == null) {
+                pledged = l.collateralType() == BankLoan.CollateralType.CURRENCY
+                        ? new SQLiteLedger.BankAssetLotRow(lotId, "CURRENCY", l.nation(), l.borrower(),
+                                l.id(), l.collateralCurrency(), l.collateralAmount(), l.collateralPrice(),
+                                null, l.currencyId(), l.collateralValue(), 0.0D, 0.0D, "PLEDGED")
+                        : new SQLiteLedger.BankAssetLotRow(lotId, "ITEM", l.nation(), l.borrower(),
+                                l.id(), null, 1.0D, 1.0D, l.collateralItemBase64(),
+                                l.currencyId(), l.collateralValue(), 0.0D, 0.0D, "PLEDGED");
+            }
+            assetLots.put(lotId, new SQLiteLedger.BankAssetLotRow(lotId, pledged.assetType(),
+                    pledged.nation(), pledged.sourceBorrower(), pledged.sourceLoanId(), pledged.currencyId(),
+                    pledged.amount(), pledged.lockedPrice(), pledged.itemBase64(), pledged.valuationCurrencyId(),
+                    pledged.lockedValue(), staged.accrued(), staged.principal(), "HELD"));
         }
         loans.put(loanId, staged);
         // Банк удерживает только сумму, направленную на погашение долга.
@@ -617,7 +633,12 @@ public final class BankService implements Listener {
                 liquidationWalletChanges, List.of(), List.of(), bankSnapshot(), liquidationJournal);
         if (!committed) {
             loans.put(loanId, l);
-            assetLots.remove("collateral-" + loanId);
+            SQLiteLedger.BankAssetLotRow rollbackLot = assetLots.get("collateral-" + loanId);
+            if (rollbackLot != null) assetLots.put(rollbackLot.lotId(), new SQLiteLedger.BankAssetLotRow(
+                    rollbackLot.lotId(), rollbackLot.assetType(), rollbackLot.nation(), rollbackLot.sourceBorrower(),
+                    rollbackLot.sourceLoanId(), rollbackLot.currencyId(), rollbackLot.amount(),
+                    rollbackLot.lockedPrice(), rollbackLot.itemBase64(), rollbackLot.valuationCurrencyId(),
+                    rollbackLot.lockedValue(), 0.0D, 0.0D, "PLEDGED"));
             pools.put(key, oldPool);
             if (oldInterestReserve == 0.0D) interestReserves.remove(key);
             else interestReserves.put(key, oldInterestReserve);
