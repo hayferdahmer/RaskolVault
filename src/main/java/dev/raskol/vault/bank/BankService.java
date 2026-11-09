@@ -431,10 +431,13 @@ public final class BankService implements Listener {
         staged.setRepaid(l.repaid());
         staged.setAccrued(l.accrued());
         staged.setLastAccrualAt(l.lastAccrualAt());
-        double out = staged.outstanding(now);
+        staged.outstanding(now);
         double proceeds = l.collateralValue();
-        double toInterest = Math.min(out, proceeds);
-        double remainder = Math.max(0.0D, proceeds - toInterest);
+        // Сначала покрываем начисленные проценты, затем основной долг.
+        double toInterest = Math.min(staged.accrued(), proceeds);
+        double afterInterest = Math.max(0.0D, proceeds - toInterest);
+        double principalRecovery = Math.min(staged.principal(), afterInterest);
+        double remainder = Math.max(0.0D, afterInterest - principalRecovery);
         String key = poolKey(l.nation(), l.currencyId());
         double oldPool = pools.getOrDefault(key, 0.0D);
         double oldInterestReserve = interestReserves.getOrDefault(key, 0.0D);
@@ -442,7 +445,7 @@ public final class BankService implements Listener {
 
         staged.markLiquidated();
         loans.put(loanId, staged);
-        pools.put(key, oldPool + remainder);
+        pools.put(key, oldPool + principalRecovery + remainder);
         interestReserves.put(key, oldInterestReserve + toInterest);
         defaultedCount.put(l.borrower(), oldDefaultedCount + 1);
 
