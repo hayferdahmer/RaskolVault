@@ -134,6 +134,22 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void bankOnlySnapshotCanCommitWithoutWalletDeltas() {
+        SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 250.0D, 15.0D)),
+                List.of(), List.of());
+
+        ledger.commitAbsoluteCheckedOnce("bank-liquidation-snapshot-001",
+                "bank-liquidation-fingerprint", List.of(), List.of(), List.of(), snapshot, List.of());
+
+        assertEquals(250.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
+        assertEquals(15.0D, ledger.bankPoolsAll().get(0).interestReserve(), 0.000_001D);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                ledger.operationCommitted("bank-liquidation-snapshot-001", "bank-liquidation-fingerprint"));
+    }
+
+    @Test
     void checkedCommitRejectsStaleBalance() {
         UUID player = UUID.randomUUID();
         ledger.commitAbsolute(List.of(
