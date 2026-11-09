@@ -77,7 +77,7 @@ class SQLiteLedgerTransactionTest {
                 null, 600.0D, 4)));
         ledger.replaceBankPools(List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 900.0D, 25.0D)));
         ledger.replaceBankCredit(List.of(new SQLiteLedger.BankCreditRow(player, 3, 1)));
-        ledger.replaceBankPending(List.of(new SQLiteLedger.BankPendingRow(player, "item-data")));
+        ledger.replaceBankPending(List.of(new SQLiteLedger.BankPendingRow("return-test-001", player, "item-data")));
 
         assertEquals(125.50D, ledger.bankAccountsAll().get(0).principal(), 0.000_001D);
         assertEquals("TERM_30", ledger.bankAccountsAll().get(0).term());
@@ -87,6 +87,7 @@ class SQLiteLedgerTransactionTest {
         assertEquals(25.0D, ledger.bankPoolsAll().get(0).interestReserve(), 0.000_001D);
         assertEquals(3, ledger.bankCreditAll().get(0).repaidCount());
         assertEquals("item-data", ledger.bankPendingAll().get(0).itemBase64());
+        assertEquals("return-test-001", ledger.bankPendingAll().get(0).returnId());
     }
 
     @Test
@@ -180,7 +181,7 @@ class SQLiteLedgerTransactionTest {
                         200L, "REPAID", "ITEM", null, "serialized-item", 120.0D, 0)),
                 List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 10.0D, 0.0D)),
                 List.of(),
-                List.of(new SQLiteLedger.BankPendingRow(borrower, "serialized-item")));
+                List.of(new SQLiteLedger.BankPendingRow("return-item-loan-001", borrower, "serialized-item")));
 
         ledger.commitAbsoluteCheckedOnce("item-loan-repay-atomic", "item-loan-repay-fingerprint",
                 List.of(new SQLiteLedger.CheckedBalance(borrower, "GLD", 100.0D, 0.0D)),
@@ -197,6 +198,7 @@ class SQLiteLedgerTransactionTest {
         assertEquals("REPAID", ledger.bankLoansAll().get(0).status());
         assertEquals(1, ledger.bankPendingAll().size());
         assertEquals("serialized-item", ledger.bankPendingAll().get(0).itemBase64());
+        assertEquals("return-item-loan-001", ledger.bankPendingAll().get(0).returnId());
         assertEquals(1L, ledger.countTransactions());
     }
 
