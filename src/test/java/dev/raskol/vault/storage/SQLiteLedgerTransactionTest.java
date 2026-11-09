@@ -229,7 +229,7 @@ class SQLiteLedgerTransactionTest {
 
         assertEquals(0.0D, ledger.getBalance(escrowWallet, "GLD"), 0.000_001D);
         assertEquals(50.0D, ledger.getBalance(recipient, "GLD"), 0.000_001D);
-        org.junit.jupiter.api.Assertions.assertNull(ledger.escrowGet("ticket-atomic"));
+        assertEquals(0.0D, ledger.escrowGet("ticket-atomic").amount(), 0.000_001D);
     }
 
     @Test
