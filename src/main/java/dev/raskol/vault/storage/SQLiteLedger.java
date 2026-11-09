@@ -43,11 +43,6 @@ public final class SQLiteLedger {
             "INSERT INTO balances(uuid, currency_id, amount, updated_at) VALUES(?,?,?,?) "
                     + "ON CONFLICT(uuid, currency_id) DO UPDATE SET "
                     + "amount=excluded.amount, updated_at=excluded.updated_at";
-    private static final String UPSERT_BALANCE_CHECKED =
-            "INSERT INTO balances(uuid, currency_id, amount, updated_at) VALUES(?,?,?,?) "
-                    + "ON CONFLICT(uuid, currency_id) DO UPDATE SET "
-                    + "amount=excluded.amount, updated_at=excluded.updated_at "
-                    + "WHERE balances.amount=?";
 
     private final Plugin plugin;
     private final File dbFile;
@@ -191,13 +186,27 @@ public final class SQLiteLedger {
     /** G6: отрицательный баланс отклоняется до записи. */
     private void guardNonNegative(List<AbsoluteBalance> balances) {
         for (AbsoluteBalance b : balances) {
-            if (b.newAmount() < -1.0E-9D)
-                throw new LedgerException("negative balance rejected: " + b.owner() + "/" + b.currencyId());
+            if (b.owner() == null || b.currencyId() == null || b.currencyId().isBlank()
+                    || !Double.isFinite(b.newAmount()) || b.newAmount() < -1.0E-9D) {
+                throw new LedgerException("invalid balance rejected: "
+                        + b.owner() + "/" + b.currencyId() + "=" + b.newAmount());
+            }
+        }
+    }
+
+    private void guardTransactions(List<Transaction> transactions) {
+        for (Transaction transaction : transactions) {
+            if (transaction == null || transaction.currencyId() == null
+                    || transaction.currencyId().isBlank() || transaction.type() == null
+                    || !Double.isFinite(transaction.amount()) || transaction.amount() <= 0.0D) {
+                throw new LedgerException("invalid ledger transaction rejected");
+            }
         }
     }
 
     public void commitAbsolute(List<AbsoluteBalance> balances, List<Transaction> txs) {
         guardNonNegative(balances);
+        guardTransactions(txs);
         Connection c = pool.borrow(); boolean ok = false;
         try {
             c.setAutoCommit(false);
@@ -218,6 +227,13 @@ public final class SQLiteLedger {
         List<AbsoluteBalance> abs = new ArrayList<>();
         for (CheckedBalance cb : balances) abs.add(new AbsoluteBalance(cb.owner(), cb.currencyId(), cb.newAmount()));
         guardNonNegative(abs);
+        for (CheckedBalance balance : balances) {
+            if (!Double.isFinite(balance.expectedOld()) || balance.expectedOld() < 0.0D) {
+                throw new LedgerException("invalid expected balance: "
+                        + balance.owner() + "/" + balance.currencyId());
+            }
+        }
+        guardTransactions(txs);
         Connection c = pool.borrow(); boolean ok = false;
         try {
             c.setAutoCommit(false);
