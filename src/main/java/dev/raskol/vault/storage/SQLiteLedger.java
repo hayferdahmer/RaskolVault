@@ -227,55 +227,66 @@ public final class SQLiteLedger {
     }
 
     public void commitAbsoluteChecked(List<CheckedBalance> balances, List<Transaction> txs) {
-        List<AbsoluteBalance> abs = new ArrayList<>();
-        for (CheckedBalance cb : balances) abs.add(new AbsoluteBalance(cb.owner(), cb.currencyId(), cb.newAmount()));
-        guardNonNegative(abs);
+        validateCheckedBalances(balances);
+        guardTransactions(txs);
+
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            c.setAutoCommit(false);
+            applyCheckedBalances(c, balances);
+            for (Transaction transaction : txs) {
+                insertTx(c, transaction);
+            }
+            c.commit();
+            ok = true;
+        } catch (SQLException e) {
+            rollbackQuiet(c);
+            throw new LedgerException("commitAbsoluteChecked: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    private void validateCheckedBalances(List<CheckedBalance> balances) {
+        List<AbsoluteBalance> absolute = new ArrayList<>();
         for (CheckedBalance balance : balances) {
+            absolute.add(new AbsoluteBalance(balance.owner(), balance.currencyId(), balance.newAmount()));
             if (!Double.isFinite(balance.expectedOld()) || balance.expectedOld() < 0.0D) {
                 throw new LedgerException("invalid expected balance: "
                         + balance.owner() + "/" + balance.currencyId());
             }
         }
-        guardTransactions(txs);
-        Connection c = pool.borrow(); boolean ok = false;
-        try {
-            c.setAutoCommit(false);
-            for (CheckedBalance b : balances) {
-                int updated;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "UPDATE balances SET amount=?, updated_at=? WHERE uuid=? AND currency_id=? AND amount=?")) {
-                    ps.setDouble(1, b.newAmount());
-                    ps.setLong(2, System.currentTimeMillis());
-                    ps.setString(3, b.owner().toString());
-                    ps.setString(4, b.currencyId());
-                    ps.setDouble(5, b.expectedOld());
-                    updated = ps.executeUpdate();
-                }
+        guardNonNegative(absolute);
+    }
 
-                if (updated == 0) {
-                    // Вставка допустима только для нового кошелька с ожидаемым нулевым балансом.
-                    if (Double.compare(b.expectedOld(), 0.0D) != 0) {
-                        throw new SQLException("optimistic lock failed: "
-                                + b.owner() + "/" + b.currencyId());
-                    }
-                    try (PreparedStatement ps = c.prepareStatement(
-                            "INSERT INTO balances(uuid, currency_id, amount, updated_at) "
-                                    + "VALUES(?,?,?,?) ON CONFLICT(uuid, currency_id) DO NOTHING")) {
-                        ps.setString(1, b.owner().toString());
-                        ps.setString(2, b.currencyId());
-                        ps.setDouble(3, b.newAmount());
-                        ps.setLong(4, System.currentTimeMillis());
-                        if (ps.executeUpdate() == 0) {
-                            throw new SQLException("optimistic insert conflict: "
-                                    + b.owner() + "/" + b.currencyId());
-                        }
-                    }
+    /** Проверяет, был ли уже подтверждён запрос с данным ключом. */
+    public boolean operationCommitted(String operationId, String fingerprint) {
+        if (operationId == null || operationId.isBlank() || operationId.length() > 128
+                || fingerprint == null || fingerprint.isBlank() || fingerprint.length() > 512) {
+            throw new LedgerException("invalid idempotency key or fingerprint");
+        }
+
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT fingerprint FROM operation_requests WHERE operation_id=?")) {
+            ps.setString(1, operationId);
+            try (ResultSet rs = ps.executeQuery()) {
+                ok = true;
+                if (!rs.next()) {
+                    return false;
                 }
+                if (!fingerprint.equals(rs.getString(1))) {
+                    throw new LedgerException("idempotency key reused with a different payload");
+                }
+                return true;
             }
-            for (Transaction t : txs) insertTx(c, t);
-            c.commit(); ok = true;
-        } catch (SQLException e) { rollbackQuiet(c); throw new LedgerException("commitAbsoluteChecked: " + e.getMessage(), e); }
-        finally { finish(c, ok); }
+        } catch (SQLException e) {
+            throw new LedgerException("operationCommitted: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
     }
 
     /**
@@ -289,17 +300,6 @@ public final class SQLiteLedger {
                 || fingerprint == null || fingerprint.isBlank() || fingerprint.length() > 512) {
             throw new LedgerException("invalid idempotency key or fingerprint");
         }
-
-        List<AbsoluteBalance> absolute = new ArrayList<>();
-        for (CheckedBalance balance : balances) {
-            absolute.add(new AbsoluteBalance(balance.owner(), balance.currencyId(), balance.newAmount()));
-            if (!Double.isFinite(balance.expectedOld()) || balance.expectedOld() < 0.0D) {
-                throw new LedgerException("invalid expected balance: "
-                        + balance.owner() + "/" + balance.currencyId());
-            }
-        }
-        guardNonNegative(absolute);
-        guardTransactions(txs);
 
         Connection c = pool.borrow();
         boolean ok = false;
@@ -322,6 +322,8 @@ public final class SQLiteLedger {
                 }
             }
 
+            validateCheckedBalances(balances);
+            guardTransactions(txs);
             applyCheckedBalances(c, balances);
 
             try (PreparedStatement ps = c.prepareStatement(
