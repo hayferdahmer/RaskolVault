@@ -65,10 +65,11 @@ public final class BankService implements Listener {
     private final Map<UUID, Integer> repaidCount = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> defaultedCount = new ConcurrentHashMap<>();
     private final Map<UUID, List<SQLiteLedger.BankPendingRow>> pendingReturns = new ConcurrentHashMap<>();
-    private final NamespacedKey collateralReturnKey = new NamespacedKey(plugin, "collateral_return_id");
+    private final NamespacedKey collateralReturnKey;
 
     public BankService(RaskolVault plugin, WalletService wallets, ReserveBank bank) {
         this.plugin = plugin;
+        this.collateralReturnKey = new NamespacedKey(plugin, "collateral_return_id");
         this.wallets = wallets;
         this.ledger = plugin.getLedger();
         this.bank = bank;
@@ -388,7 +389,7 @@ public final class BankService implements Listener {
         }
 
         boolean pendingCollateralReturn = false;
-        List<String> previousPending = null;
+        List<SQLiteLedger.BankPendingRow> previousPending = null;
         if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM) {
             // Возврат предмета сначала попадает в тот же SQLite-коммит, что и закрытие кредита.
             // Доставка выполняется после фиксации, чтобы сбой сервера не потерял залог между операциями.
@@ -538,8 +539,13 @@ public final class BankService implements Listener {
                     for (ItemStack left : ov.values()) p.getWorld().dropItemNaturally(p.getLocation(), left);
                 }
             } else {
-                pendingReturns.computeIfAbsent(l.borrower(), k -> new ArrayList<>()).add(l.collateralItemBase64());
-                savePending();
+                pendingReturns.computeIfAbsent(l.borrower(), k -> new ArrayList<>()).add(
+                        new SQLiteLedger.BankPendingRow(UUID.randomUUID().toString(),
+                                l.borrower(), l.collateralItemBase64()));
+                if (!savePending()) {
+                    plugin.getLogger().severe("Не удалось поставить предметный залог в очередь возврата кредита "
+                            + l.id());
+                }
             }
         }
     }
@@ -966,8 +972,8 @@ public final class BankService implements Listener {
 
     private synchronized boolean savePending() {
         List<SQLiteLedger.BankPendingRow> rows = new ArrayList<>();
-        for (Map.Entry<UUID, List<String>> entry : pendingReturns.entrySet()) {
-            for (String item : entry.getValue()) rows.add(new SQLiteLedger.BankPendingRow(entry.getKey(), item));
+        for (List<SQLiteLedger.BankPendingRow> playerRows : pendingReturns.values()) {
+            rows.addAll(playerRows);
         }
         try { ledger.replaceBankPending(rows); return true; }
         catch (RuntimeException exception) {
