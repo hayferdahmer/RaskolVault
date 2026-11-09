@@ -31,6 +31,8 @@ public final class SQLiteLedger {
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
     public record CheckedReserve(String nation, double expectedOld, double newAmount) {}
+    public record CheckedEscrow(String ticket, UUID owner, String currencyId,
+                                double expectedOld, double newAmount, boolean delete) {}
     public record EscrowRow(String ticket, UUID owner, String currencyId, double amount) {}
     public record ExchangeOrderRow(String id, UUID owner, String nation, String sellCurrency,
                                    String buyCurrency, double sellAmount, double buyAmount,
@@ -297,12 +299,22 @@ public final class SQLiteLedger {
     public boolean commitAbsoluteCheckedOnce(String operationId, String fingerprint,
                                              List<CheckedBalance> balances,
                                              List<Transaction> txs) {
-        return commitAbsoluteCheckedOnce(operationId, fingerprint, balances, List.of(), txs);
+        return commitAbsoluteCheckedOnce(operationId, fingerprint, balances,
+                List.of(), List.of(), txs);
     }
 
     public boolean commitAbsoluteCheckedOnce(String operationId, String fingerprint,
                                              List<CheckedBalance> balances,
                                              List<CheckedReserve> reserves,
+                                             List<Transaction> txs) {
+        return commitAbsoluteCheckedOnce(operationId, fingerprint, balances,
+                reserves, List.of(), txs);
+    }
+
+    public boolean commitAbsoluteCheckedOnce(String operationId, String fingerprint,
+                                             List<CheckedBalance> balances,
+                                             List<CheckedReserve> reserves,
+                                             List<CheckedEscrow> escrows,
                                              List<Transaction> txs) {
         if (operationId == null || operationId.isBlank() || operationId.length() > 128
                 || fingerprint == null || fingerprint.isBlank() || fingerprint.length() > 512) {
@@ -332,9 +344,11 @@ public final class SQLiteLedger {
 
             validateCheckedBalances(balances);
             validateCheckedReserves(reserves);
+            validateCheckedEscrows(escrows);
             guardTransactions(txs);
             applyCheckedBalances(c, balances);
             applyCheckedReserves(c, reserves);
+            applyCheckedEscrows(c, escrows);
 
             try (PreparedStatement ps = c.prepareStatement(
                     "INSERT INTO operation_requests(operation_id, fingerprint, created_at) VALUES(?,?,?)")) {
@@ -355,6 +369,65 @@ public final class SQLiteLedger {
             throw new LedgerException("commitAbsoluteCheckedOnce: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
+        }
+    }
+
+    private void validateCheckedEscrows(List<CheckedEscrow> escrows) {
+        for (CheckedEscrow escrow : escrows) {
+            if (escrow.ticket() == null || escrow.ticket().isBlank()
+                    || escrow.owner() == null || escrow.currencyId() == null
+                    || escrow.currencyId().isBlank()
+                    || !Double.isFinite(escrow.expectedOld()) || escrow.expectedOld() < 0.0D
+                    || !Double.isFinite(escrow.newAmount()) || escrow.newAmount() < 0.0D
+                    || (escrow.delete() && escrow.newAmount() != 0.0D)
+                    || (!escrow.delete() && escrow.newAmount() <= 0.0D)) {
+                throw new LedgerException("invalid checked escrow: "
+                        + (escrow.ticket() == null ? "null" : escrow.ticket()));
+            }
+        }
+    }
+
+    private void applyCheckedEscrows(Connection c, List<CheckedEscrow> escrows) throws SQLException {
+        for (CheckedEscrow escrow : escrows) {
+            int changed;
+            if (Double.compare(escrow.expectedOld(), 0.0D) == 0) {
+                if (escrow.delete()) {
+                    throw new SQLException("cannot delete a missing escrow ticket: " + escrow.ticket());
+                }
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO escrow(ticket, owner, currency_id, amount, created_at) "
+                                + "VALUES(?,?,?,?,?) ON CONFLICT(ticket) DO NOTHING")) {
+                    ps.setString(1, escrow.ticket());
+                    ps.setString(2, escrow.owner().toString());
+                    ps.setString(3, escrow.currencyId());
+                    ps.setDouble(4, escrow.newAmount());
+                    ps.setLong(5, System.currentTimeMillis());
+                    changed = ps.executeUpdate();
+                }
+            } else if (escrow.delete()) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "DELETE FROM escrow WHERE ticket=? AND owner=? AND currency_id=? AND amount=?")) {
+                    ps.setString(1, escrow.ticket());
+                    ps.setString(2, escrow.owner().toString());
+                    ps.setString(3, escrow.currencyId());
+                    ps.setDouble(4, escrow.expectedOld());
+                    changed = ps.executeUpdate();
+                }
+            } else {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "UPDATE escrow SET amount=? WHERE ticket=? AND owner=? AND currency_id=? AND amount=?")) {
+                    ps.setDouble(1, escrow.newAmount());
+                    ps.setString(2, escrow.ticket());
+                    ps.setString(3, escrow.owner().toString());
+                    ps.setString(4, escrow.currencyId());
+                    ps.setDouble(5, escrow.expectedOld());
+                    changed = ps.executeUpdate();
+                }
+            }
+
+            if (changed == 0) {
+                throw new SQLException("escrow optimistic lock failed: " + escrow.ticket());
+            }
         }
     }
 
@@ -503,8 +576,7 @@ public final class SQLiteLedger {
     public void escrowInsert(String ticket, UUID owner, String currencyId, double amount) {
         Connection c = pool.borrow(); boolean ok = false;
         try (PreparedStatement ps = c.prepareStatement(
-                "INSERT INTO escrow(ticket, owner, currency_id, amount, created_at) VALUES(?,?,?,?,?) "
-                        + "ON CONFLICT(ticket) DO UPDATE SET amount=excluded.amount, created_at=excluded.created_at")) {
+                "INSERT INTO escrow(ticket, owner, currency_id, amount, created_at) VALUES(?,?,?,?,?)")) {
             ps.setString(1, ticket); ps.setString(2, owner.toString());
             ps.setString(3, currencyId); ps.setDouble(4, amount); ps.setLong(5, System.currentTimeMillis());
             ps.executeUpdate(); ok = true;
