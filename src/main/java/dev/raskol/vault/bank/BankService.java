@@ -467,7 +467,7 @@ public final class BankService implements Listener {
         long now = System.currentTimeMillis();
         int count = 0;
         for (BankLoan l : new ArrayList<>(loans.values())) {
-            if (l.isOverdue(now)) { liquidate(l.id()); count++; }
+            if (l.isOverdue(now) && liquidate(l.id()) == null) count++;
         }
         return count;
     }
