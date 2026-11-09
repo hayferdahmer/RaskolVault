@@ -382,6 +382,20 @@ public final class BankService implements Listener {
                     l.collateralValue(), TransactionType.PAY, "bank:collateral:release:" + loanId, null));
         }
 
+        boolean pendingCollateralReturn = false;
+        List<String> previousPending = null;
+        boolean onlineCollateralOwner = false;
+        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM) {
+            Player collateralOwner = plugin.getServer().getPlayer(borrower);
+            onlineCollateralOwner = collateralOwner != null && collateralOwner.isOnline();
+            if (!onlineCollateralOwner) {
+                previousPending = new ArrayList<>(pendingReturns.getOrDefault(borrower, List.of()));
+                pendingReturns.computeIfAbsent(borrower, ignored -> new ArrayList<>())
+                        .add(l.collateralItemBase64());
+                pendingCollateralReturn = true;
+            }
+        }
+
         String operationId = "bank:loan:repay:" + loanId + ":" + UUID.randomUUID();
         boolean committed = wallets.applyBatchOnce(operationId, walletChanges, List.of(),
                 List.of(), bankSnapshot(), transactions);
@@ -392,21 +406,15 @@ public final class BankService implements Listener {
             else interestReserves.put(key, oldInterestReserve);
             if (oldRepaidCount == 0) repaidCount.remove(borrower);
             else repaidCount.put(borrower, oldRepaidCount);
+            if (pendingCollateralReturn) {
+                if (previousPending == null || previousPending.isEmpty()) pendingReturns.remove(borrower);
+                else pendingReturns.put(borrower, previousPending);
+            }
             return "не удалось погасить кредит: транзакция не подтверждена";
         }
 
-        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM) {
-            Player collateralOwner = plugin.getServer().getPlayer(borrower);
-            if (collateralOwner == null || !collateralOwner.isOnline()) {
-                pendingReturns.computeIfAbsent(borrower, ignored -> new ArrayList<>())
-                        .add(l.collateralItemBase64());
-                if (!savePending()) {
-                    plugin.getLogger().severe("Залог предметом возвращён в pending-пуле, но его сохранение требует проверки: "
-                            + loanId);
-                }
-            } else {
-                releaseCollateral(l);
-            }
+        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM && onlineCollateralOwner) {
+            releaseCollateral(l);
         }
         return null;
     }
