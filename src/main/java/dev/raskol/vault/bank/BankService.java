@@ -498,7 +498,7 @@ public final class BankService implements Listener {
         }
     }
 
-    public void saveAccounts() {
+    public boolean saveAccounts() {
         YamlConfiguration y = new YamlConfiguration();
         ConfigurationSection r = y.createSection("accounts");
         for (BankAccount a : accounts.values()) {
@@ -516,10 +516,10 @@ public final class BankService implements Listener {
             s.set("lastAccrualAt", a.lastAccrualAt());
             s.set("status", a.status().name());
         }
-        SafeStorage.saveAtomic(y, accountsFile, plugin);
+        return SafeStorage.saveAtomicChecked(y, accountsFile, plugin);
     }
 
-    public void saveLoans() {
+    public boolean saveLoans() {
         YamlConfiguration y = new YamlConfiguration();
         ConfigurationSection r = y.createSection("loans");
         for (BankLoan l : loans.values()) {
@@ -543,30 +543,30 @@ public final class BankService implements Listener {
             s.set("collateralValue", l.collateralValue());
             s.set("creditScore", l.creditScoreAtOpen());
         }
-        SafeStorage.saveAtomic(y, loansFile, plugin);
+        return SafeStorage.saveAtomicChecked(y, loansFile, plugin);
     }
 
-    private void savePools() {
+    private boolean savePools() {
         YamlConfiguration y = new YamlConfiguration();
         ConfigurationSection p = y.createSection("pools");
         for (Map.Entry<String, Double> e : pools.entrySet()) p.set(e.getKey(), e.getValue());
         ConfigurationSection ir = y.createSection("interest");
         for (Map.Entry<String, Double> e : interestReserves.entrySet()) ir.set(e.getKey(), e.getValue());
-        SafeStorage.saveAtomic(y, poolsFile, plugin);
+        return SafeStorage.saveAtomicChecked(y, poolsFile, plugin);
     }
-    private void saveCredit() {
+    private boolean saveCredit() {
         YamlConfiguration y = new YamlConfiguration();
         ConfigurationSection rp = y.createSection("repaid");
         for (Map.Entry<UUID, Integer> e : repaidCount.entrySet()) rp.set(e.getKey().toString(), e.getValue());
         ConfigurationSection df = y.createSection("defaulted");
         for (Map.Entry<UUID, Integer> e : defaultedCount.entrySet()) df.set(e.getKey().toString(), e.getValue());
-        SafeStorage.saveAtomic(y, creditFile, plugin);
+        return SafeStorage.saveAtomicChecked(y, creditFile, plugin);
     }
-    private void savePending() {
+    private boolean savePending() {
         YamlConfiguration y = new YamlConfiguration();
         ConfigurationSection pr = y.createSection("pending");
         for (Map.Entry<UUID, List<String>> e : pendingReturns.entrySet()) pr.set(e.getKey().toString(), e.getValue());
-        SafeStorage.saveAtomic(y, pendingFile, plugin);
+        return SafeStorage.saveAtomicChecked(y, pendingFile, plugin);
     }
     public void saveAll() { saveAccounts(); saveLoans(); savePools(); saveCredit(); savePending(); }
 
