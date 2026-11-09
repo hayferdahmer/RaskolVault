@@ -102,7 +102,7 @@ public final class EscrowService {
         }
 
         SQLiteLedger.EscrowRow row = ledger.escrowGet(ticket);
-        if (row == null) {
+        if (row == null || row.amount() <= 0.0D) {
             return false;
         }
         if (isGlobal(row.currencyId())) {
@@ -137,7 +137,7 @@ public final class EscrowService {
         }
 
         SQLiteLedger.EscrowRow row = ledger.escrowGet(ticket);
-        if (row == null || amount > row.amount() + 1.0E-9D) {
+        if (row == null || row.amount() <= 0.0D || amount > row.amount() + 1.0E-9D) {
             return false;
         }
         if (isGlobal(row.currencyId())) {
@@ -182,7 +182,7 @@ public final class EscrowService {
         }
 
         SQLiteLedger.EscrowRow row = ledger.escrowGet(ticket);
-        if (row == null) {
+        if (row == null || row.amount() <= 0.0D) {
             return false;
         }
         if (isGlobal(row.currencyId())) {
@@ -285,10 +285,8 @@ public final class EscrowService {
             return false;
         }
         try {
-            ledger.escrowDelete(ticket);
-            if (newRemaining > 0.0D) {
-                ledger.escrowInsert(ticket, row.owner(), row.currencyId(), newRemaining);
-            }
+            ledger.escrowUpdate(ticket, row.owner(), row.currencyId(),
+                    row.amount(), newRemaining);
             return true;
         } catch (RuntimeException exception) {
             wallets.withdraw(to, row.currencyId(), toRecipient, TransactionType.PAY,
