@@ -411,6 +411,14 @@ public final class WalletService {
                                   List<ReserveDelta> reserveDeltas,
                                   List<SQLiteLedger.CheckedEscrow> escrowChanges,
                                   List<Transaction> transactions) {
+        return applyBatchOnce(operationId, walletDeltas, reserveDeltas, escrowChanges, null, transactions);
+    }
+
+    public boolean applyBatchOnce(String operationId, List<WalletDelta> walletDeltas,
+                                  List<ReserveDelta> reserveDeltas,
+                                  List<SQLiteLedger.CheckedEscrow> escrowChanges,
+                                  SQLiteLedger.BankSnapshot bankSnapshot,
+                                  List<Transaction> transactions) {
         if (operationId == null || operationId.isBlank()
                 || walletDeltas == null || reserveDeltas == null
                 || escrowChanges == null || transactions == null) {
@@ -442,7 +450,7 @@ public final class WalletService {
             return false;
         }
 
-        String fingerprint = batchFingerprint(normalizedWallets, normalizedReserves, escrowChanges, transactions);
+        String fingerprint = batchFingerprint(normalizedWallets, normalizedReserves, escrowChanges, bankSnapshot, transactions);
         Set<Integer> lockIndexes = new TreeSet<>();
         for (WalletKey key : normalizedWallets.keySet()) {
             lockIndexes.add(lockIndex(key.owner(), key.currencyId()));
@@ -487,7 +495,7 @@ public final class WalletService {
             }
 
             boolean committed = writer.submitSync(() -> ledger.commitAbsoluteCheckedOnce(
-                    operationId, fingerprint, checkedBalances, checkedReserves, escrowChanges, transactions));
+                    operationId, fingerprint, checkedBalances, checkedReserves, escrowChanges, bankSnapshot, transactions));
             if (!committed) {
                 return false;
             }
@@ -511,6 +519,7 @@ public final class WalletService {
     private String batchFingerprint(Map<WalletKey, Double> wallets,
                                     Map<String, Double> reserves,
                                     List<SQLiteLedger.CheckedEscrow> escrows,
+                                    SQLiteLedger.BankSnapshot bankSnapshot,
                                     List<Transaction> transactions) {
         StringBuilder canonical = new StringBuilder();
         for (Map.Entry<WalletKey, Double> entry : wallets.entrySet()) {
@@ -535,6 +544,24 @@ public final class WalletService {
                     .append(fingerprintPart(Double.toHexString(escrow.expectedOld())))
                     .append(fingerprintPart(Double.toHexString(escrow.newAmount())))
                     .append(fingerprintPart(Boolean.toString(escrow.delete())));
+        }
+        if (bankSnapshot != null) {
+            canonical.append(fingerprintPart("BANK_SNAPSHOT"));
+            for (SQLiteLedger.BankAccountRow row : bankSnapshot.accounts()) {
+                canonical.append(fingerprintPart("BA")).append(fingerprintPart(row.toString()));
+            }
+            for (SQLiteLedger.BankLoanRow row : bankSnapshot.loans()) {
+                canonical.append(fingerprintPart("BL")).append(fingerprintPart(row.toString()));
+            }
+            for (SQLiteLedger.BankPoolRow row : bankSnapshot.pools()) {
+                canonical.append(fingerprintPart("BP")).append(fingerprintPart(row.toString()));
+            }
+            for (SQLiteLedger.BankCreditRow row : bankSnapshot.credit()) {
+                canonical.append(fingerprintPart("BC")).append(fingerprintPart(row.toString()));
+            }
+            for (SQLiteLedger.BankPendingRow row : bankSnapshot.pendingReturns()) {
+                canonical.append(fingerprintPart("BR")).append(fingerprintPart(row.toString()));
+            }
         }
         for (Transaction transaction : transactions) {
             if (transaction == null) {
