@@ -163,4 +163,39 @@ class SQLiteLedgerTransactionTest {
         org.junit.jupiter.api.Assertions.assertFalse(
                 ledger.operationCommitted(operationId, fingerprint));
     }
+
+    @Test
+    void walletAndReserveCommitAtomically() {
+        UUID player = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(player, "GLD", 100.0D)), List.of());
+        ledger.reserveSet("test-nation", 100.0D);
+
+        ledger.commitAbsoluteCheckedOnce("reserve-transfer-001", "wallet-and-reserve",
+                List.of(new SQLiteLedger.CheckedBalance(player, "GLD", 100.0D, 50.0D)),
+                List.of(new SQLiteLedger.CheckedReserve("test-nation", 100.0D, 50.0D)),
+                List.of());
+
+        assertEquals(50.0D, ledger.getBalance(player, "GLD"), 0.000_001D);
+        assertEquals(50.0D, ledger.reserveGet("test-nation"), 0.000_001D);
+    }
+
+    @Test
+    void reserveConflictRollsBackWalletAndDoesNotRecordOperation() {
+        UUID player = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(player, "GLD", 100.0D)), List.of());
+        ledger.reserveSet("test-nation", 100.0D);
+
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                "reserve-transfer-002", "wallet-and-reserve-conflict",
+                List.of(new SQLiteLedger.CheckedBalance(player, "GLD", 100.0D, 50.0D)),
+                List.of(new SQLiteLedger.CheckedReserve("test-nation", 10.0D, 20.0D)),
+                List.of()));
+
+        assertEquals(100.0D, ledger.getBalance(player, "GLD"), 0.000_001D);
+        assertEquals(100.0D, ledger.reserveGet("test-nation"), 0.000_001D);
+        org.junit.jupiter.api.Assertions.assertFalse(
+                ledger.operationCommitted("reserve-transfer-002", "wallet-and-reserve-conflict"));
+    }
 }
