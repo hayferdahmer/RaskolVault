@@ -460,8 +460,7 @@ public final class SQLiteLedger {
         for (BankAccountRow row : snapshot.accounts()) {
             if (row == null || blank(row.id()) || row.owner() == null || blank(row.nation())
                     || blank(row.currencyId()) || blank(row.term()) || blank(row.status())
-                    || !Double.isFinite(row.principal()) || row.principal() < 0.0D
-                    || ("ACTIVE".equals(row.status()) && row.principal() <= 0.0D)
+                    || !Double.isFinite(row.principal()) || row.principal() <= 0.0D
                     || !Double.isFinite(row.rateAnnual()) || row.rateAnnual() < 0.0D
                     || !Double.isFinite(row.accrued()) || row.accrued() < 0.0D) {
                 throw new LedgerException("invalid bank account row in atomic snapshot");
@@ -470,7 +469,8 @@ public final class SQLiteLedger {
         for (BankLoanRow row : snapshot.loans()) {
             if (row == null || blank(row.id()) || row.borrower() == null || blank(row.nation())
                     || blank(row.currencyId()) || blank(row.status()) || blank(row.collateralType())
-                    || !Double.isFinite(row.principal()) || row.principal() <= 0.0D
+                    || !Double.isFinite(row.principal()) || row.principal() < 0.0D
+                    || ("ACTIVE".equals(row.status()) && row.principal() <= 0.0D)
                     || !Double.isFinite(row.rateAnnual()) || row.rateAnnual() < 0.0D
                     || !Double.isFinite(row.repaid()) || row.repaid() < 0.0D
                     || !Double.isFinite(row.accrued()) || row.accrued() < 0.0D
