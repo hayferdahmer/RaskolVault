@@ -247,7 +247,7 @@ public final class BankGui implements Listener {
         }
         if (raw instanceof LoanCollateralHolder) {
             if (slot == 22) { openLoanType(p); return; }
-            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "loan-sec-currency"); msg(p, "&7Сумма кредита под залог валютой:"); return; }
+            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "loan-sec-currency"); msg(p, "&7Введите код валюты залога и сумму через пробел (например: SILVER 100):"); return; }
             if (slot == 13) { p.closeInventory(); chatField.put(uuid, "loan-sec-item"); msg(p, "&7Сумма кредита под залог предмета в руке:"); return; }
             return;
         }
@@ -264,6 +264,24 @@ public final class BankGui implements Listener {
         Bukkit.getScheduler().runTask(plugin, () -> {
             String nation = nationOf(p);
             if (nation == null) { msg(p, "&cВы вне нации — банк недоступен"); return; }
+            if (field.equals("loan-sec-currency")) {
+                String[] parts = text.split("\\s+");
+                if (parts.length != 2) {
+                    msg(p, "&cФормат: <код валюты> <сумма>");
+                    return;
+                }
+                double loanAmount = Numbers.parseDouble(parts[1], -1);
+                if (!(loanAmount > 0.0D)) {
+                    msg(p, "&cСумма должна быть больше нуля");
+                    return;
+                }
+                String err = bank().applyLoan(uuid, p.getName(), nation, glb(), loanAmount, 30,
+                        BankLoan.CollateralType.CURRENCY, parts[0], null);
+                msg(p, err == null ? "&aКредит выдан под залог " + parts[0] : "&c" + err);
+                openBank(p);
+                return;
+            }
+
             double v = Numbers.parseDouble(text, -1);
             if (field.startsWith("dep-amount:")) {
                 if (!(v > 0)) { msg(p, "&cСумма > 0"); openBank(p); return; }
@@ -276,14 +294,6 @@ public final class BankGui implements Listener {
             if (field.equals("loan-unsecured")) {
                 if (!(v > 0)) { msg(p, "&cСумма > 0"); openBank(p); return; }
                 String err = bank().applyLoanUnsecured(uuid, p.getName(), nation, glb(), v, 30);
-                msg(p, err == null ? "&aКредит выдан" : "&c" + err);
-                openBank(p);
-                return;
-            }
-            if (field.equals("loan-sec-currency")) {
-                if (!(v > 0)) { msg(p, "&cСумма > 0"); openBank(p); return; }
-                String err = bank().applyLoan(uuid, p.getName(), nation, glb(), v, 30,
-                        BankLoan.CollateralType.CURRENCY, glb(), null);
                 msg(p, err == null ? "&aКредит выдан" : "&c" + err);
                 openBank(p);
                 return;
