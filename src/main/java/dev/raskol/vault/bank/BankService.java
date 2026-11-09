@@ -340,23 +340,64 @@ public final class BankService implements Listener {
         if (l == null || !l.borrower().equals(borrower)) return "кредит не найден";
         if (!l.isActive()) return "кредит закрыт";
         long now = System.currentTimeMillis();
-        double out = l.outstanding(now);
+        BankLoan staged = new BankLoan(l.id(), l.borrower(), l.borrowerName(), l.nation(),
+                l.principal(), l.currencyId(), l.rateAnnual(), l.termDays(), l.openedAt(), l.dueAt(),
+                l.collateralType(), l.collateralCurrency(), l.collateralItemBase64(),
+                l.collateralValue(), l.creditScoreAtOpen());
+        staged.setRepaid(l.repaid());
+        staged.setAccrued(l.accrued());
+        staged.setLastAccrualAt(l.lastAccrualAt());
+        double out = staged.outstanding(now);
         double pay = Math.min(amount, out);
         if (!(pay > 0.0D)) return "нечего погашать";
         if (!wallets.has(borrower, l.currencyId(), pay)) return "недостаточно средств";
-        if (!wallets.withdraw(borrower, l.currencyId(), pay, TransactionType.PAY, "bank:loan:repay")) return "не удалось списать";
-        double interestPart = Math.min(pay, l.accrued());
+
+        double interestPart = Math.min(pay, staged.accrued());
         double principalPart = pay - interestPart;
-        addInterestReserve(l.nation(), l.currencyId(), interestPart);
-        addPool(l.nation(), l.currencyId(), principalPart);
-        l.applyRepayment(pay);
-        if (l.outstanding(now) <= 1e-6D) {
-            l.markRepaid();
-            repaidCount.merge(borrower, 1, Integer::sum);
-            saveCredit();
+        String key = poolKey(l.nation(), l.currencyId());
+        double oldPool = pools.getOrDefault(key, 0.0D);
+        double oldInterestReserve = interestReserves.getOrDefault(key, 0.0D);
+        int oldRepaidCount = repaidCount.getOrDefault(borrower, 0);
+        boolean fullyRepaid;
+
+        staged.applyRepayment(pay);
+        fullyRepaid = staged.outstanding(now) <= 1.0E-6D;
+        if (fullyRepaid) {
+            staged.markRepaid();
+            repaidCount.put(borrower, oldRepaidCount + 1);
+        }
+        pools.put(key, oldPool + principalPart);
+        interestReserves.put(key, oldInterestReserve + interestPart);
+        loans.put(loanId, staged);
+
+        List<WalletService.WalletDelta> walletChanges = new ArrayList<>();
+        walletChanges.add(new WalletService.WalletDelta(borrower, l.currencyId(), -pay));
+        List<Transaction> transactions = new ArrayList<>();
+        transactions.add(new Transaction(-1L, now, borrower, null, l.currencyId(), pay,
+                TransactionType.PAY, "bank:loan:repay:" + loanId, null));
+        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.CURRENCY
+                && l.collateralCurrency() != null && l.collateralValue() > 0.0D) {
+            walletChanges.add(new WalletService.WalletDelta(borrower, l.collateralCurrency(), l.collateralValue()));
+            transactions.add(new Transaction(-1L, now, null, borrower, l.collateralCurrency(),
+                    l.collateralValue(), TransactionType.PAY, "bank:collateral:release:" + loanId, null));
+        }
+
+        String operationId = "bank:loan:repay:" + loanId + ":" + UUID.randomUUID();
+        boolean committed = wallets.applyBatchOnce(operationId, walletChanges, List.of(),
+                List.of(), bankSnapshot(), transactions);
+        if (!committed) {
+            loans.put(loanId, l);
+            pools.put(key, oldPool);
+            if (oldInterestReserve == 0.0D) interestReserves.remove(key);
+            else interestReserves.put(key, oldInterestReserve);
+            if (oldRepaidCount == 0) repaidCount.remove(borrower);
+            else repaidCount.put(borrower, oldRepaidCount);
+            return "не удалось погасить кредит: транзакция не подтверждена";
+        }
+
+        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM) {
             releaseCollateral(l);
         }
-        saveLoans();
         return null;
     }
 
