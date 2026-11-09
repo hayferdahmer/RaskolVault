@@ -513,7 +513,7 @@ public final class SQLiteLedger {
             }
         }
         for (BankPendingRow row : snapshot.pendingReturns()) {
-            if (row == null || row.player() == null || blank(row.itemBase64())) {
+            if (row == null || blank(row.returnId()) || row.player() == null || blank(row.itemBase64())) {
                 throw new LedgerException("invalid pending collateral row in atomic snapshot");
             }
         }
