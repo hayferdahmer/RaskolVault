@@ -599,8 +599,8 @@ public final class BankService implements Listener {
         List<Transaction> liquidationJournal = new ArrayList<>();
         if (l.collateralType() == BankLoan.CollateralType.CURRENCY
                 && l.collateralCurrency() != null && l.collateralAmount() > 0.0D) {
-            // Залог становится активом банка; его стоимость конвертируется в валюту кредита
-            // по зафиксированному при выдаче курсу, а не по текущему рыночному курсу.
+            // Фиксируем изъятие актива. Денежное поступление появится только
+            // после отдельного подтверждения фактической реализации лота.
             liquidationJournal.add(new Transaction(-1L, now, l.borrower(), null, l.collateralCurrency(),
                     l.collateralAmount(), TransactionType.PAY, "bank:collateral:seize:" + loanId,
                     "{\"lockedPrice\":" + l.collateralPrice() + ",\"loanValue\":" + l.collateralValue() + "}"));
@@ -617,6 +617,7 @@ public final class BankService implements Listener {
                 liquidationWalletChanges, List.of(), List.of(), bankSnapshot(), liquidationJournal);
         if (!committed) {
             loans.put(loanId, l);
+            assetLots.remove("collateral-" + loanId);
             pools.put(key, oldPool);
             if (oldInterestReserve == 0.0D) interestReserves.remove(key);
             else interestReserves.put(key, oldInterestReserve);
