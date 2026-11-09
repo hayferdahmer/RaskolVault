@@ -10,6 +10,7 @@ import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -22,6 +23,7 @@ import org.bukkit.util.io.BukkitObjectOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -449,11 +451,58 @@ public final class BankService implements Listener {
         // Однократный импорт старых YAML-файлов. Исходные файлы остаются на месте
         // как резервная копия и больше не используются для рабочих записей.
         loadLegacyYaml();
-        if (!saveAccounts() || !saveLoans() || !savePools() || !saveCredit() || !savePending()) {
-            throw new IllegalStateException("Миграция банковских данных в SQLite не завершена; YAML-файлы сохранены.");
+        if (!saveAccounts() || !saveLoans() || !savePools() || !saveCredit() || !savePending()
+                || !verifyImportedBankData()) {
+            throw new IllegalStateException("Миграция банковских данных в SQLite не прошла проверку; YAML-файлы сохранены.");
         }
         ledger.markBankStorageInitialized();
         plugin.getLogger().info("Банковские данные импортированы в SQLite. YAML-файлы сохранены как резервные копии.");
+    }
+
+    private YamlConfiguration loadYamlStrict(File file) {
+        YamlConfiguration yaml = new YamlConfiguration();
+        try {
+            yaml.load(file);
+            return yaml;
+        } catch (IOException | InvalidConfigurationException exception) {
+            throw new IllegalStateException("Не удалось безопасно прочитать " + file.getName()
+                    + "; импорт остановлен, исходный файл не изменён.", exception);
+        }
+    }
+
+    private boolean verifyImportedBankData() {
+        List<SQLiteLedger.BankAccountRow> storedAccounts = ledger.bankAccountsAll();
+        List<SQLiteLedger.BankLoanRow> storedLoans = ledger.bankLoansAll();
+        List<SQLiteLedger.BankPoolRow> storedPools = ledger.bankPoolsAll();
+        List<SQLiteLedger.BankCreditRow> storedCredit = ledger.bankCreditAll();
+        List<SQLiteLedger.BankPendingRow> storedPending = ledger.bankPendingAll();
+
+        double expectedDepositPrincipal = accounts.values().stream()
+                .mapToDouble(BankAccount::principal).sum();
+        double storedDepositPrincipal = storedAccounts.stream()
+                .mapToDouble(SQLiteLedger.BankAccountRow::principal).sum();
+        double expectedLoanPrincipal = loans.values().stream()
+                .mapToDouble(BankLoan::principal).sum();
+        double storedLoanPrincipal = storedLoans.stream()
+                .mapToDouble(SQLiteLedger.BankLoanRow::principal).sum();
+        double expectedPool = pools.values().stream().mapToDouble(Double::doubleValue).sum();
+        double storedPool = storedPools.stream().mapToDouble(SQLiteLedger.BankPoolRow::pool).sum();
+        double expectedInterest = interestReserves.values().stream().mapToDouble(Double::doubleValue).sum();
+        double storedInterest = storedPools.stream().mapToDouble(SQLiteLedger.BankPoolRow::interestReserve).sum();
+
+        boolean valid = storedAccounts.size() == accounts.size()
+                && storedLoans.size() == loans.size()
+                && storedPools.size() == Math.max(pools.size(), interestReserves.size())
+                && storedPending.size() == pendingReturns.values().stream().mapToInt(List::size).sum()
+                && storedCredit.size() == Math.max(repaidCount.size(), defaultedCount.size())
+                && Math.abs(expectedDepositPrincipal - storedDepositPrincipal) < 1.0E-8D
+                && Math.abs(expectedLoanPrincipal - storedLoanPrincipal) < 1.0E-8D
+                && Math.abs(expectedPool - storedPool) < 1.0E-8D
+                && Math.abs(expectedInterest - storedInterest) < 1.0E-8D;
+        if (!valid) {
+            plugin.getLogger().severe("Проверка импорта банка не пройдена: записи или контрольные суммы не совпадают.");
+        }
+        return valid;
     }
 
     private void loadFromSqlite() {
@@ -502,7 +551,7 @@ public final class BankService implements Listener {
             if (parent != null && !parent.exists()) parent.mkdirs();
         }
         if (accountsFile.exists()) {
-            YamlConfiguration y = YamlConfiguration.loadConfiguration(accountsFile);
+            YamlConfiguration y = loadYamlStrict(accountsFile);
             ConfigurationSection root = y.getConfigurationSection("accounts");
             if (root != null) for (String id : root.getKeys(false)) {
                 ConfigurationSection section = root.getConfigurationSection(id);
@@ -520,7 +569,7 @@ public final class BankService implements Listener {
             }
         }
         if (loansFile.exists()) {
-            YamlConfiguration y = YamlConfiguration.loadConfiguration(loansFile);
+            YamlConfiguration y = loadYamlStrict(loansFile);
             ConfigurationSection root = y.getConfigurationSection("loans");
             if (root != null) for (String id : root.getKeys(false)) {
                 ConfigurationSection section = root.getConfigurationSection(id);
@@ -546,7 +595,7 @@ public final class BankService implements Listener {
             }
         }
         if (poolsFile.exists()) {
-            YamlConfiguration y = YamlConfiguration.loadConfiguration(poolsFile);
+            YamlConfiguration y = loadYamlStrict(poolsFile);
             ConfigurationSection poolSection = y.getConfigurationSection("pools");
             if (poolSection != null) for (String key : poolSection.getKeys(false)) {
                 pools.put(key, poolSection.getDouble(key, 0.0D));
@@ -557,7 +606,7 @@ public final class BankService implements Listener {
             }
         }
         if (creditFile.exists()) {
-            YamlConfiguration y = YamlConfiguration.loadConfiguration(creditFile);
+            YamlConfiguration y = loadYamlStrict(creditFile);
             ConfigurationSection repaidSection = y.getConfigurationSection("repaid");
             if (repaidSection != null) for (String key : repaidSection.getKeys(false)) {
                 repaidCount.put(UUID.fromString(key), repaidSection.getInt(key, 0));
@@ -568,7 +617,7 @@ public final class BankService implements Listener {
             }
         }
         if (pendingFile.exists()) {
-            YamlConfiguration y = YamlConfiguration.loadConfiguration(pendingFile);
+            YamlConfiguration y = loadYamlStrict(pendingFile);
             ConfigurationSection pendingSection = y.getConfigurationSection("pending");
             if (pendingSection != null) for (String key : pendingSection.getKeys(false)) {
                 pendingReturns.put(UUID.fromString(key), new ArrayList<>(pendingSection.getStringList(key)));
