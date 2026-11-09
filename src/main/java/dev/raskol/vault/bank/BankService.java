@@ -62,6 +62,7 @@ public final class BankService implements Listener {
     private final Map<String, BankLoan> loans = new ConcurrentHashMap<>();
     private final Map<String, Double> pools = new ConcurrentHashMap<>();
     private final Map<String, Double> interestReserves = new ConcurrentHashMap<>();
+    private final Map<String, SQLiteLedger.BankAssetLotRow> assetLots = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> repaidCount = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> defaultedCount = new ConcurrentHashMap<>();
     private final Map<UUID, List<SQLiteLedger.BankPendingRow>> pendingReturns = new ConcurrentHashMap<>();
@@ -526,6 +527,7 @@ public final class BankService implements Listener {
                 List.of(), bankSnapshot(), transactions);
         if (!committed) {
             loans.put(loanId, l);
+            assetLots.remove("collateral-" + loanId);
             pools.put(key, oldPool);
             if (oldInterestReserve == 0.0D) interestReserves.remove(key);
             else interestReserves.put(key, oldInterestReserve);
@@ -555,7 +557,9 @@ public final class BankService implements Listener {
         staged.setAccrued(l.accrued());
         staged.setLastAccrualAt(l.lastAccrualAt());
         staged.outstanding(now);
-        double proceeds = l.collateralValue();
+        // Оценка залога — не денежное поступление. До подтверждённой реализации
+        // актив хранится отдельным лотом, а погашение долга денежным пулом не отражается.
+        double proceeds = 0.0D;
         BankLoan.LiquidationSettlement settlement = staged.liquidationSettlement(proceeds);
         double toInterest = settlement.interestRecovered();
         double principalRecovery = settlement.principalRecovered();
@@ -566,6 +570,20 @@ public final class BankService implements Listener {
         int oldDefaultedCount = defaultedCount.getOrDefault(l.borrower(), 0);
 
         staged.markLiquidated();
+        if (l.collateralType() == BankLoan.CollateralType.CURRENCY
+                && l.collateralCurrency() != null && l.collateralAmount() > 0.0D) {
+            String lotId = "collateral-" + loanId;
+            assetLots.put(lotId, new SQLiteLedger.BankAssetLotRow(lotId, "CURRENCY", l.nation(),
+                    l.borrower(), l.id(), l.collateralCurrency(), l.collateralAmount(),
+                    l.collateralPrice(), null, l.currencyId(), l.collateralValue(),
+                    staged.accrued(), staged.principal(), "HELD"));
+        } else if (l.collateralType() == BankLoan.CollateralType.ITEM
+                && l.collateralItemBase64() != null && !l.collateralItemBase64().isBlank()) {
+            String lotId = "collateral-" + loanId;
+            assetLots.put(lotId, new SQLiteLedger.BankAssetLotRow(lotId, "ITEM", l.nation(),
+                    l.borrower(), l.id(), null, 1.0D, 1.0D, l.collateralItemBase64(),
+                    l.currencyId(), l.collateralValue(), staged.accrued(), staged.principal(), "HELD"));
+        }
         loans.put(loanId, staged);
         // Банк удерживает только сумму, направленную на погашение долга.
         pools.put(key, oldPool + principalRecovery);
@@ -604,6 +622,57 @@ public final class BankService implements Listener {
             return "не удалось ликвидировать кредит: транзакция не подтверждена";
         }
         return null;
+    }
+
+    /**
+     * Подтверждает фактическую реализацию залогового актива.
+     * proceeds — реально полученная сумма в валюте оценки лота, а не оценочная стоимость.
+     */
+    public synchronized String realizeCollateralAsset(String lotId, double proceeds) {
+        if (lotId == null || lotId.isBlank() || !Double.isFinite(proceeds) || proceeds < 0.0D)
+            return "некорректные параметры реализации залога";
+        SQLiteLedger.BankAssetLotRow lot = assetLots.get(lotId);
+        if (lot == null) return "лот залога не найден";
+        if (!"HELD".equals(lot.status())) return "лот уже реализован или закрыт";
+
+        double interestRecovered = Math.min(lot.recoverableInterest(), proceeds);
+        double principalRecovered = Math.min(lot.recoverablePrincipal(),
+                Math.max(0.0D, proceeds - interestRecovered));
+        double surplus = Math.max(0.0D, proceeds - interestRecovered - principalRecovered);
+        String key = poolKey(lot.nation(), lot.valuationCurrencyId());
+        double oldPool = pools.getOrDefault(key, 0.0D);
+        double oldInterest = interestReserves.getOrDefault(key, 0.0D);
+        pools.put(key, oldPool + principalRecovered);
+        interestReserves.put(key, oldInterest + interestRecovered);
+        SQLiteLedger.BankAssetLotRow realized = new SQLiteLedger.BankAssetLotRow(
+                lot.lotId(), lot.assetType(), lot.nation(), lot.sourceBorrower(), lot.sourceLoanId(),
+                lot.currencyId(), lot.amount(), lot.lockedPrice(), lot.itemBase64(),
+                lot.valuationCurrencyId(), lot.lockedValue(), lot.recoverableInterest(),
+                lot.recoverablePrincipal(), "REALIZED");
+        assetLots.put(lotId, realized);
+
+        List<WalletService.WalletDelta> walletChanges = surplus > 0.0D
+                ? List.of(new WalletService.WalletDelta(lot.sourceBorrower(), lot.valuationCurrencyId(), surplus))
+                : List.of();
+        List<Transaction> journal = List.of(new Transaction(-1L, System.currentTimeMillis(),
+                null, lot.sourceBorrower(), lot.valuationCurrencyId(), Math.max(proceeds, 1.0E-8D),
+                TransactionType.PAY, "bank:collateral:realize:" + lotId,
+                "{\"proceeds\":" + proceeds + ",\"interest\":" + interestRecovered
+                        + ",\"principal\":" + principalRecovered + ",\"surplus\":" + surplus + "}"));
+        boolean committed = wallets.applyBatchOnce("bank:collateral:realize:" + lotId,
+                walletChanges, List.of(), List.of(), bankSnapshot(), journal);
+        if (!committed) {
+            assetLots.put(lotId, lot);
+            pools.put(key, oldPool);
+            if (oldInterest == 0.0D) interestReserves.remove(key); else interestReserves.put(key, oldInterest);
+            return "реализация не подтверждена: состояние лота восстановлено";
+        }
+        return null;
+    }
+
+    public List<SQLiteLedger.BankAssetLotRow> collateralAssetLots() {
+        return assetLots.values().stream()
+                .sorted(java.util.Comparator.comparing(SQLiteLedger.BankAssetLotRow::lotId)).toList();
     }
 
     public synchronized int autoLiquidateOverdue() {
@@ -655,6 +724,7 @@ public final class BankService implements Listener {
             repaidCount.clear();
             defaultedCount.clear();
             pendingReturns.clear();
+            assetLots.clear();
             loadFromSqlite();
             plugin.getLogger().severe("Начисления банка отменены: состояние восстановлено из SQLite.");
         }
@@ -862,7 +932,7 @@ public final class BankService implements Listener {
 
     // ---------- персистентность ----------
     public synchronized void load() {
-        accounts.clear(); loans.clear(); pools.clear(); interestReserves.clear();
+        accounts.clear(); loans.clear(); pools.clear(); interestReserves.clear(); assetLots.clear();
         repaidCount.clear(); defaultedCount.clear(); pendingReturns.clear();
 
         if (ledger.bankStorageInitialized()) {
@@ -974,6 +1044,7 @@ public final class BankService implements Listener {
         for (SQLiteLedger.BankPendingRow row : ledger.bankPendingAll()) {
             pendingReturns.computeIfAbsent(row.player(), ignored -> new ArrayList<>()).add(row);
         }
+        for (SQLiteLedger.BankAssetLotRow row : ledger.bankAssetLotsAll()) assetLots.put(row.lotId(), row);
     }
 
     private void loadLegacyYaml() {
@@ -1116,7 +1187,9 @@ public final class BankService implements Listener {
         for (UUID player : pendingPlayers) {
             pendingRows.addAll(pendingReturns.getOrDefault(player, List.of()));
         }
-        return new SQLiteLedger.BankSnapshot(accountRows, loanRows, poolRows, creditRows, pendingRows);
+        List<SQLiteLedger.BankAssetLotRow> assetRows = new ArrayList<>(assetLots.values());
+        assetRows.sort(java.util.Comparator.comparing(SQLiteLedger.BankAssetLotRow::lotId));
+        return new SQLiteLedger.BankSnapshot(accountRows, loanRows, poolRows, creditRows, pendingRows, assetRows);
     }
 
     public synchronized boolean saveAccounts() {
