@@ -1,7 +1,7 @@
 name: RaskolVault
 version: '1.2.6'
 main: dev.raskol.vault.RaskolVault
-api-version: '1.21'
+api-version: '26.2'
 author: hayferdahmer
 description: 'Многовалютное экономическое ядро: золотой стандарт, биржа, аукцион, банк, налоги.'
 website: 'https://github.com/hayferdahmer/RaskolVault'
