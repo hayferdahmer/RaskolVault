@@ -68,7 +68,7 @@ public final class EscrowService {
         }
 
         String normalizedCurrency = currencyId.toUpperCase(Locale.ROOT);
-        String operationId = operationId("hold", ticket, owner, amount);
+        String operationId = operationId("hold:" + normalizedCurrency, ticket, owner, amount);
         if (ledger.operationExists(operationId)) {
             return true;
         }
