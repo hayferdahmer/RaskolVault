@@ -74,6 +74,18 @@ class BankLoanAccountingTest {
         assertEquals(50.0D, settlement.uncoveredDebt(), 0.000_001D);
     }
 
+    @Test
+    void currencyCollateralKeepsActualAmountAndLockedPriceSeparatelyFromValuation() {
+        BankLoan loan = new BankLoan("fx-loan", UUID.randomUUID(), "Игрок", "raskol",
+                100.0D, "GLD", 0.10D, 30, 1_000L, 3_000L,
+                BankLoan.CollateralType.CURRENCY, "SILVER", null,
+                120.0D, 60.0D, 2.0D, 0);
+
+        assertEquals(120.0D, loan.collateralValue(), 0.000_001D);
+        assertEquals(60.0D, loan.collateralAmount(), 0.000_001D);
+        assertEquals(2.0D, loan.collateralPrice(), 0.000_001D);
+    }
+
     private BankLoan loan(double principal) {
         return new BankLoan("loan-test", UUID.randomUUID(), "Игрок", "raskol",
                 principal, "GLD", 0.0D, 30, 1_000L, 3_000L,
