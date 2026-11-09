@@ -87,7 +87,10 @@ public final class LedgerWriter {
         // Вложенная постановка из потока писателя выполняется сразу, иначе
         // единственный поток мог бы ждать место в собственной очереди.
         if (Thread.currentThread() == thread) {
-            execute(job);
+            // Не обходим уже стоящие в очереди задания: сохраняем FIFO.
+            if (!running || !queue.offer(job)) {
+                notifyRejected(job);
+            }
             return;
         }
 
@@ -173,14 +176,18 @@ public final class LedgerWriter {
             running = false;
         }
         thread.interrupt();
-        try {
-            // Корректное завершение важнее тайм-аута: нельзя закрывать пул БД,
-            // пока писатель ещё использует соединение.
-            thread.join();
-        } catch (InterruptedException e) {
+        boolean interrupted = false;
+        while (thread.isAlive()) {
+            try {
+                // Корректное завершение важнее тайм-аута: нельзя закрывать пул БД,
+                // пока писатель ещё использует соединение.
+                thread.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
             Thread.currentThread().interrupt();
-            plugin.getLogger().severe("RaskolVault: ожидание остановки писателя прервано; "
-                    + "пул SQLite нельзя безопасно закрывать до завершения потока.");
         }
     }
 
