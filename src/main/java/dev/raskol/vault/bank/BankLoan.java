@@ -29,6 +29,8 @@ public final class BankLoan {
     private final String collateralCurrency;
     private final String collateralItemBase64;
     private final double collateralValue;
+    private final double collateralAmount;
+    private final double collateralPrice;
     private final int creditScoreAtOpen;
 
     public BankLoan(String id, UUID borrower, String borrowerName, String nation,
@@ -36,6 +38,16 @@ public final class BankLoan {
                     long openedAt, long dueAt,
                     CollateralType collateralType, String collateralCurrency,
                     String collateralItemBase64, double collateralValue, int creditScoreAtOpen) {
+        this(id, borrower, borrowerName, nation, principal, currencyId, rateAnnual, termDays,
+                openedAt, dueAt, collateralType, collateralCurrency, collateralItemBase64,
+                collateralValue, collateralValue, 1.0D, creditScoreAtOpen);
+    }
+
+    public BankLoan(String id, UUID borrower, String borrowerName, String nation,
+                    double principal, String currencyId, double rateAnnual, int termDays,
+                    long openedAt, long dueAt, CollateralType collateralType, String collateralCurrency,
+                    String collateralItemBase64, double collateralValue, double collateralAmount,
+                    double collateralPrice, int creditScoreAtOpen) {
         this.id = id; this.borrower = borrower; this.borrowerName = borrowerName;
         this.nation = nation; this.principal = principal; this.currencyId = currencyId;
         this.rateAnnual = rateAnnual; this.termDays = termDays;
@@ -46,6 +58,8 @@ public final class BankLoan {
         this.collateralCurrency = collateralCurrency;
         this.collateralItemBase64 = collateralItemBase64;
         this.collateralValue = collateralValue;
+        this.collateralAmount = collateralAmount;
+        this.collateralPrice = collateralPrice;
         this.creditScoreAtOpen = creditScoreAtOpen;
     }
 
@@ -67,6 +81,8 @@ public final class BankLoan {
     public String collateralCurrency() { return collateralCurrency; }
     public String collateralItemBase64() { return collateralItemBase64; }
     public double collateralValue() { return collateralValue; }
+    public double collateralAmount() { return collateralAmount; }
+    public double collateralPrice() { return collateralPrice; }
     public int creditScoreAtOpen() { return creditScoreAtOpen; }
 
     public void setRepaid(double v) { this.repaid = v; }
