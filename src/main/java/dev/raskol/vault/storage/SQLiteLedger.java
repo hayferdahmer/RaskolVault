@@ -222,12 +222,35 @@ public final class SQLiteLedger {
         try {
             c.setAutoCommit(false);
             for (CheckedBalance b : balances) {
-                try (PreparedStatement ps = c.prepareStatement(UPSERT_BALANCE_CHECKED)) {
-                    ps.setString(1, b.owner().toString()); ps.setString(2, b.currencyId());
-                    ps.setDouble(3, b.newAmount()); ps.setLong(4, System.currentTimeMillis());
+                int updated;
+                try (PreparedStatement ps = c.prepareStatement(
+                        "UPDATE balances SET amount=?, updated_at=? WHERE uuid=? AND currency_id=? AND amount=?")) {
+                    ps.setDouble(1, b.newAmount());
+                    ps.setLong(2, System.currentTimeMillis());
+                    ps.setString(3, b.owner().toString());
+                    ps.setString(4, b.currencyId());
                     ps.setDouble(5, b.expectedOld());
-                    if (ps.executeUpdate() == 0)
-                        throw new SQLException("optimistic lock failed: " + b.owner() + "/" + b.currencyId());
+                    updated = ps.executeUpdate();
+                }
+
+                if (updated == 0) {
+                    // Вставка допустима только для нового кошелька с ожидаемым нулевым балансом.
+                    if (Double.compare(b.expectedOld(), 0.0D) != 0) {
+                        throw new SQLException("optimistic lock failed: "
+                                + b.owner() + "/" + b.currencyId());
+                    }
+                    try (PreparedStatement ps = c.prepareStatement(
+                            "INSERT INTO balances(uuid, currency_id, amount, updated_at) "
+                                    + "VALUES(?,?,?,?) ON CONFLICT(uuid, currency_id) DO NOTHING")) {
+                        ps.setString(1, b.owner().toString());
+                        ps.setString(2, b.currencyId());
+                        ps.setDouble(3, b.newAmount());
+                        ps.setLong(4, System.currentTimeMillis());
+                        if (ps.executeUpdate() == 0) {
+                            throw new SQLException("optimistic insert conflict: "
+                                    + b.owner() + "/" + b.currencyId());
+                        }
+                    }
                 }
             }
             for (Transaction t : txs) insertTx(c, t);
