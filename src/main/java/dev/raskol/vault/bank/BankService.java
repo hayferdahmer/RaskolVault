@@ -3,6 +3,7 @@ package dev.raskol.vault.bank;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.storage.SafeStorage;
@@ -168,13 +169,22 @@ public final class BankService implements Listener {
         long now = System.currentTimeMillis();
         long matures = (term == BankAccount.Term.DEMAND) ? 0L : now + termDaysOf(term) * 86_400_000L;
         String id = UUID.randomUUID().toString();
-        if (!wallets.withdrawOnce(owner, currency, amount, TransactionType.PAY,
-                "bank:deposit:" + id, "bank:deposit:open:" + id)) {
-            return "не удалось списать";
+        BankAccount account = new BankAccount(id, owner, ownerName, nation, currency,
+                amount, term, rate, now, matures);
+        String key = poolKey(nation, currency);
+        double oldPool = pools.getOrDefault(key, 0.0D);
+        accounts.put(id, account);
+        pools.put(key, oldPool + amount);
+        Transaction transaction = new Transaction(-1L, now, owner, null, currency, amount,
+                TransactionType.PAY, "bank:deposit:open:" + id, null);
+        boolean committed = wallets.applyBatchOnce("bank:deposit:open:" + id,
+                List.of(new WalletService.WalletDelta(owner, currency, -amount)),
+                List.of(), List.of(), bankSnapshot(), List.of(transaction));
+        if (!committed) {
+            accounts.remove(id);
+            if (oldPool == 0.0D) pools.remove(key); else pools.put(key, oldPool);
+            return "не удалось открыть вклад: транзакция не подтверждена";
         }
-        accounts.put(id, new BankAccount(id, owner, ownerName, nation, currency, amount, term, rate, now, matures));
-        addPool(nation, currency, amount);
-        saveAccounts();
         return null;
     }
 
@@ -631,6 +641,61 @@ public final class BankService implements Listener {
                 pendingReturns.put(UUID.fromString(key), new ArrayList<>(pendingSection.getStringList(key)));
             }
         }
+    }
+
+    /**
+     * Создаёт детерминированный полный снимок банковского состояния для одного SQLite-коммита.
+     * Вызывается только из синхронизированных операций BankService.
+     */
+    private SQLiteLedger.BankSnapshot bankSnapshot() {
+        List<SQLiteLedger.BankAccountRow> accountRows = new ArrayList<>();
+        for (BankAccount a : accounts.values()) {
+            accountRows.add(new SQLiteLedger.BankAccountRow(a.id(), a.owner(), a.ownerName(), a.nation(),
+                    a.currencyId(), a.principal(), a.term().name(), a.rateAnnual(), a.openedAt(),
+                    a.maturesAt(), a.accrued(), a.lastAccrualAt(), a.status().name()));
+        }
+        accountRows.sort(java.util.Comparator.comparing(SQLiteLedger.BankAccountRow::id));
+
+        List<SQLiteLedger.BankLoanRow> loanRows = new ArrayList<>();
+        for (BankLoan l : loans.values()) {
+            loanRows.add(new SQLiteLedger.BankLoanRow(l.id(), l.borrower(), l.borrowerName(), l.nation(),
+                    l.principal(), l.currencyId(), l.rateAnnual(), l.termDays(), l.openedAt(), l.dueAt(),
+                    l.repaid(), l.accrued(), l.lastAccrualAt(), l.status().name(), l.collateralType().name(),
+                    l.collateralCurrency(), l.collateralItemBase64(), l.collateralValue(), l.creditScoreAtOpen()));
+        }
+        loanRows.sort(java.util.Comparator.comparing(SQLiteLedger.BankLoanRow::id));
+
+        java.util.Set<String> poolKeys = new java.util.TreeSet<>();
+        poolKeys.addAll(pools.keySet());
+        poolKeys.addAll(interestReserves.keySet());
+        List<SQLiteLedger.BankPoolRow> poolRows = new ArrayList<>();
+        for (String key : poolKeys) {
+            int split = key.indexOf('|');
+            if (split <= 0 || split == key.length() - 1) continue;
+            String nation = key.substring(0, split);
+            String currency = key.substring(split + 1);
+            poolRows.add(new SQLiteLedger.BankPoolRow(nation, currency,
+                    pools.getOrDefault(key, 0.0D), interestReserves.getOrDefault(key, 0.0D)));
+        }
+
+        java.util.Set<UUID> players = new java.util.TreeSet<>(java.util.Comparator.comparing(UUID::toString));
+        players.addAll(repaidCount.keySet());
+        players.addAll(defaultedCount.keySet());
+        List<SQLiteLedger.BankCreditRow> creditRows = new ArrayList<>();
+        for (UUID player : players) {
+            creditRows.add(new SQLiteLedger.BankCreditRow(player, repaidCount.getOrDefault(player, 0),
+                    defaultedCount.getOrDefault(player, 0)));
+        }
+
+        List<SQLiteLedger.BankPendingRow> pendingRows = new ArrayList<>();
+        List<UUID> pendingPlayers = new ArrayList<>(pendingReturns.keySet());
+        pendingPlayers.sort(java.util.Comparator.comparing(UUID::toString));
+        for (UUID player : pendingPlayers) {
+            for (String item : pendingReturns.getOrDefault(player, List.of())) {
+                pendingRows.add(new SQLiteLedger.BankPendingRow(player, item));
+            }
+        }
+        return new SQLiteLedger.BankSnapshot(accountRows, loanRows, poolRows, creditRows, pendingRows);
     }
 
     public synchronized boolean saveAccounts() {
