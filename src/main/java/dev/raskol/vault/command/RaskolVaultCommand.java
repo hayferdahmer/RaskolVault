@@ -65,7 +65,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "version" -> send(sender, "&fRaskolVault &6" + plugin.getPluginMeta().getVersion());
             case "wallet" -> openWallet(sender);          // работает, но скрыт из tab
             case "bank" -> {
-                if (args.length >= 3 && args[1].equalsIgnoreCase("admin")) {
+                if (args.length >= 2 && args[1].equalsIgnoreCase("admin")) {
                     String[] bankArgs = new String[args.length - 1];
                     bankArgs[0] = "bank";
                     System.arraycopy(args, 2, bankArgs, 1, args.length - 2);
