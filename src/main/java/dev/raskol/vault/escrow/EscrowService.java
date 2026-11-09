@@ -69,10 +69,16 @@ public final class EscrowService {
 
         String normalizedCurrency = currencyId.toUpperCase(Locale.ROOT);
         String operationId = operationId("hold:" + normalizedCurrency, ticket, owner, amount);
-        if (ledger.operationExists(operationId)) {
-            return true;
+        SQLiteLedger.EscrowRow existing = ledger.escrowGet(ticket);
+        if (existing != null) {
+            return existing.amount() > 0.0D
+                    && existing.owner().equals(owner)
+                    && existing.currencyId().equalsIgnoreCase(normalizedCurrency)
+                    && Double.compare(existing.amount(), amount) == 0
+                    && ledger.operationExists(operationId);
         }
-        if (ledger.escrowGet(ticket) != null) {
+        if (ledger.operationExists(operationId)) {
+            // Исторический ключ есть, а запись билета отсутствует: повторное создание запрещено.
             return false;
         }
 
