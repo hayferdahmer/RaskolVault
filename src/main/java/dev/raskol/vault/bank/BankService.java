@@ -354,7 +354,7 @@ public final class BankService implements Listener {
         BankLoan staged = new BankLoan(l.id(), l.borrower(), l.borrowerName(), l.nation(),
                 l.principal(), l.currencyId(), l.rateAnnual(), l.termDays(), l.openedAt(), l.dueAt(),
                 l.collateralType(), l.collateralCurrency(), l.collateralItemBase64(),
-                l.collateralValue(), l.creditScoreAtOpen());
+                l.collateralValue(), l.collateralAmount(), l.collateralPrice(), l.creditScoreAtOpen());
         staged.setRepaid(l.repaid());
         staged.setAccrued(l.accrued());
         staged.setLastAccrualAt(l.lastAccrualAt());
@@ -387,10 +387,10 @@ public final class BankService implements Listener {
         transactions.add(new Transaction(-1L, now, borrower, null, l.currencyId(), pay,
                 TransactionType.PAY, "bank:loan:repay:" + loanId, null));
         if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.CURRENCY
-                && l.collateralCurrency() != null && l.collateralValue() > 0.0D) {
-            walletChanges.add(new WalletService.WalletDelta(borrower, l.collateralCurrency(), l.collateralValue()));
+                && l.collateralCurrency() != null && l.collateralAmount() > 0.0D) {
+            walletChanges.add(new WalletService.WalletDelta(borrower, l.collateralCurrency(), l.collateralAmount()));
             transactions.add(new Transaction(-1L, now, null, borrower, l.collateralCurrency(),
-                    l.collateralValue(), TransactionType.PAY, "bank:collateral:release:" + loanId, null));
+                    l.collateralAmount(), TransactionType.PAY, "bank:collateral:release:" + loanId, null));
         }
 
         boolean pendingCollateralReturn = false;
@@ -434,7 +434,7 @@ public final class BankService implements Listener {
         BankLoan staged = new BankLoan(l.id(), l.borrower(), l.borrowerName(), l.nation(),
                 l.principal(), l.currencyId(), l.rateAnnual(), l.termDays(), l.openedAt(), l.dueAt(),
                 l.collateralType(), l.collateralCurrency(), l.collateralItemBase64(),
-                l.collateralValue(), l.creditScoreAtOpen());
+                l.collateralValue(), l.collateralAmount(), l.collateralPrice(), l.creditScoreAtOpen());
         staged.setRepaid(l.repaid());
         staged.setAccrued(l.accrued());
         staged.setLastAccrualAt(l.lastAccrualAt());
