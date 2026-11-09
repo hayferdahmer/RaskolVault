@@ -28,7 +28,7 @@ jobs:
           java-version: "25"
           cache: maven
       - name: Run SQLite and bank persistence tests
-        run: mvn -B -Dtest=SQLiteLedgerTransactionTest test
+        run: mvn -B -Dtest=SQLiteLedgerTransactionTest,BankLoanAccountingTest test
       - name: Verify bank schema and migration marker exist
         shell: bash
         run: |
