@@ -302,7 +302,14 @@ public final class BankService implements Listener {
             collateralPrice = collateralGldPrice / loanGldPrice;
             if (!Double.isFinite(collateralPrice) || collateralPrice <= 0.0D)
                 return "некорректный курс валютного залога";
-            collateralAmount = required / collateralPrice;
+            double rawCollateralAmount = required / collateralPrice;
+            double amountScale = Math.pow(10.0D, collateralCurrencyDefinition.decimals());
+            if (!Double.isFinite(rawCollateralAmount) || rawCollateralAmount <= 0.0D
+                    || !Double.isFinite(amountScale) || amountScale <= 0.0D
+                    || rawCollateralAmount > Double.MAX_VALUE / amountScale)
+                return "некорректное количество валютного залога";
+            // Округляем залог вверх до точности валюты, чтобы не допустить недообеспечения.
+            collateralAmount = Math.ceil(rawCollateralAmount * amountScale - 1.0E-10D) / amountScale;
             if (!Double.isFinite(collateralAmount) || collateralAmount <= 0.0D)
                 return "некорректное количество валютного залога";
             collateralValue = collateralAmount * collateralPrice;
