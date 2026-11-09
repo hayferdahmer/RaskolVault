@@ -87,7 +87,8 @@ public final class BankLoan {
 
     public double outstanding(long now) {
         accrueTo(now);
-        return Math.max(0.0D, principal + accrued - repaid);
+        // principal уже уменьшается в applyRepayment; repaid хранится только как история выплат.
+        return Math.max(0.0D, principal + accrued);
     }
 
     public void applyRepayment(double pay) {
