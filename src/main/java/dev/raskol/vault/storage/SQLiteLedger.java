@@ -402,6 +402,9 @@ public final class SQLiteLedger {
             throw new LedgerException("invalid idempotency key or fingerprint");
         }
 
+        if (bankSnapshot != null) {
+            validateBankSnapshot(bankSnapshot);
+        }
         Connection c = pool.borrow();
         boolean ok = false;
         try {
@@ -451,6 +454,50 @@ public final class SQLiteLedger {
         } finally {
             finish(c, ok);
         }
+    }
+
+    private void validateBankSnapshot(BankSnapshot snapshot) {
+        for (BankAccountRow row : snapshot.accounts()) {
+            if (row == null || blank(row.id()) || row.owner() == null || blank(row.nation())
+                    || blank(row.currencyId()) || blank(row.term()) || blank(row.status())
+                    || !Double.isFinite(row.principal()) || row.principal() <= 0.0D
+                    || !Double.isFinite(row.rateAnnual()) || row.rateAnnual() < 0.0D
+                    || !Double.isFinite(row.accrued()) || row.accrued() < 0.0D) {
+                throw new LedgerException("invalid bank account row in atomic snapshot");
+            }
+        }
+        for (BankLoanRow row : snapshot.loans()) {
+            if (row == null || blank(row.id()) || row.borrower() == null || blank(row.nation())
+                    || blank(row.currencyId()) || blank(row.status()) || blank(row.collateralType())
+                    || !Double.isFinite(row.principal()) || row.principal() <= 0.0D
+                    || !Double.isFinite(row.rateAnnual()) || row.rateAnnual() < 0.0D
+                    || !Double.isFinite(row.repaid()) || row.repaid() < 0.0D
+                    || !Double.isFinite(row.accrued()) || row.accrued() < 0.0D
+                    || !Double.isFinite(row.collateralValue()) || row.collateralValue() < 0.0D) {
+                throw new LedgerException("invalid bank loan row in atomic snapshot");
+            }
+        }
+        for (BankPoolRow row : snapshot.pools()) {
+            if (row == null || blank(row.nation()) || blank(row.currencyId())
+                    || !Double.isFinite(row.pool()) || row.pool() < 0.0D
+                    || !Double.isFinite(row.interestReserve()) || row.interestReserve() < 0.0D) {
+                throw new LedgerException("invalid bank pool row in atomic snapshot");
+            }
+        }
+        for (BankCreditRow row : snapshot.credit()) {
+            if (row == null || row.player() == null || row.repaidCount() < 0 || row.defaultedCount() < 0) {
+                throw new LedgerException("invalid bank credit row in atomic snapshot");
+            }
+        }
+        for (BankPendingRow row : snapshot.pendingReturns()) {
+            if (row == null || row.player() == null || blank(row.itemBase64())) {
+                throw new LedgerException("invalid pending collateral row in atomic snapshot");
+            }
+        }
+    }
+
+    private boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 
     private void replaceBankSnapshot(Connection c, BankSnapshot snapshot) throws SQLException {
