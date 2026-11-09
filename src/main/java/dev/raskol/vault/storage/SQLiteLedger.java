@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 8;
+    public static final int SCHEMA_VERSION = 9;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
@@ -59,15 +59,25 @@ public final class SQLiteLedger {
     public record BankPendingRow(String returnId, UUID player, String itemBase64) {}
     public record BankCollateralIntentRow(String intentId, UUID player, String loanId,
                                            String itemBase64, long createdAt) {}
+    public record BankAssetLotRow(String lotId, String nation, UUID sourceBorrower, String sourceLoanId,
+                                  String currencyId, double amount, double lockedPrice,
+                                  String valuationCurrencyId, double lockedValue,
+                                  double recoverableInterest, double recoverablePrincipal, String status) {}
     public record BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
                                List<BankPoolRow> pools, List<BankCreditRow> credit,
-                               List<BankPendingRow> pendingReturns) {
+                               List<BankPendingRow> pendingReturns, List<BankAssetLotRow> assetLots) {
+        public BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
+                            List<BankPoolRow> pools, List<BankCreditRow> credit,
+                            List<BankPendingRow> pendingReturns) {
+            this(accounts, loans, pools, credit, pendingReturns, List.of());
+        }
         public BankSnapshot {
             accounts = List.copyOf(accounts);
             loans = List.copyOf(loans);
             pools = List.copyOf(pools);
             credit = List.copyOf(credit);
             pendingReturns = List.copyOf(pendingReturns);
+            assetLots = List.copyOf(assetLots);
         }
     }
     public record ExchangeOrderRow(String id, UUID owner, String nation, String sellCurrency,
@@ -220,6 +230,13 @@ public final class SQLiteLedger {
                 }
                 st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_pending_return_id ON bank_pending_returns(return_id)");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_bank_pending_player ON bank_pending_returns(player)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_asset_lots ("
+                        + "lot_id TEXT PRIMARY KEY, nation TEXT NOT NULL, source_borrower TEXT NOT NULL,"
+                        + "source_loan_id TEXT NOT NULL UNIQUE, currency_id TEXT NOT NULL, amount REAL NOT NULL,"
+                        + "locked_price REAL NOT NULL, valuation_currency_id TEXT NOT NULL, locked_value REAL NOT NULL,"
+                        + "recoverable_interest REAL NOT NULL, recoverable_principal REAL NOT NULL, status TEXT NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_bank_asset_lots_nation_currency "
+                        + "ON bank_asset_lots(nation,currency_id,status)");
                 st.execute("CREATE TABLE IF NOT EXISTS bank_collateral_intents ("
                         + "intent_id TEXT PRIMARY KEY, player TEXT NOT NULL, loan_id TEXT NOT NULL UNIQUE,"
                         + "item_base64 TEXT NOT NULL, created_at INTEGER NOT NULL)");
@@ -554,6 +571,18 @@ public final class SQLiteLedger {
                 throw new LedgerException("invalid bank credit row in atomic snapshot");
             }
         }
+        for (BankAssetLotRow row : snapshot.assetLots()) {
+            if (row == null || blank(row.lotId()) || blank(row.nation()) || row.sourceBorrower() == null
+                    || blank(row.sourceLoanId()) || blank(row.currencyId()) || blank(row.valuationCurrencyId())
+                    || !Double.isFinite(row.amount()) || row.amount() <= 0.0D
+                    || !Double.isFinite(row.lockedPrice()) || row.lockedPrice() <= 0.0D
+                    || !Double.isFinite(row.lockedValue()) || row.lockedValue() <= 0.0D
+                    || !Double.isFinite(row.recoverableInterest()) || row.recoverableInterest() < 0.0D
+                    || !Double.isFinite(row.recoverablePrincipal()) || row.recoverablePrincipal() < 0.0D
+                    || blank(row.status())) {
+                throw new LedgerException("invalid bank collateral asset lot in atomic snapshot");
+            }
+        }
         for (BankPendingRow row : snapshot.pendingReturns()) {
             if (row == null || blank(row.returnId()) || row.player() == null || blank(row.itemBase64())) {
                 throw new LedgerException("invalid pending collateral row in atomic snapshot");
@@ -572,6 +601,7 @@ public final class SQLiteLedger {
             st.executeUpdate("DELETE FROM bank_pools");
             st.executeUpdate("DELETE FROM bank_credit");
             st.executeUpdate("DELETE FROM bank_pending_returns");
+            st.executeUpdate("DELETE FROM bank_asset_lots");
         }
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_accounts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
             for (BankAccountRow r : snapshot.accounts()) {
@@ -614,6 +644,16 @@ public final class SQLiteLedger {
             for (BankPendingRow r : snapshot.pendingReturns()) {
                 ps.setString(1,r.returnId()); ps.setString(2,r.player().toString());
                 ps.setString(3,r.itemBase64()); ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_asset_lots VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")) {
+            for (BankAssetLotRow r : snapshot.assetLots()) {
+                ps.setString(1,r.lotId()); ps.setString(2,r.nation()); ps.setString(3,r.sourceBorrower().toString());
+                ps.setString(4,r.sourceLoanId()); ps.setString(5,r.currencyId()); ps.setDouble(6,r.amount());
+                ps.setDouble(7,r.lockedPrice()); ps.setString(8,r.valuationCurrencyId()); ps.setDouble(9,r.lockedValue());
+                ps.setDouble(10,r.recoverableInterest()); ps.setDouble(11,r.recoverablePrincipal());
+                ps.setString(12,r.status()); ps.addBatch();
             }
             ps.executeBatch();
         }
@@ -917,6 +957,24 @@ public final class SQLiteLedger {
             ok=true;
         }catch(SQLException e){throw new LedgerException("bankPendingAll: "+e.getMessage(),e);}
         finally{finish(c,ok);}return out;
+    }
+
+    public List<BankAssetLotRow> bankAssetLotsAll() {
+        List<BankAssetLotRow> out = new ArrayList<>();
+        Connection c = pool.borrow(); boolean ok = false;
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT * FROM bank_asset_lots ORDER BY lot_id")) {
+            while (rs.next()) out.add(new BankAssetLotRow(rs.getString("lot_id"), rs.getString("nation"),
+                    UUID.fromString(rs.getString("source_borrower")), rs.getString("source_loan_id"),
+                    rs.getString("currency_id"), rs.getDouble("amount"), rs.getDouble("locked_price"),
+                    rs.getString("valuation_currency_id"), rs.getDouble("locked_value"),
+                    rs.getDouble("recoverable_interest"), rs.getDouble("recoverable_principal"),
+                    rs.getString("status")));
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("bankAssetLotsAll: " + e.getMessage(), e);
+        } finally { finish(c, ok); }
+        return out;
     }
 
     public void createBankCollateralIntent(BankCollateralIntentRow row) {
