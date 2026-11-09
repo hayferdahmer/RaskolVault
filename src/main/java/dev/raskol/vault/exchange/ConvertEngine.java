@@ -166,10 +166,10 @@ public final class ConvertEngine {
 
         List<WalletService.ReserveDelta> reserveDeltas = new ArrayList<>();
         if (fromReserve) {
-            reserveDeltas.add(new WalletService.ReserveDelta(from.nationId(), -quote.goldFlow()));
+            reserveDeltas.add(new WalletService.ReserveDelta(fromNation(from.id()), -quote.goldFlow()));
         }
         if (toReserve) {
-            reserveDeltas.add(new WalletService.ReserveDelta(to.nationId(), quote.goldFlow()));
+            reserveDeltas.add(new WalletService.ReserveDelta(toNation(to.id()), quote.goldFlow()));
         }
 
         boolean committed = wallets.applyBatchOnce(operationId,
