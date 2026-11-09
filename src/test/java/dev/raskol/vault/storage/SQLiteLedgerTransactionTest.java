@@ -166,7 +166,7 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
-    void itemCollateralIntentSurvivesRestartUntilExplicitlyAcknowledged() {
+    void itemCollateralIntentSurvivesRestartUntilExplicitlyAcknowledged() throws Exception {
         UUID player = UUID.randomUUID();
         SQLiteLedger.BankCollateralIntentRow intent = new SQLiteLedger.BankCollateralIntentRow(
                 "intent-crash-001", player, "loan-crash-001", "serialized-item-payload", 1_700_000_000_000L);
