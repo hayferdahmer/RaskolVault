@@ -435,11 +435,10 @@ public final class BankService implements Listener {
         staged.setLastAccrualAt(l.lastAccrualAt());
         staged.outstanding(now);
         double proceeds = l.collateralValue();
-        // Сначала покрываем начисленные проценты, затем основной долг.
-        double toInterest = Math.min(staged.accrued(), proceeds);
-        double afterInterest = Math.max(0.0D, proceeds - toInterest);
-        double principalRecovery = Math.min(staged.principal(), afterInterest);
-        double remainder = Math.max(0.0D, afterInterest - principalRecovery);
+        BankLoan.LiquidationSettlement settlement = staged.liquidationSettlement(proceeds);
+        double toInterest = settlement.interestRecovered();
+        double principalRecovery = settlement.principalRecovered();
+        double borrowerSurplus = settlement.borrowerSurplus();
         String key = poolKey(l.nation(), l.currencyId());
         double oldPool = pools.getOrDefault(key, 0.0D);
         double oldInterestReserve = interestReserves.getOrDefault(key, 0.0D);
@@ -447,16 +446,25 @@ public final class BankService implements Listener {
 
         staged.markLiquidated();
         loans.put(loanId, staged);
-        pools.put(key, oldPool + principalRecovery + remainder);
+        // Банк удерживает только сумму, направленную на погашение долга.
+        pools.put(key, oldPool + principalRecovery);
         interestReserves.put(key, oldInterestReserve + toInterest);
         defaultedCount.put(l.borrower(), oldDefaultedCount + 1);
 
-        List<Transaction> liquidationJournal = proceeds > 0.0D
-                ? List.of(new Transaction(-1L, now, l.borrower(), null, l.currencyId(), proceeds,
-                        TransactionType.PAY, "bank:loan:liquidate:" + loanId, null))
+        List<WalletService.WalletDelta> liquidationWalletChanges = borrowerSurplus > 0.0D
+                ? List.of(new WalletService.WalletDelta(l.borrower(), l.currencyId(), borrowerSurplus))
                 : List.of();
+        List<Transaction> liquidationJournal = new ArrayList<>();
+        if (proceeds > 0.0D) {
+            liquidationJournal.add(new Transaction(-1L, now, l.borrower(), null, l.currencyId(), proceeds,
+                    TransactionType.PAY, "bank:loan:liquidate:" + loanId, null));
+        }
+        if (borrowerSurplus > 0.0D) {
+            liquidationJournal.add(new Transaction(-1L, now, null, l.borrower(), l.currencyId(), borrowerSurplus,
+                    TransactionType.PAY, "bank:loan:liquidation-surplus:" + loanId, null));
+        }
         boolean committed = wallets.applyBatchOnce("bank:loan:liquidate:" + loanId,
-                List.of(), List.of(), List.of(), bankSnapshot(), liquidationJournal);
+                liquidationWalletChanges, List.of(), List.of(), bankSnapshot(), liquidationJournal);
         if (!committed) {
             loans.put(loanId, l);
             pools.put(key, oldPool);
