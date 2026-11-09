@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 5;
+    public static final int SCHEMA_VERSION = 6;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
@@ -44,7 +44,7 @@ public final class SQLiteLedger {
                               String collateralItem, double collateralValue, int creditScoreAtOpen) {}
     public record BankPoolRow(String nation, String currencyId, double pool, double interestReserve) {}
     public record BankCreditRow(UUID player, int repaidCount, int defaultedCount) {}
-    public record BankPendingRow(UUID player, String itemBase64) {}
+    public record BankPendingRow(String returnId, UUID player, String itemBase64) {}
     public record BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
                                List<BankPoolRow> pools, List<BankCreditRow> credit,
                                List<BankPendingRow> pendingReturns) {
@@ -161,7 +161,29 @@ public final class SQLiteLedger {
                 st.execute("CREATE TABLE IF NOT EXISTS bank_credit ("
                         + "player TEXT PRIMARY KEY, repaid_count INTEGER NOT NULL, defaulted_count INTEGER NOT NULL)");
                 st.execute("CREATE TABLE IF NOT EXISTS bank_pending_returns ("
-                        + "id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, item_base64 TEXT NOT NULL)");
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT, return_id TEXT, player TEXT NOT NULL, item_base64 TEXT NOT NULL)");
+                boolean hasReturnId = false;
+                try (ResultSet columns = st.executeQuery("PRAGMA table_info(bank_pending_returns)")) {
+                    while (columns.next()) {
+                        if ("return_id".equalsIgnoreCase(columns.getString("name"))) hasReturnId = true;
+                    }
+                }
+                if (!hasReturnId) st.execute("ALTER TABLE bank_pending_returns ADD COLUMN return_id TEXT");
+                try (Statement rows = c.createStatement();
+                     ResultSet pending = rows.executeQuery("SELECT id FROM bank_pending_returns WHERE return_id IS NULL")) {
+                    List<Long> legacyIds = new ArrayList<>();
+                    while (pending.next()) legacyIds.add(pending.getLong(1));
+                    try (PreparedStatement update = c.prepareStatement(
+                            "UPDATE bank_pending_returns SET return_id=? WHERE id=?")) {
+                        for (Long legacyId : legacyIds) {
+                            update.setString(1, UUID.randomUUID().toString());
+                            update.setLong(2, legacyId);
+                            update.addBatch();
+                        }
+                        update.executeBatch();
+                    }
+                }
+                st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_pending_return_id ON bank_pending_returns(return_id)");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_bank_pending_player ON bank_pending_returns(player)");
                 st.execute("CREATE TABLE IF NOT EXISTS bank_storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
                 st.execute("CREATE TABLE IF NOT EXISTS operation_requests ("
@@ -545,9 +567,10 @@ public final class SQLiteLedger {
             }
             ps.executeBatch();
         }
-        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_pending_returns(player,item_base64) VALUES(?,?)")) {
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_pending_returns(return_id,player,item_base64) VALUES(?,?,?)")) {
             for (BankPendingRow r : snapshot.pendingReturns()) {
-                ps.setString(1,r.player().toString()); ps.setString(2,r.itemBase64()); ps.addBatch();
+                ps.setString(1,r.returnId()); ps.setString(2,r.player().toString());
+                ps.setString(3,r.itemBase64()); ps.addBatch();
             }
             ps.executeBatch();
         }
@@ -834,8 +857,8 @@ public final class SQLiteLedger {
         try {
             c.setAutoCommit(false);
             try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM bank_pending_returns");}
-            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_pending_returns(player,item_base64) VALUES(?,?)")) {
-                for(BankPendingRow r:rows){ps.setString(1,r.player().toString());ps.setString(2,r.itemBase64());ps.addBatch();}
+            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_pending_returns(return_id,player,item_base64) VALUES(?,?,?)")) {
+                for(BankPendingRow r:rows){ps.setString(1,r.returnId());ps.setString(2,r.player().toString());ps.setString(3,r.itemBase64());ps.addBatch();}
                 ps.executeBatch();
             }c.commit();ok=true;
         }catch(SQLException e){rollbackQuiet(c);throw new LedgerException("replaceBankPending: "+e.getMessage(),e);}
@@ -844,8 +867,8 @@ public final class SQLiteLedger {
 
     public List<BankPendingRow> bankPendingAll() {
         List<BankPendingRow> out=new ArrayList<>();Connection c=pool.borrow();boolean ok=false;
-        try(Statement st=c.createStatement();ResultSet rs=st.executeQuery("SELECT player,item_base64 FROM bank_pending_returns ORDER BY id")) {
-            while(rs.next())out.add(new BankPendingRow(UUID.fromString(rs.getString(1)),rs.getString(2)));
+        try(Statement st=c.createStatement();ResultSet rs=st.executeQuery("SELECT return_id,player,item_base64 FROM bank_pending_returns ORDER BY id")) {
+            while(rs.next())out.add(new BankPendingRow(rs.getString(1),UUID.fromString(rs.getString(2)),rs.getString(3)));
             ok=true;
         }catch(SQLException e){throw new LedgerException("bankPendingAll: "+e.getMessage(),e);}
         finally{finish(c,ok);}return out;
