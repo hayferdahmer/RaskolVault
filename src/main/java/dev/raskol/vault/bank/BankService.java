@@ -194,39 +194,49 @@ public final class BankService implements Listener {
         if (a == null || !a.owner().equals(owner)) return "вклад не найден";
         if (!a.isActive()) return "вклад уже закрыт";
         long now = System.currentTimeMillis();
-        a.accrue(now, params(a.nation()).demandRate());
-        // Сохраняем рассчитанные проценты до выплаты: повтор после рестарта
-        // использует тот же payout и тот же ключ идемпотентности.
-        saveAccounts();
+        BankAccount staged = new BankAccount(a.id(), a.owner(), a.ownerName(), a.nation(),
+                a.currencyId(), a.principal(), a.term(), a.rateAnnual(), a.openedAt(), a.maturesAt());
+        staged.setAccrued(a.accrued());
+        staged.setLastAccrualAt(a.lastAccrualAt());
+        staged.accrue(now, params(a.nation()).demandRate());
+
         double payout;
         double interest = 0.0D;
-        if (a.isDemand() || a.isMatured(now)) {
-            if (pool(a.nation(), a.currencyId()) < a.principal()) {
+        if (staged.isDemand() || staged.isMatured(now)) {
+            if (pool(a.nation(), a.currencyId()) < staged.principal()) {
                 return "недостаточно ликвидности в банке — обратитесь к королю нации";
             }
             double availableInterest = interestReserve(a.nation(), a.currencyId());
-            interest = Math.min(a.accrued(), Math.max(0.0D, availableInterest));
-            payout = a.principal() + interest;
+            interest = Math.min(staged.accrued(), Math.max(0.0D, availableInterest));
+            payout = staged.principal() + interest;
         } else {
-            double penalty = a.earlyPenalty(params(a.nation()).earlyPenaltyRate());
-            payout = Math.max(0.0D, a.principal() - penalty);
+            double penalty = staged.earlyPenalty(params(a.nation()).earlyPenaltyRate());
+            payout = Math.max(0.0D, staged.principal() - penalty);
         }
 
-        // Сначала подтверждаем выплату. Повтор после сбоя не начислит её второй раз
-        // для внутренних валют, поскольку ключ привязан к ID вклада.
-        if (payout > 0.0D && !wallets.depositOnce(owner, a.currencyId(), payout,
-                TransactionType.PAY, "bank:withdraw:" + accountId,
-                "bank:deposit:close:" + accountId)) {
-            return "не удалось выплатить вклад";
-        }
+        String key = poolKey(staged.nation(), staged.currencyId());
+        double oldPool = pools.getOrDefault(key, 0.0D);
+        double oldInterestReserve = interestReserves.getOrDefault(key, 0.0D);
+        pools.put(key, Math.max(0.0D, oldPool - staged.principal()));
+        interestReserves.put(key, Math.max(0.0D, oldInterestReserve - interest));
+        staged.payOutAccrued();
+        staged.close();
+        accounts.put(accountId, staged);
 
-        addPool(a.nation(), a.currencyId(), -a.principal());
-        if (interest > 0.0D) {
-            addInterestReserve(a.nation(), a.currencyId(), -interest);
+        List<WalletService.WalletDelta> walletChanges = payout > 0.0D
+                ? List.of(new WalletService.WalletDelta(owner, staged.currencyId(), payout)) : List.of();
+        List<Transaction> transactions = payout > 0.0D
+                ? List.of(new Transaction(-1L, now, null, owner, staged.currencyId(), payout,
+                        TransactionType.PAY, "bank:deposit:close:" + accountId, null)) : List.of();
+        boolean committed = wallets.applyBatchOnce("bank:deposit:close:" + accountId,
+                walletChanges, List.of(), List.of(), bankSnapshot(), transactions);
+        if (!committed) {
+            accounts.put(accountId, a);
+            if (oldPool == 0.0D) pools.remove(key); else pools.put(key, oldPool);
+            if (oldInterestReserve == 0.0D) interestReserves.remove(key);
+            else interestReserves.put(key, oldInterestReserve);
+            return "не удалось закрыть вклад: транзакция не подтверждена";
         }
-        a.payOutAccrued();
-        a.close();
-        saveAccounts();
         return null;
     }
 
@@ -272,10 +282,6 @@ public final class BankService implements Listener {
             if (collateralCurrency.equalsIgnoreCase(currency)) return "нельзя брать кредит под залог той же валюты";
             if (!wallets.has(borrower, collateralCurrency, required)) return "недостаточно залога";
             collateralValue = required;
-            if (!wallets.withdrawOnce(borrower, collateralCurrency, required, TransactionType.PAY,
-                    "bank:collateral:lock:" + loanId, "bank:collateral:lock:" + loanId)) {
-                return "не удалось заблокировать залог";
-            }
         } else if (collateralType == BankLoan.CollateralType.ITEM) {
             if (collateralItem == null) return "предмет залога не передан";
             collateralValue = appraisal(collateralItem);
@@ -285,17 +291,8 @@ public final class BankService implements Listener {
             return "для обеспеченного кредита укажите залог";
         }
         double rate = p.loanRate() + creditRateBonus(borrower);
-        String result = createLoan(loanId, borrower, borrowerName, nation, currency, amount, termDays, rate,
+        return createLoan(loanId, borrower, borrowerName, nation, currency, amount, termDays, rate,
                 collateralType, collateralCurrency, itemB64, collateralValue);
-        if (result != null && collateralType == BankLoan.CollateralType.CURRENCY) {
-            if (!wallets.depositOnce(borrower, collateralCurrency, collateralValue,
-                    TransactionType.PAY, "bank:collateral:unlock:" + loanId,
-                    "bank:collateral:unlock:" + loanId)) {
-                plugin.getLogger().severe("RaskolVault: не удалось вернуть залог после отказа в кредите "
-                        + loanId + " игроку " + borrower);
-            }
-        }
-        return result;
     }
 
     private synchronized String createLoan(String id, UUID borrower, String borrowerName,
@@ -307,14 +304,32 @@ public final class BankService implements Listener {
                 || !Double.isFinite(rate) || rate < 0.0D) {
             return "некорректные параметры кредита";
         }
-        if (!wallets.depositOnce(borrower, currency, amount, TransactionType.PAY,
-                "bank:loan:disburse:" + id, "bank:loan:disburse:" + id)) {
-            return "не удалось выдать кредит";
+        String key = poolKey(nation, currency);
+        double oldPool = pools.getOrDefault(key, 0.0D);
+        if (oldPool < amount) return "недостаточно ликвидности в пуле";
+        BankLoan loan = new BankLoan(id, borrower, borrowerName, nation, amount, currency, rate, termDays,
+                now, due, ctype, ccur, citem, cvalue, creditScore(borrower));
+        loans.put(id, loan);
+        pools.put(key, oldPool - amount);
+
+        List<WalletService.WalletDelta> walletChanges = new ArrayList<>();
+        walletChanges.add(new WalletService.WalletDelta(borrower, currency, amount));
+        List<Transaction> transactions = new ArrayList<>();
+        transactions.add(new Transaction(-1L, now, null, borrower, currency, amount,
+                TransactionType.PAY, "bank:loan:disburse:" + id, null));
+        if (ctype == BankLoan.CollateralType.CURRENCY && ccur != null && cvalue > 0.0D) {
+            walletChanges.add(new WalletService.WalletDelta(borrower, ccur, -cvalue));
+            transactions.add(new Transaction(-1L, now, borrower, null, ccur, cvalue,
+                    TransactionType.PAY, "bank:collateral:lock:" + id, null));
         }
-        loans.put(id, new BankLoan(id, borrower, borrowerName, nation, amount, currency, rate, termDays,
-                now, due, ctype, ccur, citem, cvalue, creditScore(borrower)));
-        addPool(nation, currency, -amount);
-        saveLoans();
+
+        boolean committed = wallets.applyBatchOnce("bank:loan:create:" + id,
+                walletChanges, List.of(), List.of(), bankSnapshot(), transactions);
+        if (!committed) {
+            loans.remove(id);
+            pools.put(key, oldPool);
+            return "не удалось создать кредит: транзакция не подтверждена";
+        }
         return null;
     }
 
