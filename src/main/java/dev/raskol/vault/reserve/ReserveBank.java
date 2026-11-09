@@ -5,6 +5,7 @@ import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.currency.CurrencyType;
+import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
@@ -15,6 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.DoubleSupplier;
 
 /**
@@ -35,6 +37,7 @@ public final class ReserveBank {
 
     private final Map<String, Double> cacheValues = new ConcurrentHashMap<>();
     private final Map<String, Long> cacheExpiry = new ConcurrentHashMap<>();
+    private final Map<String, ReentrantLock> mintLocks = new ConcurrentHashMap<>();
 
     public ReserveBank(RaskolVault plugin, WalletService wallets,
                        CurrencyRegistry currencies, SQLiteLedger ledger) {
@@ -122,19 +125,45 @@ public final class ReserveBank {
 
     /** Эмиссия в казну с сеньоражем (базовая форма). */
     public boolean mintToTreasury(String nation, Currency currency, double amount) {
-        if (!(amount > 0.0D) || !canMint(nation, currency.id(), amount)) return false;
-        double seigniorage = seigniorageRate();
-        double fee = round2dec(amount * seigniorage, currency);
-        double net = round2dec(amount - fee, currency);
-        UUID treasury = treasuryUuid(nation);
-        if (!wallets.deposit(treasury, currency.id(), net, TransactionType.MINT, "mint:" + nation)) {
+        if (nation == null || currency == null || !Double.isFinite(amount) || !(amount > 0.0D)) {
             return false;
         }
-        if (fee > 0.0D) {
-            wallets.withdraw(treasury, currency.id(), fee, TransactionType.BURN, "seigniorage:" + nation);
+
+        String lockKey = nation.toLowerCase(Locale.ROOT) + "|" + currency.id();
+        ReentrantLock lock = mintLocks.computeIfAbsent(lockKey, ignored -> new ReentrantLock());
+        lock.lock();
+        try {
+            if (!canMint(nation, currency.id(), amount)) {
+                return false;
+            }
+
+            double seigniorage = seigniorageRate();
+            double fee = round2dec(amount * seigniorage, currency);
+            double net = round2dec(amount - fee, currency);
+            UUID treasury = treasuryUuid(nation);
+
+            // Сохраняем текущую семантику последовательных операций:
+            // сначала начисляется net, затем из казны списывается fee.
+            List<WalletService.WalletDelta> deltas = new java.util.ArrayList<>();
+            deltas.add(new WalletService.WalletDelta(treasury, currency.id(), net));
+            List<Transaction> transactions = new java.util.ArrayList<>();
+            transactions.add(new Transaction(-1L, System.currentTimeMillis(), null, treasury,
+                    currency.id(), net, TransactionType.MINT, "mint:" + nation, null));
+            if (fee > 0.0D) {
+                deltas.add(new WalletService.WalletDelta(treasury, currency.id(), -fee));
+                transactions.add(new Transaction(-1L, System.currentTimeMillis(), treasury, null,
+                        currency.id(), fee, TransactionType.BURN, "seigniorage:" + nation, null));
+            }
+
+            boolean committed = wallets.applyBatchOnce(UUID.randomUUID().toString(),
+                    deltas, List.of(), transactions);
+            if (committed) {
+                invalidateCache();
+            }
+            return committed;
+        } finally {
+            lock.unlock();
         }
-        invalidateCache();
-        return true;
     }
 
     /** ПЕРЕГРУЗКА (1.2.2-b) для CabinetGui: mint(nation, currencyId, amount, reason). */
