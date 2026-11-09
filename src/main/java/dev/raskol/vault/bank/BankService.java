@@ -66,10 +66,12 @@ public final class BankService implements Listener {
     private final Map<UUID, Integer> defaultedCount = new ConcurrentHashMap<>();
     private final Map<UUID, List<SQLiteLedger.BankPendingRow>> pendingReturns = new ConcurrentHashMap<>();
     private final NamespacedKey collateralReturnKey;
+    private final NamespacedKey collateralIntentKey;
 
     public BankService(RaskolVault plugin, WalletService wallets, ReserveBank bank) {
         this.plugin = plugin;
         this.collateralReturnKey = new NamespacedKey(plugin, "collateral_return_id");
+        this.collateralIntentKey = new NamespacedKey(plugin, "collateral_intent_id");
         this.wallets = wallets;
         this.ledger = plugin.getLedger();
         this.bank = bank;
@@ -263,6 +265,79 @@ public final class BankService implements Listener {
         String loanId = UUID.randomUUID().toString();
         return createLoan(loanId, borrower, borrowerName, nation, currency, amount, termDays, rate,
                 BankLoan.CollateralType.NONE, null, null, 0.0D, 0.0D, 1.0D);
+    }
+
+    /**
+     * Создаёт кредит под предметный залог через durable intent.
+     * Сначала фиксирует сериализованный предмет в SQLite, затем сохраняет метку
+     * в данных игрока, удаляет предмет и только после этого коммитит кредит.
+     */
+    public synchronized String applyItemCollateralLoan(Player player, String nation, String currency,
+                                                        double amount, int termDays) {
+        if (player == null || nation == null || nation.isBlank() || currency == null || currency.isBlank()
+                || !Double.isFinite(amount) || amount <= 0.0D) return "некорректные параметры кредита";
+        if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
+        ItemStack hand = player.getInventory().getItemInMainHand();
+        if (hand == null || hand.getType().isAir()) return "предмет залога не найден в руке";
+        double required = amount * params(nation).collateralRatio();
+        double value = appraisal(hand);
+        if (!Double.isFinite(value) || value < required)
+            return "оценка залога " + fmt(value) + " < требуемых " + fmt(required);
+        if (totalOutstandingLoans(nation) + amount * priceInGld(currency) > maxLoans(nation))
+            return "банк исчерпал лимит выдачи (резерв)";
+        if (pool(nation, currency) < amount) return "недостаточно ликвидности в пуле";
+
+        String intentId = UUID.randomUUID().toString();
+        String loanId = UUID.randomUUID().toString();
+        String itemBase64 = serialize(hand.clone());
+        if (itemBase64 == null || itemBase64.isBlank()) return "не удалось сериализовать предмет залога";
+        long now = System.currentTimeMillis();
+        SQLiteLedger.BankCollateralIntentRow intent = new SQLiteLedger.BankCollateralIntentRow(
+                intentId, player.getUniqueId(), loanId, itemBase64, now);
+        try {
+            ledger.createBankCollateralIntent(intent);
+        } catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось зарезервировать предметный залог: " + exception.getMessage());
+            return "не удалось создать безопасное резервирование залога";
+        }
+
+        ItemStack marked = hand.clone();
+        marked.editMeta(meta -> meta.getPersistentDataContainer().set(
+                collateralIntentKey, PersistentDataType.STRING, intentId));
+        player.getInventory().setItemInMainHand(marked);
+        player.saveData();
+
+        player.getInventory().setItemInMainHand(new ItemStack(org.bukkit.Material.AIR));
+        player.saveData();
+
+        double rate = params(nation).loanRate() + creditRateBonus(player.getUniqueId());
+        String result = createLoan(loanId, player.getUniqueId(), player.getName(), nation, currency,
+                amount, termDays, rate, BankLoan.CollateralType.ITEM, null, itemBase64, value, 0.0D, 1.0D);
+        if (result == null) {
+            try {
+                ledger.deleteBankCollateralIntent(intentId);
+            } catch (RuntimeException exception) {
+                plugin.getLogger().severe("Кредит создан, но intent " + intentId
+                        + " не удалён; запись будет сверена при входе игрока: " + exception.getMessage());
+            }
+            return null;
+        }
+
+        // Кредит не подтверждён: durable очередь возврата создаётся до удаления intent.
+        pendingReturns.computeIfAbsent(player.getUniqueId(), ignored -> new ArrayList<>())
+                .add(new SQLiteLedger.BankPendingRow(intentId, player.getUniqueId(), itemBase64));
+        if (!savePending()) {
+            plugin.getLogger().severe("Предметный залог " + intentId
+                    + " не удалось перенести в очередь возврата; intent сохранён для восстановления.");
+            return "кредит не создан; возврат предмета ожидает восстановления после перезапуска";
+        }
+        try {
+            ledger.deleteBankCollateralIntent(intentId);
+        } catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось удалить завершённый intent " + intentId + ": "
+                    + exception.getMessage());
+        }
+        return result;
     }
 
     /** Обеспеченный кредит (залог предметом/валютой, ratio 1.2). */
@@ -601,6 +676,7 @@ public final class BankService implements Listener {
     public synchronized void onJoin(PlayerJoinEvent e) {
         Player player = e.getPlayer();
         UUID owner = player.getUniqueId();
+        recoverItemCollateralIntents(player);
         List<SQLiteLedger.BankPendingRow> rows = pendingReturns.get(owner);
         if (rows == null || rows.isEmpty()) return;
 
@@ -645,6 +721,69 @@ public final class BankService implements Listener {
         if (delivered > 0) {
             player.sendMessage(org.bukkit.ChatColor.translateAlternateColorCodes('&',
                     plugin.getMessages().prefix() + "&aВозвращён предметный залог по погашенному кредиту."));
+        }
+    }
+
+    /**
+     * Восстанавливает незавершённые резервы предметов.
+     * Наличие кредита в SQLite означает, что залог уже принят; отсутствие —
+     * что предмет нужно вернуть либо оставить в durable очереди возврата.
+     */
+    private void recoverItemCollateralIntents(Player player) {
+        UUID owner = player.getUniqueId();
+        for (SQLiteLedger.BankCollateralIntentRow intent : ledger.bankCollateralIntentsAll()) {
+            if (!owner.equals(intent.player())) continue;
+            boolean loanCommitted = loans.containsKey(intent.loanId());
+            boolean markerFound = false;
+            ItemStack[] contents = player.getInventory().getContents();
+            for (int slot = 0; slot < contents.length; slot++) {
+                ItemStack item = contents[slot];
+                if (item == null || item.getType().isAir()) continue;
+                String marker = item.getPersistentDataContainer().get(
+                        collateralIntentKey, PersistentDataType.STRING);
+                if (!intent.intentId().equals(marker)) continue;
+                markerFound = true;
+                if (loanCommitted) {
+                    player.getInventory().setItem(slot, new ItemStack(org.bukkit.Material.AIR));
+                } else {
+                    ItemStack restored = item.clone();
+                    restored.editMeta(meta -> meta.getPersistentDataContainer().remove(collateralIntentKey));
+                    player.getInventory().setItem(slot, restored);
+                }
+            }
+            if (!loanCommitted) {
+                boolean pendingAlreadyExists = pendingReturns.getOrDefault(owner, List.of()).stream()
+                        .anyMatch(row -> row.returnId().equals(intent.intentId()));
+                if (!markerFound && !pendingAlreadyExists) {
+                    ItemStack original = deserialize(intent.itemBase64());
+                    boolean originalStillPresent = false;
+                    if (original != null) {
+                        for (ItemStack item : player.getInventory().getContents()) {
+                            if (item != null && !item.getType().isAir()
+                                    && item.isSimilar(original) && item.getAmount() >= original.getAmount()) {
+                                originalStillPresent = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!originalStillPresent) {
+                        pendingReturns.computeIfAbsent(owner, ignored -> new ArrayList<>()).add(
+                                new SQLiteLedger.BankPendingRow(intent.intentId(), owner, intent.itemBase64()));
+                        if (!savePending()) {
+                            plugin.getLogger().severe("Не удалось поставить предмет " + intent.intentId()
+                                    + " в очередь восстановления; intent сохранён.");
+                            continue;
+                        }
+                    }
+                }
+            }
+            player.saveData();
+            try {
+                ledger.deleteBankCollateralIntent(intent.intentId());
+            } catch (RuntimeException exception) {
+                plugin.getLogger().severe("Не удалось подтвердить восстановление intent "
+                        + intent.intentId() + ": " + exception.getMessage());
+            }
         }
     }
 
