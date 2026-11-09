@@ -2,10 +2,10 @@
 
 # ⚜ RASKOL VAULT
 
-**Многовалютное экономическое ядро для Paper 1.21**
+**Многовалютное экономическое ядро для Paper 26.2**
 *Сервер «РАСКОЛ | ДВЕ КОРОНЫ»*
 
-`v1.2.6` · `Java 21` · `Paper 1.21.4` · `SQLite (WAL)` · `Proprietary`
+`v1.2.6` · `Java 25` · `Paper 26.2` · `SQLite (WAL)` · `Proprietary`
 
 </div>
 
@@ -35,6 +35,8 @@ RaskolVault заменяет одно-валютную модель на **си�
 | Команда | Описание | Доступ |
 |---|---|---|
 | `/rv bank` | Банк и кошелёк (вклады, кредиты, переводы) | все |
+| `/rv bank admin assets` | Реестр залоговых активов | `raskolvault.admin` |
+| `/rv bank admin realize <lotId> <сумма>` | Подтверждение фактической реализации залога | `raskolvault.admin` |
 | `/rv auction` | Аукцион (рынок, фильтры, мои лоты/ставки) | все |
 | `/rv exchange` | Биржа ордеров | все |
 | `/rv cabinet` | Кабинет правителя (резерв, налоги, ставки) | король/мэр |
@@ -69,6 +71,7 @@ RaskolVault заменяет одно-валютную модель на **си�
 - [`OPERATIONS.md`](OPERATIONS.md) — ранбук: деплой, бэкапы, restore, инциденты
 - [`CHANGELOG.md`](CHANGELOG.md) — история версий
 - [`docs/FORMULAS.md`](docs/FORMULAS.md) — экономические формулы и инварианты
+- [`docs/BANK_COLLATERAL_PROTOCOL.md`](docs/BANK_COLLATERAL_PROTOCOL.md) — учёт залоговых активов и восстановление предметного залога
 - [`INTEGRATION.md`](INTEGRATION.md) — API для плагинов-партнёров
 
 ## Лицензия
