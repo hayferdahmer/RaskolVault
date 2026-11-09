@@ -523,30 +523,15 @@ public final class BankService implements Listener {
         }
     }
 
-    private void releaseCollateral(BankLoan l) {
-        if (!Bukkit.isPrimaryThread()) {
-            plugin.getServer().getScheduler().runTask(plugin, () -> releaseCollateral(l));
-            return;
-        }
-        // Валютный залог возвращается внутри основного SQLite-коммита погашения.
-        // Здесь остаётся только Bukkit-доставка предметного залога.
-        if (l.collateralType() == BankLoan.CollateralType.ITEM && l.collateralItemBase64() != null) {
-            Player p = plugin.getServer().getPlayer(l.borrower());
-            if (p != null && p.isOnline()) {
-                ItemStack item = deserialize(l.collateralItemBase64());
-                if (item != null) {
-                    var ov = p.getInventory().addItem(item);
-                    for (ItemStack left : ov.values()) p.getWorld().dropItemNaturally(p.getLocation(), left);
-                }
-            } else {
-                pendingReturns.computeIfAbsent(l.borrower(), k -> new ArrayList<>()).add(
-                        new SQLiteLedger.BankPendingRow(UUID.randomUUID().toString(),
-                                l.borrower(), l.collateralItemBase64()));
-                if (!savePending()) {
-                    plugin.getLogger().severe("Не удалось поставить предметный залог в очередь возврата кредита "
-                            + l.id());
-                }
-            }
+    private void releaseCollateral(BankLoan loan) {
+        if (loan.collateralType() != BankLoan.CollateralType.ITEM
+                || loan.collateralItemBase64() == null) return;
+        pendingReturns.computeIfAbsent(loan.borrower(), ignored -> new ArrayList<>()).add(
+                new SQLiteLedger.BankPendingRow(UUID.randomUUID().toString(),
+                        loan.borrower(), loan.collateralItemBase64()));
+        if (!savePending()) {
+            plugin.getLogger().severe("Не удалось сохранить очередь возврата предметного залога кредита "
+                    + loan.id());
         }
     }
 
