@@ -50,6 +50,9 @@ public final class BankAccount {
     public long maturesAt() { return maturesAt; }
     public Status status() { return status; }
     public double accrued() { return accrued; }
+    public long lastAccrualAt() { return lastAccrualAt; }
+    public void setAccrued(double value) { this.accrued = Math.max(0.0D, value); }
+    public void setLastAccrualAt(long value) { this.lastAccrualAt = Math.max(openedAt, value); }
 
     public boolean isDemand() { return term == Term.DEMAND; }
     public boolean isActive() { return status == Status.ACTIVE; }
