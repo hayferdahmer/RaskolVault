@@ -449,11 +449,9 @@ public final class BankService implements Listener {
         // Однократный импорт старых YAML-файлов. Исходные файлы остаются на месте
         // как резервная копия и больше не используются для рабочих записей.
         loadLegacyYaml();
-        saveAccounts();
-        saveLoans();
-        savePools();
-        saveCredit();
-        savePending();
+        if (!saveAccounts() || !saveLoans() || !savePools() || !saveCredit() || !savePending()) {
+            throw new IllegalStateException("Миграция банковских данных в SQLite не завершена; YAML-файлы сохранены.");
+        }
         ledger.markBankStorageInitialized();
         plugin.getLogger().info("Банковские данные импортированы в SQLite. YAML-файлы сохранены как резервные копии.");
     }
