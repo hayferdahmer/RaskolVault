@@ -114,14 +114,21 @@ public final class LedgerWriter {
      */
     public boolean submitSync(Runnable write) {
         if (Thread.currentThread() == thread) {
-            try {
-                write.run();
-                applied.incrementAndGet();
-                return true;
-            } catch (Throwable t) {
-                failed.incrementAndGet();
-                plugin.getLogger().severe("RaskolVault: запись леджера провалена: " + t);
-                return false;
+            synchronized (lifecycleLock) {
+                if (!queue.isEmpty()) {
+                    plugin.getLogger().severe("RaskolVault: синхронная вложенная запись отклонена, "
+                            + "чтобы не нарушать FIFO-порядок леджера.");
+                    return false;
+                }
+                try {
+                    write.run();
+                    applied.incrementAndGet();
+                    return true;
+                } catch (Throwable t) {
+                    failed.incrementAndGet();
+                    plugin.getLogger().severe("RaskolVault: запись леджера провалена: " + t);
+                    return false;
+                }
             }
         }
 
