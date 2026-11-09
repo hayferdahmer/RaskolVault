@@ -10,9 +10,14 @@ import dev.raskol.vault.storage.LedgerWriter;
 import dev.raskol.vault.storage.SQLiteLedger;
 import org.bukkit.plugin.Plugin;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -24,6 +29,11 @@ import java.util.concurrent.locks.ReentrantLock;
  * захватываются в стабильном порядке, чтобы исключить взаимную блокировку.
  */
 public final class WalletService {
+
+    public record WalletDelta(UUID owner, String currencyId, double delta) {}
+    public record ReserveDelta(String nation, double delta) {}
+
+    private record WalletKey(UUID owner, String currencyId) {}
 
     private static final int LOCK_STRIPES = 256;
 
@@ -385,6 +395,145 @@ public final class WalletService {
                 second.unlock();
             }
             first.unlock();
+        }
+    }
+
+    /**
+     * Атомарно применяет несколько изменений внутренних кошельков и резервов наций.
+     * GLOBAL/EssentialsX намеренно не поддерживается: его нельзя включить в SQLite-коммит.
+     */
+    public boolean applyBatchOnce(String operationId, List<WalletDelta> walletDeltas,
+                                  List<ReserveDelta> reserveDeltas, List<Transaction> transactions) {
+        if (operationId == null || operationId.isBlank()
+                || walletDeltas == null || reserveDeltas == null || transactions == null) {
+            return false;
+        }
+
+        Map<WalletKey, Double> normalizedWallets = new TreeMap<>(
+                Comparator.comparing((WalletKey key) -> key.owner().toString())
+                        .thenComparing(WalletKey::currencyId));
+        for (WalletDelta delta : walletDeltas) {
+            if (delta == null || delta.owner() == null || delta.currencyId() == null
+                    || delta.currencyId().isBlank() || !Double.isFinite(delta.delta())
+                    || currencies.globalId().equals(delta.currencyId())) {
+                return false;
+            }
+            normalizedWallets.merge(new WalletKey(delta.owner(), delta.currencyId()),
+                    delta.delta(), Double::sum);
+        }
+
+        Map<String, Double> normalizedReserves = new TreeMap<>();
+        for (ReserveDelta delta : reserveDeltas) {
+            if (delta == null || delta.nation() == null || delta.nation().isBlank()
+                    || !Double.isFinite(delta.delta())) {
+                return false;
+            }
+            normalizedReserves.merge(delta.nation(), delta.delta(), Double::sum);
+        }
+        if (normalizedWallets.isEmpty() && normalizedReserves.isEmpty()) {
+            return false;
+        }
+
+        String fingerprint = batchFingerprint(normalizedWallets, normalizedReserves, transactions);
+        Set<Integer> lockIndexes = new TreeSet<>();
+        for (WalletKey key : normalizedWallets.keySet()) {
+            lockIndexes.add(lockIndex(key.owner(), key.currencyId()));
+        }
+        List<ReentrantLock> acquired = new ArrayList<>();
+        for (int index : lockIndexes) {
+            ReentrantLock lock = walletLocks[index];
+            lock.lock();
+            acquired.add(lock);
+        }
+
+        try {
+            if (ledger.operationCommitted(operationId, fingerprint)) {
+                for (WalletKey key : normalizedWallets.keySet()) {
+                    setCache(key.owner(), key.currencyId(),
+                            ledger.getBalance(key.owner(), key.currencyId()));
+                }
+                return true;
+            }
+
+            List<SQLiteLedger.CheckedBalance> checkedBalances = new ArrayList<>();
+            for (Map.Entry<WalletKey, Double> entry : normalizedWallets.entrySet()) {
+                WalletKey key = entry.getKey();
+                double old = getBalance(key.owner(), key.currencyId());
+                double updated = old + entry.getValue();
+                if (!Double.isFinite(updated) || updated < -1.0E-9D) {
+                    return false;
+                }
+                checkedBalances.add(new SQLiteLedger.CheckedBalance(
+                        key.owner(), key.currencyId(), old, Math.max(0.0D, updated)));
+            }
+
+            List<SQLiteLedger.CheckedReserve> checkedReserves = new ArrayList<>();
+            for (Map.Entry<String, Double> entry : normalizedReserves.entrySet()) {
+                double old = ledger.reserveGet(entry.getKey());
+                double updated = old + entry.getValue();
+                if (!Double.isFinite(updated) || updated < -1.0E-9D) {
+                    return false;
+                }
+                checkedReserves.add(new SQLiteLedger.CheckedReserve(
+                        entry.getKey(), old, Math.max(0.0D, updated)));
+            }
+
+            boolean committed = writer.submitSync(() -> ledger.commitAbsoluteCheckedOnce(
+                    operationId, fingerprint, checkedBalances, checkedReserves, transactions));
+            if (!committed) {
+                return false;
+            }
+
+            for (WalletKey key : normalizedWallets.keySet()) {
+                setCache(key.owner(), key.currencyId(),
+                        ledger.getBalance(key.owner(), key.currencyId()));
+            }
+            return true;
+        } catch (RuntimeException exception) {
+            plugin.getLogger().severe("RaskolVault: пакетная финансовая операция не выполнена: "
+                    + exception.getMessage());
+            return false;
+        } finally {
+            for (int i = acquired.size() - 1; i >= 0; i--) {
+                acquired.get(i).unlock();
+            }
+        }
+    }
+
+    private String batchFingerprint(Map<WalletKey, Double> wallets,
+                                    Map<String, Double> reserves,
+                                    List<Transaction> transactions) {
+        StringBuilder canonical = new StringBuilder();
+        for (Map.Entry<WalletKey, Double> entry : wallets.entrySet()) {
+            canonical.append(fingerprintPart("W"))
+                    .append(fingerprintPart(entry.getKey().owner().toString()))
+                    .append(fingerprintPart(entry.getKey().currencyId()))
+                    .append(fingerprintPart(Double.toHexString(entry.getValue())));
+        }
+        for (Map.Entry<String, Double> entry : reserves.entrySet()) {
+            canonical.append(fingerprintPart("R"))
+                    .append(fingerprintPart(entry.getKey()))
+                    .append(fingerprintPart(Double.toHexString(entry.getValue())));
+        }
+        for (Transaction transaction : transactions) {
+            if (transaction == null) {
+                return "";
+            }
+            canonical.append(fingerprintPart("T"))
+                    .append(fingerprintPart(transaction.from() == null ? "" : transaction.from().toString()))
+                    .append(fingerprintPart(transaction.to() == null ? "" : transaction.to().toString()))
+                    .append(fingerprintPart(transaction.currencyId()))
+                    .append(fingerprintPart(Double.toHexString(transaction.amount())))
+                    .append(fingerprintPart(transaction.type() == null ? "" : transaction.type().name()))
+                    .append(fingerprintPart(safeReason(transaction.reason())))
+                    .append(fingerprintPart(transaction.metadataJson() == null ? "" : transaction.metadataJson()));
+        }
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is not available", impossible);
         }
     }
 
