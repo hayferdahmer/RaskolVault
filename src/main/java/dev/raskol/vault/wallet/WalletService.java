@@ -186,7 +186,16 @@ public final class WalletService {
 
     public boolean deposit(UUID uuid, String currencyId, double amount,
                            TransactionType type, String reason) {
-        if (uuid == null || currencyId == null || !validAmount(amount)) {
+        return depositOnce(uuid, currencyId, amount, type, reason, UUID.randomUUID().toString());
+    }
+
+    /**
+     * Начисляет средства с защитой от повторного выполнения по стабильному ключу запроса.
+     */
+    public boolean depositOnce(UUID uuid, String currencyId, double amount,
+                               TransactionType type, String reason, String operationId) {
+        if (uuid == null || currencyId == null || type == null || !validAmount(amount)
+                || operationId == null || operationId.isBlank()) {
             return false;
         }
 
@@ -202,6 +211,13 @@ public final class WalletService {
                 return Double.isFinite(updated) && essentials.setBalance(uuid, updated);
             }
 
+            String fingerprint = operationFingerprint("DEPOSIT", uuid, null,
+                    currencyId, amount, type, reason);
+            if (ledger.operationCommitted(operationId, fingerprint)) {
+                setCache(uuid, currencyId, ledger.getBalance(uuid, currencyId));
+                return true;
+            }
+
             double old = getBalance(uuid, currencyId);
             double updated = old + amount;
             if (!Double.isFinite(updated)) {
@@ -210,14 +226,15 @@ public final class WalletService {
 
             Transaction transaction = new Transaction(-1L, System.currentTimeMillis(),
                     null, uuid, currencyId, amount, type, safeReason(reason), null);
-            boolean committed = writer.submitSync(() -> ledger.commitAbsoluteChecked(
+            boolean committed = writer.submitSync(() -> ledger.commitAbsoluteCheckedOnce(
+                    operationId, fingerprint,
                     List.of(new SQLiteLedger.CheckedBalance(uuid, currencyId, old, updated)),
                     List.of(transaction)));
             if (!committed) {
                 return false;
             }
 
-            setCache(uuid, currencyId, updated);
+            setCache(uuid, currencyId, ledger.getBalance(uuid, currencyId));
             return true;
         } catch (RuntimeException exception) {
             plugin.getLogger().severe("RaskolVault: не удалось начислить средства "
@@ -230,7 +247,16 @@ public final class WalletService {
 
     public boolean withdraw(UUID uuid, String currencyId, double amount,
                              TransactionType type, String reason) {
-        if (uuid == null || currencyId == null || !validAmount(amount)) {
+        return withdrawOnce(uuid, currencyId, amount, type, reason, UUID.randomUUID().toString());
+    }
+
+    /**
+     * Списывает средства с защитой от повторного выполнения по стабильному ключу запроса.
+     */
+    public boolean withdrawOnce(UUID uuid, String currencyId, double amount,
+                                TransactionType type, String reason, String operationId) {
+        if (uuid == null || currencyId == null || type == null || !validAmount(amount)
+                || operationId == null || operationId.isBlank()) {
             return false;
         }
 
@@ -248,6 +274,13 @@ public final class WalletService {
                 return essentials.setBalance(uuid, old - amount);
             }
 
+            String fingerprint = operationFingerprint("WITHDRAW", uuid, null,
+                    currencyId, amount, type, reason);
+            if (ledger.operationCommitted(operationId, fingerprint)) {
+                setCache(uuid, currencyId, ledger.getBalance(uuid, currencyId));
+                return true;
+            }
+
             double old = getBalance(uuid, currencyId);
             if (old < amount - 1.0E-9D) {
                 return false;
@@ -256,14 +289,15 @@ public final class WalletService {
 
             Transaction transaction = new Transaction(-1L, System.currentTimeMillis(),
                     uuid, null, currencyId, amount, type, safeReason(reason), null);
-            boolean committed = writer.submitSync(() -> ledger.commitAbsoluteChecked(
+            boolean committed = writer.submitSync(() -> ledger.commitAbsoluteCheckedOnce(
+                    operationId, fingerprint,
                     List.of(new SQLiteLedger.CheckedBalance(uuid, currencyId, old, updated)),
                     List.of(transaction)));
             if (!committed) {
                 return false;
             }
 
-            setCache(uuid, currencyId, updated);
+            setCache(uuid, currencyId, ledger.getBalance(uuid, currencyId));
             return true;
         } catch (RuntimeException exception) {
             plugin.getLogger().severe("RaskolVault: не удалось списать средства "
@@ -274,9 +308,19 @@ public final class WalletService {
         }
     }
 
-    public boolean transfer(UUID from, UUID to, String currencyId, double amount, String reason) {
+    public boolean transfer(UUID from, UUID to, String currencyId,
+                            double amount, String reason) {
+        return transferOnce(from, to, currencyId, amount, reason, UUID.randomUUID().toString());
+    }
+
+    /**
+     * Переводит средства одной SQLite-транзакцией и защищает запрос от повторного выполнения.
+     */
+    public boolean transferOnce(UUID from, UUID to, String currencyId,
+                                double amount, String reason, String operationId) {
         if (from == null || to == null || currencyId == null
-                || !validAmount(amount) || from.equals(to)) {
+                || !validAmount(amount) || from.equals(to)
+                || operationId == null || operationId.isBlank()) {
             return false;
         }
 
@@ -296,6 +340,14 @@ public final class WalletService {
                 return transferGlobal(from, to, amount);
             }
 
+            String fingerprint = operationFingerprint("TRANSFER", from, to,
+                    currencyId, amount, TransactionType.PAY, reason);
+            if (ledger.operationCommitted(operationId, fingerprint)) {
+                setCache(from, currencyId, ledger.getBalance(from, currencyId));
+                setCache(to, currencyId, ledger.getBalance(to, currencyId));
+                return true;
+            }
+
             double oldFrom = getBalance(from, currencyId);
             if (oldFrom < amount - 1.0E-9D) {
                 return false;
@@ -309,7 +361,8 @@ public final class WalletService {
 
             Transaction transaction = new Transaction(-1L, System.currentTimeMillis(),
                     from, to, currencyId, amount, TransactionType.PAY, safeReason(reason), null);
-            boolean committed = writer.submitSync(() -> ledger.commitAbsoluteChecked(
+            boolean committed = writer.submitSync(() -> ledger.commitAbsoluteCheckedOnce(
+                    operationId, fingerprint,
                     List.of(
                             new SQLiteLedger.CheckedBalance(from, currencyId, oldFrom, newFrom),
                             new SQLiteLedger.CheckedBalance(to, currencyId, oldTo, newTo)
@@ -319,8 +372,8 @@ public final class WalletService {
                 return false;
             }
 
-            setCache(from, currencyId, newFrom);
-            setCache(to, currencyId, newTo);
+            setCache(from, currencyId, ledger.getBalance(from, currencyId));
+            setCache(to, currencyId, ledger.getBalance(to, currencyId));
             return true;
         } catch (RuntimeException exception) {
             plugin.getLogger().severe("RaskolVault: перевод не выполнен "
@@ -360,6 +413,29 @@ public final class WalletService {
                     + from + " -> " + to);
         }
         return false;
+    }
+
+    private String operationFingerprint(String operation, UUID from, UUID to,
+                                         String currencyId, double amount,
+                                         TransactionType type, String reason) {
+        String canonical = fingerprintPart(operation)
+                + fingerprintPart(from == null ? "" : from.toString())
+                + fingerprintPart(to == null ? "" : to.toString())
+                + fingerprintPart(currencyId)
+                + fingerprintPart(Double.toHexString(amount))
+                + fingerprintPart(type == null ? "" : type.name())
+                + fingerprintPart(safeReason(reason));
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is not available", impossible);
+        }
+    }
+
+    private String fingerprintPart(String value) {
+        return value.length() + ":" + value;
     }
 
     private String safeReason(String reason) {
