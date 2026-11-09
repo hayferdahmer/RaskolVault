@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 6;
+    public static final int SCHEMA_VERSION = 7;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
@@ -41,7 +41,19 @@ public final class SQLiteLedger {
                               double principal, String currencyId, double rateAnnual, int termDays,
                               long openedAt, long dueAt, double repaid, double accrued, long lastAccrualAt,
                               String status, String collateralType, String collateralCurrency,
-                              String collateralItem, double collateralValue, int creditScoreAtOpen) {}
+                              String collateralItem, double collateralValue, double collateralAmount,
+                              double collateralPrice, int creditScoreAtOpen) {
+        public BankLoanRow(String id, UUID borrower, String borrowerName, String nation,
+                           double principal, String currencyId, double rateAnnual, int termDays,
+                           long openedAt, long dueAt, double repaid, double accrued, long lastAccrualAt,
+                           String status, String collateralType, String collateralCurrency,
+                           String collateralItem, double collateralValue, int creditScoreAtOpen) {
+            this(id, borrower, borrowerName, nation, principal, currencyId, rateAnnual, termDays,
+                    openedAt, dueAt, repaid, accrued, lastAccrualAt, status, collateralType,
+                    collateralCurrency, collateralItem, collateralValue,
+                    "CURRENCY".equals(collateralType) ? collateralValue : 0.0D, 1.0D, creditScoreAtOpen);
+        }
+    }
     public record BankPoolRow(String nation, String currencyId, double pool, double interestReserve) {}
     public record BankCreditRow(UUID player, int repaidCount, int defaultedCount) {}
     public record BankPendingRow(String returnId, UUID player, String itemBase64) {}
@@ -153,8 +165,29 @@ public final class SQLiteLedger {
                         + "due_at INTEGER NOT NULL, repaid REAL NOT NULL, accrued REAL NOT NULL,"
                         + "last_accrual_at INTEGER NOT NULL, status TEXT NOT NULL, collateral_type TEXT NOT NULL,"
                         + "collateral_currency TEXT, collateral_item TEXT, collateral_value REAL NOT NULL,"
-                        + "credit_score_at_open INTEGER NOT NULL)");
+                        + "credit_score_at_open INTEGER NOT NULL, collateral_amount REAL NOT NULL DEFAULT 0,"
+                        + "collateral_price REAL NOT NULL DEFAULT 1)");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_bank_loans_borrower ON bank_loans(borrower)");
+                boolean hasCollateralAmount = false;
+                boolean hasCollateralPrice = false;
+                try (ResultSet columns = st.executeQuery("PRAGMA table_info(bank_loans)")) {
+                    while (columns.next()) {
+                        String column = columns.getString("name");
+                        if ("collateral_amount".equalsIgnoreCase(column)) hasCollateralAmount = true;
+                        if ("collateral_price".equalsIgnoreCase(column)) hasCollateralPrice = true;
+                    }
+                }
+                if (!hasCollateralAmount) {
+                    st.execute("ALTER TABLE bank_loans ADD COLUMN collateral_amount REAL NOT NULL DEFAULT 0");
+                }
+                if (!hasCollateralPrice) {
+                    st.execute("ALTER TABLE bank_loans ADD COLUMN collateral_price REAL NOT NULL DEFAULT 1");
+                }
+                // Для старых валютных кредитов сохраняем историческую оценку и
+                // восстанавливаем прежнее количество залога с legacy-курсом 1:1.
+                st.execute("UPDATE bank_loans SET collateral_amount=collateral_value "
+                        + "WHERE collateral_type='CURRENCY' AND collateral_amount=0 "
+                        + "AND collateral_value>0");
                 st.execute("CREATE TABLE IF NOT EXISTS bank_pools ("
                         + "nation TEXT NOT NULL, currency_id TEXT NOT NULL, pool REAL NOT NULL,"
                         + "interest_reserve REAL NOT NULL, PRIMARY KEY(nation,currency_id))");
@@ -496,7 +529,9 @@ public final class SQLiteLedger {
                     || !Double.isFinite(row.rateAnnual()) || row.rateAnnual() < 0.0D
                     || !Double.isFinite(row.repaid()) || row.repaid() < 0.0D
                     || !Double.isFinite(row.accrued()) || row.accrued() < 0.0D
-                    || !Double.isFinite(row.collateralValue()) || row.collateralValue() < 0.0D) {
+                    || !Double.isFinite(row.collateralValue()) || row.collateralValue() < 0.0D
+                    || !Double.isFinite(row.collateralAmount()) || row.collateralAmount() < 0.0D
+                    || !Double.isFinite(row.collateralPrice()) || row.collateralPrice() <= 0.0D) {
                 throw new LedgerException("invalid bank loan row in atomic snapshot");
             }
         }
@@ -541,7 +576,7 @@ public final class SQLiteLedger {
             }
             ps.executeBatch();
         }
-        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_loans VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_loans(id,borrower,borrower_name,nation,principal,currency_id,rate_annual,term_days,opened_at,due_at,repaid,accrued,last_accrual_at,status,collateral_type,collateral_currency,collateral_item,collateral_value,credit_score_at_open,collateral_amount,collateral_price) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
             for (BankLoanRow r : snapshot.loans()) {
                 ps.setString(1,r.id()); ps.setString(2,r.borrower().toString()); ps.setString(3,r.borrowerName());
                 ps.setString(4,r.nation()); ps.setDouble(5,r.principal()); ps.setString(6,r.currencyId());
@@ -549,7 +584,8 @@ public final class SQLiteLedger {
                 ps.setLong(10,r.dueAt()); ps.setDouble(11,r.repaid()); ps.setDouble(12,r.accrued());
                 ps.setLong(13,r.lastAccrualAt()); ps.setString(14,r.status()); ps.setString(15,r.collateralType());
                 ps.setString(16,r.collateralCurrency()); ps.setString(17,r.collateralItem());
-                ps.setDouble(18,r.collateralValue()); ps.setInt(19,r.creditScoreAtOpen()); ps.addBatch();
+                ps.setDouble(18,r.collateralValue()); ps.setInt(19,r.creditScoreAtOpen());
+                ps.setDouble(20,r.collateralAmount()); ps.setDouble(21,r.collateralPrice()); ps.addBatch();
             }
             ps.executeBatch();
         }
@@ -778,7 +814,7 @@ public final class SQLiteLedger {
         try {
             c.setAutoCommit(false);
             try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM bank_loans");}
-            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_loans VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_loans(id,borrower,borrower_name,nation,principal,currency_id,rate_annual,term_days,opened_at,due_at,repaid,accrued,last_accrual_at,status,collateral_type,collateral_currency,collateral_item,collateral_value,credit_score_at_open,collateral_amount,collateral_price) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
                 for(BankLoanRow r:rows) {
                     ps.setString(1,r.id()); ps.setString(2,r.borrower().toString()); ps.setString(3,r.borrowerName());
                     ps.setString(4,r.nation()); ps.setDouble(5,r.principal()); ps.setString(6,r.currencyId());
@@ -786,7 +822,8 @@ public final class SQLiteLedger {
                     ps.setLong(10,r.dueAt()); ps.setDouble(11,r.repaid()); ps.setDouble(12,r.accrued());
                     ps.setLong(13,r.lastAccrualAt()); ps.setString(14,r.status()); ps.setString(15,r.collateralType());
                     ps.setString(16,r.collateralCurrency()); ps.setString(17,r.collateralItem());
-                    ps.setDouble(18,r.collateralValue()); ps.setInt(19,r.creditScoreAtOpen()); ps.addBatch();
+                    ps.setDouble(18,r.collateralValue()); ps.setInt(19,r.creditScoreAtOpen());
+                    ps.setDouble(20,r.collateralAmount()); ps.setDouble(21,r.collateralPrice()); ps.addBatch();
                 } ps.executeBatch();
             }
             c.commit();ok=true;
@@ -802,7 +839,8 @@ public final class SQLiteLedger {
                     rs.getDouble("rate_annual"),rs.getInt("term_days"),rs.getLong("opened_at"),rs.getLong("due_at"),
                     rs.getDouble("repaid"),rs.getDouble("accrued"),rs.getLong("last_accrual_at"),rs.getString("status"),
                     rs.getString("collateral_type"),rs.getString("collateral_currency"),rs.getString("collateral_item"),
-                    rs.getDouble("collateral_value"),rs.getInt("credit_score_at_open")));
+                    rs.getDouble("collateral_value"),rs.getDouble("collateral_amount"),
+                    rs.getDouble("collateral_price"),rs.getInt("credit_score_at_open")));
             ok=true;
         } catch(SQLException e){throw new LedgerException("bankLoansAll: "+e.getMessage(),e);}
         finally{finish(c,ok);}return out;
