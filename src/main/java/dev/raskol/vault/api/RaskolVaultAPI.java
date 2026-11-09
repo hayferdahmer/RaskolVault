@@ -8,6 +8,7 @@ import dev.raskol.vault.exchange.ConvertResult;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -18,7 +19,9 @@ import java.util.UUID;
  *   RaskolVault plugin = (RaskolVault) Bukkit.getPluginManager().getPlugin("RaskolVault");
  *   RaskolVaultAPI api = plugin.getAPI();
  *
- * Все методы потокобезопасны (делегаты в WalletService/ConvertEngine).
+ * Потокобезопасность определяется контрактом конкретного делегата. Операции
+ * кошелька подтверждаются после фиксации в SQLite; методы внешних провайдеров
+ * (например, EssentialsX) ограничены возможностями этих провайдеров.
  * Валюта идентифицируется по ID в uppercase (GLD, RAS, OZR, ...).
  */
 public final class RaskolVaultAPI {
@@ -59,13 +62,8 @@ public final class RaskolVaultAPI {
     /** Перевод между игроками. */
     public boolean transfer(UUID from, UUID to, String currencyId, double amount, String reason) {
         if (from == null || to == null || currencyId == null || !(amount > 0.0D)) return false;
-        if (!withdraw(from, currencyId, amount, reason)) return false;
-        if (!deposit(to, currencyId, amount, reason)) {
-            // откат, если депозит не прошёл (теоретически не должно случиться)
-            deposit(from, currencyId, amount, reason + ":rollback");
-            return false;
-        }
-        return true;
+        return plugin.getWallets().transfer(from, to, currencyId.toUpperCase(Locale.ROOT),
+                amount, reason == null ? "api" : reason);
     }
 
     // ============ Конвертация ============
