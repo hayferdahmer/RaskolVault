@@ -507,7 +507,7 @@ public final class BankService implements Listener {
     }
 
     @EventHandler
-    public void onJoin(PlayerJoinEvent e) {
+    public synchronized void onJoin(PlayerJoinEvent e) {
         UUID u = e.getPlayer().getUniqueId();
         List<String> b64 = pendingReturns.remove(u);
         if (b64 == null || b64.isEmpty()) return;
