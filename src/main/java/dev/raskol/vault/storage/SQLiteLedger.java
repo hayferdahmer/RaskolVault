@@ -231,9 +231,10 @@ public final class SQLiteLedger {
                 st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_pending_return_id ON bank_pending_returns(return_id)");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_bank_pending_player ON bank_pending_returns(player)");
                 st.execute("CREATE TABLE IF NOT EXISTS bank_asset_lots ("
-                        + "lot_id TEXT PRIMARY KEY, nation TEXT NOT NULL, source_borrower TEXT NOT NULL,"
-                        + "source_loan_id TEXT NOT NULL UNIQUE, currency_id TEXT NOT NULL, amount REAL NOT NULL,"
-                        + "locked_price REAL NOT NULL, valuation_currency_id TEXT NOT NULL, locked_value REAL NOT NULL,"
+                        + "lot_id TEXT PRIMARY KEY, asset_type TEXT NOT NULL, nation TEXT NOT NULL,"
+                        + "source_borrower TEXT NOT NULL, source_loan_id TEXT NOT NULL UNIQUE, currency_id TEXT,"
+                        + "amount REAL NOT NULL, locked_price REAL NOT NULL, item_base64 TEXT,"
+                        + "valuation_currency_id TEXT NOT NULL, locked_value REAL NOT NULL,"
                         + "recoverable_interest REAL NOT NULL, recoverable_principal REAL NOT NULL, status TEXT NOT NULL)");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_bank_asset_lots_nation_currency "
                         + "ON bank_asset_lots(nation,currency_id,status)");
