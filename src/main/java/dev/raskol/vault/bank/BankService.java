@@ -482,13 +482,8 @@ public final class BankService implements Listener {
             plugin.getServer().getScheduler().runTask(plugin, () -> releaseCollateral(l));
             return;
         }
-        if (l.collateralType() == BankLoan.CollateralType.CURRENCY && l.collateralCurrency() != null) {
-            if (!wallets.depositOnce(l.borrower(), l.collateralCurrency(), l.collateralValue(),
-                    TransactionType.PAY, "bank:collateral:release:" + l.id(),
-                    "bank:collateral:release:" + l.id())) {
-                plugin.getLogger().severe("RaskolVault: не удалось вернуть валютный залог по кредиту " + l.id());
-            }
-        }
+        // Валютный залог возвращается внутри основного SQLite-коммита погашения.
+        // Здесь остаётся только Bukkit-доставка предметного залога.
         if (l.collateralType() == BankLoan.CollateralType.ITEM && l.collateralItemBase64() != null) {
             Player p = plugin.getServer().getPlayer(l.borrower());
             if (p != null && p.isOnline()) {
