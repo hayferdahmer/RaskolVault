@@ -99,6 +99,26 @@ public final class BankLoan {
         repaid += pay;
     }
 
+    public record LiquidationSettlement(double interestRecovered, double principalRecovered,
+                                         double borrowerSurplus, double uncoveredDebt) {}
+
+    /**
+     * Распределяет стоимость изъятого залога: сначала проценты, затем тело кредита.
+     * Излишек возвращается заёмщику, а не остаётся доходом банка.
+     */
+    public LiquidationSettlement liquidationSettlement(double proceeds) {
+        if (!Double.isFinite(proceeds) || proceeds < 0.0D) {
+            throw new IllegalArgumentException("Стоимость залога должна быть конечной и неотрицательной");
+        }
+        double interestRecovered = Math.min(accrued, proceeds);
+        double afterInterest = Math.max(0.0D, proceeds - interestRecovered);
+        double principalRecovered = Math.min(principal, afterInterest);
+        double borrowerSurplus = Math.max(0.0D, afterInterest - principalRecovered);
+        double uncoveredDebt = Math.max(0.0D, principal + accrued - proceeds);
+        return new LiquidationSettlement(interestRecovered, principalRecovered,
+                borrowerSurplus, uncoveredDebt);
+    }
+
     public void markRepaid() { this.status = Status.REPAID; }
     public void markDefaulted() { this.status = Status.DEFAULTED; }
     public void markLiquidated() { this.status = Status.LIQUIDATED; }
