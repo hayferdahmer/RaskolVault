@@ -452,8 +452,12 @@ public final class BankService implements Listener {
         interestReserves.put(key, oldInterestReserve + toInterest);
         defaultedCount.put(l.borrower(), oldDefaultedCount + 1);
 
+        List<Transaction> liquidationJournal = proceeds > 0.0D
+                ? List.of(new Transaction(-1L, now, l.borrower(), null, l.currencyId(), proceeds,
+                        TransactionType.PAY, "bank:loan:liquidate:" + loanId, null))
+                : List.of();
         boolean committed = wallets.applyBatchOnce("bank:loan:liquidate:" + loanId,
-                List.of(), List.of(), List.of(), bankSnapshot(), List.of());
+                List.of(), List.of(), List.of(), bankSnapshot(), liquidationJournal);
         if (!committed) {
             loans.put(loanId, l);
             pools.put(key, oldPool);
