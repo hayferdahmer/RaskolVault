@@ -48,6 +48,32 @@ class BankLoanAccountingTest {
         assertEquals(110.0D, loan.outstanding(1_000L), 0.000_001D);
     }
 
+    @Test
+    void liquidationReturnsCollateralSurplusToBorrower() {
+        BankLoan loan = loan(60.0D);
+        loan.setAccrued(10.0D);
+
+        BankLoan.LiquidationSettlement settlement = loan.liquidationSettlement(100.0D);
+
+        assertEquals(10.0D, settlement.interestRecovered(), 0.000_001D);
+        assertEquals(60.0D, settlement.principalRecovered(), 0.000_001D);
+        assertEquals(30.0D, settlement.borrowerSurplus(), 0.000_001D);
+        assertEquals(0.0D, settlement.uncoveredDebt(), 0.000_001D);
+    }
+
+    @Test
+    void liquidationReportsUncoveredDebtWhenCollateralIsInsufficient() {
+        BankLoan loan = loan(100.0D);
+        loan.setAccrued(20.0D);
+
+        BankLoan.LiquidationSettlement settlement = loan.liquidationSettlement(70.0D);
+
+        assertEquals(20.0D, settlement.interestRecovered(), 0.000_001D);
+        assertEquals(50.0D, settlement.principalRecovered(), 0.000_001D);
+        assertEquals(0.0D, settlement.borrowerSurplus(), 0.000_001D);
+        assertEquals(50.0D, settlement.uncoveredDebt(), 0.000_001D);
+    }
+
     private BankLoan loan(double principal) {
         return new BankLoan("loan-test", UUID.randomUUID(), "Игрок", "raskol",
                 principal, "GLD", 0.0D, 30, 1_000L, 3_000L,
