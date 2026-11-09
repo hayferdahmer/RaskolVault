@@ -36,6 +36,8 @@ public final class BankAdminCommand {
             case "setparam" -> setparam(sender, args);
             case "liquidate" -> liquidate(sender, args);
             case "stats" -> stats(sender, args);
+            case "assets" -> assets(sender);
+            case "realize" -> realize(sender, args);
             default -> help(sender);
         }
     }
@@ -46,6 +48,8 @@ public final class BankAdminCommand {
         send(sender, "&7  keys: demand-rate, rate-7, rate-30, rate-90, loan-rate, collateral-ratio, reserve-multiplier, early-penalty");
         send(sender, "&f/rv bank admin liquidate <loanId>");
         send(sender, "&f/rv bank admin stats [нация]");
+        send(sender, "&f/rv bank admin assets");
+        send(sender, "&f/rv bank admin realize <lotId> <фактическая сумма>");
     }
 
     private void setparam(CommandSender sender, String[] args) {
@@ -62,6 +66,38 @@ public final class BankAdminCommand {
         if (args.length < 3) { send(sender, "&f/rv bank admin liquidate <loanId>"); return; }
         String err = plugin.getBankService().liquidate(args[2]);
         send(sender, err == null ? "&aЗалог ликвидирован" : "&c" + err);
+    }
+
+    private void assets(CommandSender sender) {
+        List<dev.raskol.vault.storage.SQLiteLedger.BankAssetLotRow> lots =
+                plugin.getBankService().collateralAssetLots();
+        send(sender, "&6=== Залоговые активы банка: " + lots.size() + " ===");
+        if (lots.isEmpty()) {
+            send(sender, "&7Активных залоговых лотов нет.");
+            return;
+        }
+        for (var lot : lots) {
+            String asset = "CURRENCY".equals(lot.assetType())
+                    ? fmt(lot.amount()) + " " + lot.currencyId()
+                    : "ITEM · " + lot.sourceLoanId();
+            send(sender, "&f" + lot.lotId() + " &7| " + lot.status() + " &7| "
+                    + asset + " &7| оценка " + fmt(lot.lockedValue()) + " " + lot.valuationCurrencyId());
+        }
+        send(sender, "&7Реализация: /rv bank admin realize <lotId> <фактическая сумма>");
+    }
+
+    private void realize(CommandSender sender, String[] args) {
+        if (args.length < 4) {
+            send(sender, "&f/rv bank admin realize <lotId> <фактическая сумма>");
+            return;
+        }
+        double proceeds;
+        try { proceeds = Double.parseDouble(args[3]); }
+        catch (NumberFormatException exception) { send(sender, "&cСумма должна быть числом."); return; }
+        String error = plugin.getBankService().realizeCollateralAsset(args[2], proceeds);
+        send(sender, error == null
+                ? "&aФактическая реализация залога учтена в банковском балансе."
+                : "&c" + error);
     }
 
     private void stats(CommandSender sender, String[] args) {
@@ -84,7 +120,7 @@ public final class BankAdminCommand {
 
     public List<String> tabComplete(CommandSender sender, String[] args) {
         if (!sender.hasPermission("raskolvault.admin")) return Collections.emptyList();
-        if (args.length == 2) return filter(Arrays.asList("setparam", "liquidate", "stats"), args[1]);
+        if (args.length == 2) return filter(Arrays.asList("setparam", "liquidate", "stats", "assets", "realize"), args[1]);
         if (args.length == 4 && args[1].equalsIgnoreCase("setparam"))
             return filter(Arrays.asList("demand-rate", "rate-7", "rate-30", "rate-90",
                     "loan-rate", "collateral-ratio", "reserve-multiplier", "early-penalty"), args[3]);
