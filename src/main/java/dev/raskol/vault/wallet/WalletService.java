@@ -127,48 +127,52 @@ public final class WalletService {
      * Каждая запись кэша обновляется под той же блокировкой, что и операции кошелька.
      */
     public int reconcile() {
-        Map<UUID, Map<String, Double>> database = ledger.loadAllBalances();
-        int healed = 0;
+        // Снимок БД и замена кэша выполняются под всеми блокировками кошельков.
+        // Иначе устаревший снимок мог бы затереть результат операции,
+        // завершившейся после чтения БД, но до обновления кэша.
+        for (ReentrantLock lock : walletLocks) {
+            lock.lock();
+        }
+        try {
+            Map<UUID, Map<String, Double>> database = ledger.loadAllBalances();
+            int healed = 0;
 
-        for (Map.Entry<UUID, Map<String, Double>> entry : database.entrySet()) {
-            for (Map.Entry<String, Double> currency : entry.getValue().entrySet()) {
-                UUID owner = entry.getKey();
-                String currencyId = currency.getKey();
-                ReentrantLock lock = lockFor(owner, currencyId);
-                lock.lock();
-                try {
-                    Map<String, Double> row = cache.computeIfAbsent(owner,
-                            ignored -> new ConcurrentHashMap<>());
-                    double cached = row.getOrDefault(currencyId, 0.0D);
-                    if (Math.abs(cached - currency.getValue()) > 1.0E-6D) {
-                        row.put(currencyId, currency.getValue());
+            for (Map.Entry<UUID, Map<String, Double>> entry : database.entrySet()) {
+                Map<String, Double> oldRow = cache.get(entry.getKey());
+                Map<String, Double> newRow = entry.getValue();
+                if (oldRow == null) {
+                    healed += newRow.size();
+                    continue;
+                }
+                for (Map.Entry<String, Double> currency : newRow.entrySet()) {
+                    if (Math.abs(oldRow.getOrDefault(currency.getKey(), 0.0D)
+                            - currency.getValue()) > 1.0E-6D) {
                         healed++;
                     }
-                } finally {
-                    lock.unlock();
                 }
-            }
-        }
-
-        for (Map.Entry<UUID, Map<String, Double>> entry : cache.entrySet()) {
-            for (String currencyId : entry.getValue().keySet()) {
-                Map<String, Double> databaseRow = database.get(entry.getKey());
-                if (databaseRow == null || !databaseRow.containsKey(currencyId)) {
-                    ReentrantLock lock = lockFor(entry.getKey(), currencyId);
-                    lock.lock();
-                    try {
-                        Map<String, Double> row = cache.get(entry.getKey());
-                        if (row != null && row.containsKey(currencyId)) {
-                            row.put(currencyId, 0.0D);
-                            healed++;
-                        }
-                    } finally {
-                        lock.unlock();
+                for (String currencyId : oldRow.keySet()) {
+                    if (!newRow.containsKey(currencyId)) {
+                        healed++;
                     }
                 }
             }
+
+            for (Map.Entry<UUID, Map<String, Double>> entry : cache.entrySet()) {
+                if (!database.containsKey(entry.getKey())) {
+                    healed += entry.getValue().size();
+                }
+            }
+
+            cache.clear();
+            for (Map.Entry<UUID, Map<String, Double>> entry : database.entrySet()) {
+                cache.put(entry.getKey(), new ConcurrentHashMap<>(entry.getValue()));
+            }
+            return healed;
+        } finally {
+            for (int i = walletLocks.length - 1; i >= 0; i--) {
+                walletLocks[i].unlock();
+            }
         }
-        return healed;
     }
 
     public boolean deposit(UUID uuid, String currencyId, double amount,
