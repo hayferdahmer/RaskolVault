@@ -34,6 +34,17 @@ public final class SQLiteLedger {
     public record CheckedEscrow(String ticket, UUID owner, String currencyId,
                                 double expectedOld, double newAmount, boolean delete) {}
     public record EscrowRow(String ticket, UUID owner, String currencyId, double amount) {}
+    public record BankAccountRow(String id, UUID owner, String ownerName, String nation,
+                                 String currencyId, double principal, String term, double rateAnnual,
+                                 long openedAt, long maturesAt, double accrued, long lastAccrualAt, String status) {}
+    public record BankLoanRow(String id, UUID borrower, String borrowerName, String nation,
+                              double principal, String currencyId, double rateAnnual, int termDays,
+                              long openedAt, long dueAt, double repaid, double accrued, long lastAccrualAt,
+                              String status, String collateralType, String collateralCurrency,
+                              String collateralItem, double collateralValue, int creditScoreAtOpen) {}
+    public record BankPoolRow(String nation, String currencyId, double pool, double interestReserve) {}
+    public record BankCreditRow(UUID player, int repaidCount, int defaultedCount) {}
+    public record BankPendingRow(UUID player, String itemBase64) {}
     public record ExchangeOrderRow(String id, UUID owner, String nation, String sellCurrency,
                                    String buyCurrency, double sellAmount, double buyAmount,
                                    double price, double remaining, String status,
@@ -117,6 +128,31 @@ public final class SQLiteLedger {
                 st.execute("CREATE TABLE IF NOT EXISTS shares ("
                         + "id TEXT PRIMARY KEY, nation TEXT NOT NULL, owner TEXT NOT NULL,"
                         + "grams REAL NOT NULL, issued_at INTEGER NOT NULL, last_payout INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_accounts ("
+                        + "id TEXT PRIMARY KEY, owner TEXT NOT NULL, owner_name TEXT NOT NULL,"
+                        + "nation TEXT NOT NULL, currency_id TEXT NOT NULL, principal REAL NOT NULL,"
+                        + "term TEXT NOT NULL, rate_annual REAL NOT NULL, opened_at INTEGER NOT NULL,"
+                        + "matures_at INTEGER NOT NULL, accrued REAL NOT NULL, last_accrual_at INTEGER NOT NULL,"
+                        + "status TEXT NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_bank_accounts_owner ON bank_accounts(owner)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_loans ("
+                        + "id TEXT PRIMARY KEY, borrower TEXT NOT NULL, borrower_name TEXT NOT NULL,"
+                        + "nation TEXT NOT NULL, principal REAL NOT NULL, currency_id TEXT NOT NULL,"
+                        + "rate_annual REAL NOT NULL, term_days INTEGER NOT NULL, opened_at INTEGER NOT NULL,"
+                        + "due_at INTEGER NOT NULL, repaid REAL NOT NULL, accrued REAL NOT NULL,"
+                        + "last_accrual_at INTEGER NOT NULL, status TEXT NOT NULL, collateral_type TEXT NOT NULL,"
+                        + "collateral_currency TEXT, collateral_item TEXT, collateral_value REAL NOT NULL,"
+                        + "credit_score_at_open INTEGER NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_bank_loans_borrower ON bank_loans(borrower)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_pools ("
+                        + "nation TEXT NOT NULL, currency_id TEXT NOT NULL, pool REAL NOT NULL,"
+                        + "interest_reserve REAL NOT NULL, PRIMARY KEY(nation,currency_id))");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_credit ("
+                        + "player TEXT PRIMARY KEY, repaid_count INTEGER NOT NULL, defaulted_count INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_pending_returns ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, item_base64 TEXT NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_bank_pending_player ON bank_pending_returns(player)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
                 st.execute("CREATE TABLE IF NOT EXISTS operation_requests ("
                         + "operation_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,"
                         + "created_at INTEGER NOT NULL)");
@@ -537,6 +573,158 @@ public final class SQLiteLedger {
             ps.executeUpdate();
             try (ResultSet keys = ps.getGeneratedKeys()) { return keys.next() ? keys.getLong(1) : -1L; }
         }
+    }
+
+    // ---------- банковское хранилище ----------
+    public boolean bankStorageInitialized() { return "1".equals(bankMeta("yaml_import_v1")); }
+
+    public void markBankStorageInitialized() {
+        Connection c=pool.borrow(); boolean ok=false;
+        try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_storage_meta(key,value) VALUES('yaml_import_v1','1') ON CONFLICT(key) DO UPDATE SET value='1'")) {
+            ps.executeUpdate(); ok=true;
+        } catch(SQLException e) { throw new LedgerException("markBankStorageInitialized: "+e.getMessage(),e); }
+        finally { finish(c,ok); }
+    }
+
+    private String bankMeta(String key) {
+        Connection c=pool.borrow(); boolean ok=false;
+        try(PreparedStatement ps=c.prepareStatement("SELECT value FROM bank_storage_meta WHERE key=?")) {
+            ps.setString(1,key);
+            try(ResultSet rs=ps.executeQuery()) { ok=true; return rs.next()?rs.getString(1):null; }
+        } catch(SQLException e) { throw new LedgerException("bankMeta: "+e.getMessage(),e); }
+        finally { finish(c,ok); }
+    }
+
+    public void replaceBankAccounts(List<BankAccountRow> rows) {
+        Connection c=pool.borrow(); boolean ok=false;
+        try {
+            c.setAutoCommit(false);
+            try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM bank_accounts");}
+            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_accounts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+                for(BankAccountRow r:rows) {
+                    ps.setString(1,r.id()); ps.setString(2,r.owner().toString()); ps.setString(3,r.ownerName());
+                    ps.setString(4,r.nation()); ps.setString(5,r.currencyId()); ps.setDouble(6,r.principal());
+                    ps.setString(7,r.term()); ps.setDouble(8,r.rateAnnual()); ps.setLong(9,r.openedAt());
+                    ps.setLong(10,r.maturesAt()); ps.setDouble(11,r.accrued()); ps.setLong(12,r.lastAccrualAt());
+                    ps.setString(13,r.status()); ps.addBatch();
+                } ps.executeBatch();
+            }
+            c.commit(); ok=true;
+        } catch(SQLException e){rollbackQuiet(c);throw new LedgerException("replaceBankAccounts: "+e.getMessage(),e);}
+        finally{finish(c,ok);}
+    }
+
+    public List<BankAccountRow> bankAccountsAll() {
+        List<BankAccountRow> out=new ArrayList<>(); Connection c=pool.borrow(); boolean ok=false;
+        try(Statement st=c.createStatement();ResultSet rs=st.executeQuery("SELECT * FROM bank_accounts")) {
+            while(rs.next()) out.add(new BankAccountRow(rs.getString("id"),UUID.fromString(rs.getString("owner")),
+                    rs.getString("owner_name"),rs.getString("nation"),rs.getString("currency_id"),rs.getDouble("principal"),
+                    rs.getString("term"),rs.getDouble("rate_annual"),rs.getLong("opened_at"),rs.getLong("matures_at"),
+                    rs.getDouble("accrued"),rs.getLong("last_accrual_at"),rs.getString("status")));
+            ok=true;
+        } catch(SQLException e){throw new LedgerException("bankAccountsAll: "+e.getMessage(),e);}
+        finally{finish(c,ok);} return out;
+    }
+
+    public void replaceBankLoans(List<BankLoanRow> rows) {
+        Connection c=pool.borrow(); boolean ok=false;
+        try {
+            c.setAutoCommit(false);
+            try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM bank_loans");}
+            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_loans VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+                for(BankLoanRow r:rows) {
+                    ps.setString(1,r.id()); ps.setString(2,r.borrower().toString()); ps.setString(3,r.borrowerName());
+                    ps.setString(4,r.nation()); ps.setDouble(5,r.principal()); ps.setString(6,r.currencyId());
+                    ps.setDouble(7,r.rateAnnual()); ps.setInt(8,r.termDays()); ps.setLong(9,r.openedAt());
+                    ps.setLong(10,r.dueAt()); ps.setDouble(11,r.repaid()); ps.setDouble(12,r.accrued());
+                    ps.setLong(13,r.lastAccrualAt()); ps.setString(14,r.status()); ps.setString(15,r.collateralType());
+                    ps.setString(16,r.collateralCurrency()); ps.setString(17,r.collateralItem());
+                    ps.setDouble(18,r.collateralValue()); ps.setInt(19,r.creditScoreAtOpen()); ps.addBatch();
+                } ps.executeBatch();
+            }
+            c.commit();ok=true;
+        } catch(SQLException e){rollbackQuiet(c);throw new LedgerException("replaceBankLoans: "+e.getMessage(),e);}
+        finally{finish(c,ok);}
+    }
+
+    public List<BankLoanRow> bankLoansAll() {
+        List<BankLoanRow> out=new ArrayList<>();Connection c=pool.borrow();boolean ok=false;
+        try(Statement st=c.createStatement();ResultSet rs=st.executeQuery("SELECT * FROM bank_loans")) {
+            while(rs.next()) out.add(new BankLoanRow(rs.getString("id"),UUID.fromString(rs.getString("borrower")),
+                    rs.getString("borrower_name"),rs.getString("nation"),rs.getDouble("principal"),rs.getString("currency_id"),
+                    rs.getDouble("rate_annual"),rs.getInt("term_days"),rs.getLong("opened_at"),rs.getLong("due_at"),
+                    rs.getDouble("repaid"),rs.getDouble("accrued"),rs.getLong("last_accrual_at"),rs.getString("status"),
+                    rs.getString("collateral_type"),rs.getString("collateral_currency"),rs.getString("collateral_item"),
+                    rs.getDouble("collateral_value"),rs.getInt("credit_score_at_open")));
+            ok=true;
+        } catch(SQLException e){throw new LedgerException("bankLoansAll: "+e.getMessage(),e);}
+        finally{finish(c,ok);}return out;
+    }
+
+    public void replaceBankPools(List<BankPoolRow> rows) {
+        Connection c=pool.borrow();boolean ok=false;
+        try {
+            c.setAutoCommit(false);
+            try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM bank_pools");}
+            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_pools VALUES(?,?,?,?)")) {
+                for(BankPoolRow r:rows){ps.setString(1,r.nation());ps.setString(2,r.currencyId());ps.setDouble(3,r.pool());ps.setDouble(4,r.interestReserve());ps.addBatch();}
+                ps.executeBatch();
+            } c.commit();ok=true;
+        } catch(SQLException e){rollbackQuiet(c);throw new LedgerException("replaceBankPools: "+e.getMessage(),e);}
+        finally{finish(c,ok);}
+    }
+
+    public List<BankPoolRow> bankPoolsAll() {
+        List<BankPoolRow> out=new ArrayList<>();Connection c=pool.borrow();boolean ok=false;
+        try(Statement st=c.createStatement();ResultSet rs=st.executeQuery("SELECT * FROM bank_pools")) {
+            while(rs.next())out.add(new BankPoolRow(rs.getString("nation"),rs.getString("currency_id"),rs.getDouble("pool"),rs.getDouble("interest_reserve")));
+            ok=true;
+        }catch(SQLException e){throw new LedgerException("bankPoolsAll: "+e.getMessage(),e);}
+        finally{finish(c,ok);}return out;
+    }
+
+    public void replaceBankCredit(List<BankCreditRow> rows) {
+        Connection c=pool.borrow();boolean ok=false;
+        try {
+            c.setAutoCommit(false);
+            try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM bank_credit");}
+            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_credit VALUES(?,?,?)")) {
+                for(BankCreditRow r:rows){ps.setString(1,r.player().toString());ps.setInt(2,r.repaidCount());ps.setInt(3,r.defaultedCount());ps.addBatch();}
+                ps.executeBatch();
+            } c.commit();ok=true;
+        }catch(SQLException e){rollbackQuiet(c);throw new LedgerException("replaceBankCredit: "+e.getMessage(),e);}
+        finally{finish(c,ok);}
+    }
+
+    public List<BankCreditRow> bankCreditAll() {
+        List<BankCreditRow> out=new ArrayList<>();Connection c=pool.borrow();boolean ok=false;
+        try(Statement st=c.createStatement();ResultSet rs=st.executeQuery("SELECT * FROM bank_credit")) {
+            while(rs.next())out.add(new BankCreditRow(UUID.fromString(rs.getString("player")),rs.getInt("repaid_count"),rs.getInt("defaulted_count")));
+            ok=true;
+        }catch(SQLException e){throw new LedgerException("bankCreditAll: "+e.getMessage(),e);}
+        finally{finish(c,ok);}return out;
+    }
+
+    public void replaceBankPending(List<BankPendingRow> rows) {
+        Connection c=pool.borrow();boolean ok=false;
+        try {
+            c.setAutoCommit(false);
+            try(Statement st=c.createStatement()){st.executeUpdate("DELETE FROM bank_pending_returns");}
+            try(PreparedStatement ps=c.prepareStatement("INSERT INTO bank_pending_returns(player,item_base64) VALUES(?,?)")) {
+                for(BankPendingRow r:rows){ps.setString(1,r.player().toString());ps.setString(2,r.itemBase64());ps.addBatch();}
+                ps.executeBatch();
+            }c.commit();ok=true;
+        }catch(SQLException e){rollbackQuiet(c);throw new LedgerException("replaceBankPending: "+e.getMessage(),e);}
+        finally{finish(c,ok);}
+    }
+
+    public List<BankPendingRow> bankPendingAll() {
+        List<BankPendingRow> out=new ArrayList<>();Connection c=pool.borrow();boolean ok=false;
+        try(Statement st=c.createStatement();ResultSet rs=st.executeQuery("SELECT player,item_base64 FROM bank_pending_returns ORDER BY id")) {
+            while(rs.next())out.add(new BankPendingRow(UUID.fromString(rs.getString(1)),rs.getString(2)));
+            ok=true;
+        }catch(SQLException e){throw new LedgerException("bankPendingAll: "+e.getMessage(),e);}
+        finally{finish(c,ok);}return out;
     }
 
     // ---------- reserves ----------
