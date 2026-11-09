@@ -553,6 +553,7 @@ public final class BankService implements Listener {
         int delivered = 0;
         for (SQLiteLedger.BankPendingRow row : new ArrayList<>(rows)) {
             if (hasDeliveredCollateral(player, row.returnId())) {
+                markCollateralReceipt(player, row.returnId());
                 acknowledgeCollateralReturn(owner, row);
                 continue;
             }
@@ -581,6 +582,8 @@ public final class BankService implements Listener {
                         + "; запись оставлена в очереди.");
                 continue;
             }
+            // Квитанция хранится в данных игрока и остаётся с ним, даже если предмет переложен в сундук.
+            markCollateralReceipt(player, row.returnId());
             delivered++;
             acknowledgeCollateralReturn(owner, row);
         }
@@ -591,7 +594,19 @@ public final class BankService implements Listener {
         }
     }
 
+    private NamespacedKey collateralReceiptKey(String returnId) {
+        String safeId = returnId.replace("-", "").toLowerCase(java.util.Locale.ROOT);
+        return new NamespacedKey(plugin, "collateral_receipt_" + safeId);
+    }
+
+    private void markCollateralReceipt(Player player, String returnId) {
+        player.getPersistentDataContainer().set(
+                collateralReceiptKey(returnId), PersistentDataType.BYTE, (byte) 1);
+    }
+
     private boolean hasDeliveredCollateral(Player player, String returnId) {
+        if (player.getPersistentDataContainer().has(
+                collateralReceiptKey(returnId), PersistentDataType.BYTE)) return true;
         for (ItemStack item : player.getInventory().getContents()) {
             if (item == null || item.getType().isAir()) continue;
             String marker = item.getPersistentDataContainer().get(
