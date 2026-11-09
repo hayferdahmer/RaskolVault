@@ -111,4 +111,56 @@ class SQLiteLedgerTransactionTest {
 
         assertEquals(25.0D, ledger.getBalance(player, "GLD"), 0.000_001D);
     }
+
+    @Test
+    void idempotentCommitDoesNotApplyTheSameOperationTwice() {
+        UUID player = UUID.randomUUID();
+        String operationId = "wallet-deposit-001";
+        String fingerprint = "deposit:player:001";
+
+        ledger.commitAbsoluteCheckedOnce(operationId, fingerprint,
+                List.of(new SQLiteLedger.CheckedBalance(player, "GLD", 0.0D, 100.0D)),
+                List.of());
+
+        // Повторный запрос должен распознаться до проверки нового ожидаемого баланса.
+        ledger.commitAbsoluteCheckedOnce(operationId, fingerprint,
+                List.of(new SQLiteLedger.CheckedBalance(player, "GLD", 100.0D, 200.0D)),
+                List.of());
+
+        assertEquals(100.0D, ledger.getBalance(player, "GLD"), 0.000_001D);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                ledger.operationCommitted(operationId, fingerprint));
+    }
+
+    @Test
+    void idempotencyKeyCannotBeReusedForDifferentPayload() {
+        UUID player = UUID.randomUUID();
+        String operationId = "wallet-deposit-002";
+
+        ledger.commitAbsoluteCheckedOnce(operationId, "deposit:100",
+                List.of(new SQLiteLedger.CheckedBalance(player, "GLD", 0.0D, 100.0D)),
+                List.of());
+
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                operationId, "deposit:200",
+                List.of(new SQLiteLedger.CheckedBalance(player, "GLD", 100.0D, 300.0D)),
+                List.of()));
+
+        assertEquals(100.0D, ledger.getBalance(player, "GLD"), 0.000_001D);
+    }
+
+    @Test
+    void failedIdempotentCommitDoesNotReserveTheOperationKey() {
+        UUID player = UUID.randomUUID();
+        String operationId = "wallet-withdraw-001";
+        String fingerprint = "withdraw:25";
+
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                operationId, fingerprint,
+                List.of(new SQLiteLedger.CheckedBalance(player, "GLD", 25.0D, 0.0D)),
+                List.of()));
+
+        org.junit.jupiter.api.Assertions.assertFalse(
+                ledger.operationCommitted(operationId, fingerprint));
+    }
 }
