@@ -40,7 +40,8 @@ public final class BankLoan {
                     String collateralItemBase64, double collateralValue, int creditScoreAtOpen) {
         this(id, borrower, borrowerName, nation, principal, currencyId, rateAnnual, termDays,
                 openedAt, dueAt, collateralType, collateralCurrency, collateralItemBase64,
-                collateralValue, collateralValue, 1.0D, creditScoreAtOpen);
+                collateralValue, collateralType == CollateralType.CURRENCY ? collateralValue : 0.0D,
+                1.0D, creditScoreAtOpen);
     }
 
     public BankLoan(String id, UUID borrower, String borrowerName, String nation,
