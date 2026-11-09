@@ -65,7 +65,12 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "version" -> send(sender, "&fRaskolVault &6" + plugin.getPluginMeta().getVersion());
             case "wallet" -> openWallet(sender);          // работает, но скрыт из tab
             case "bank" -> {
-                if (args.length >= 2 && args[1].equalsIgnoreCase("admin")) bankAdminCommand.execute(sender, args);
+                if (args.length >= 3 && args[1].equalsIgnoreCase("admin")) {
+                    String[] bankArgs = new String[args.length - 1];
+                    bankArgs[0] = "bank";
+                    System.arraycopy(args, 2, bankArgs, 1, args.length - 2);
+                    bankAdminCommand.execute(sender, bankArgs);
+                }
                 else openBank(sender);
             }
             case "exchange" -> openExchange(sender, args);
@@ -148,7 +153,10 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         if (op.equals("bank")) {
             if (args.length == 2) return filter(Arrays.asList("admin"), args[1]);
             if (args.length >= 3 && args[1].equalsIgnoreCase("admin"))
-                return bankAdminCommand.tabComplete(sender, Arrays.copyOfRange(args, 1, args.length));
+                String[] bankArgs = new String[args.length - 1];
+                bankArgs[0] = "bank";
+                System.arraycopy(args, 2, bankArgs, 1, args.length - 2);
+                return bankAdminCommand.tabComplete(sender, bankArgs);
             return Collections.emptyList();
         }
         OfflinePlayerRegistry offline = plugin.getOfflinePlayerRegistry();
