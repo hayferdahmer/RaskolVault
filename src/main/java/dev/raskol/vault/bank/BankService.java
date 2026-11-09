@@ -6,6 +6,7 @@ import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.storage.SafeStorage;
+import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
@@ -45,6 +46,7 @@ public final class BankService implements Listener {
 
     private final RaskolVault plugin;
     private final WalletService wallets;
+    private final SQLiteLedger ledger;
     private final ReserveBank bank;
     private final File accountsFile;
     private final File loansFile;
@@ -62,6 +64,7 @@ public final class BankService implements Listener {
     public BankService(RaskolVault plugin, WalletService wallets, ReserveBank bank) {
         this.plugin = plugin;
         this.wallets = wallets;
+        this.ledger = plugin.getLedger();
         this.bank = bank;
         this.accountsFile = new File(plugin.getDataFolder(), "data/bank-accounts.yml");
         this.loansFile = new File(plugin.getDataFolder(), "data/bank-loans.yml");
@@ -434,141 +437,220 @@ public final class BankService implements Listener {
     }
 
     // ---------- персистентность ----------
-    public void load() {
-        for (File f : new File[]{accountsFile, loansFile, poolsFile, creditFile, pendingFile})
-            if (!f.getParentFile().exists()) f.getParentFile().mkdirs();
+    public synchronized void load() {
+        accounts.clear(); loans.clear(); pools.clear(); interestReserves.clear();
+        repaidCount.clear(); defaultedCount.clear(); pendingReturns.clear();
+
+        if (ledger.bankStorageInitialized()) {
+            loadFromSqlite();
+            return;
+        }
+
+        // Однократный импорт старых YAML-файлов. Исходные файлы остаются на месте
+        // как резервная копия и больше не используются для рабочих записей.
+        loadLegacyYaml();
+        saveAccounts();
+        saveLoans();
+        savePools();
+        saveCredit();
+        savePending();
+        ledger.markBankStorageInitialized();
+        plugin.getLogger().info("Банковские данные импортированы в SQLite. YAML-файлы сохранены как резервные копии.");
+    }
+
+    private void loadFromSqlite() {
+        for (SQLiteLedger.BankAccountRow row : ledger.bankAccountsAll()) {
+            BankAccount account = new BankAccount(row.id(), row.owner(), row.ownerName(), row.nation(),
+                    row.currencyId(), row.principal(), BankAccount.Term.valueOf(row.term()),
+                    row.rateAnnual(), row.openedAt(), row.maturesAt());
+            if ("CLOSED".equals(row.status())) account.close();
+            account.setAccrued(row.accrued());
+            account.setLastAccrualAt(row.lastAccrualAt());
+            accounts.put(account.id(), account);
+        }
+        for (SQLiteLedger.BankLoanRow row : ledger.bankLoansAll()) {
+            BankLoan loan = new BankLoan(row.id(), row.borrower(), row.borrowerName(), row.nation(),
+                    row.principal(), row.currencyId(), row.rateAnnual(), row.termDays(), row.openedAt(),
+                    row.dueAt(), BankLoan.CollateralType.valueOf(row.collateralType()),
+                    row.collateralCurrency(), row.collateralItem(), row.collateralValue(), row.creditScoreAtOpen());
+            loan.setRepaid(row.repaid());
+            loan.setAccrued(row.accrued());
+            loan.setLastAccrualAt(row.lastAccrualAt());
+            switch (row.status()) {
+                case "REPAID" -> loan.markRepaid();
+                case "DEFAULTED" -> loan.markDefaulted();
+                case "LIQUIDATED" -> loan.markLiquidated();
+                default -> { }
+            }
+            loans.put(loan.id(), loan);
+        }
+        for (SQLiteLedger.BankPoolRow row : ledger.bankPoolsAll()) {
+            String key = poolKey(row.nation(), row.currencyId());
+            pools.put(key, row.pool());
+            interestReserves.put(key, row.interestReserve());
+        }
+        for (SQLiteLedger.BankCreditRow row : ledger.bankCreditAll()) {
+            repaidCount.put(row.player(), row.repaidCount());
+            defaultedCount.put(row.player(), row.defaultedCount());
+        }
+        for (SQLiteLedger.BankPendingRow row : ledger.bankPendingAll()) {
+            pendingReturns.computeIfAbsent(row.player(), ignored -> new ArrayList<>()).add(row.itemBase64());
+        }
+    }
+
+    private void loadLegacyYaml() {
+        for (File file : new File[]{accountsFile, loansFile, poolsFile, creditFile, pendingFile}) {
+            File parent = file.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+        }
         if (accountsFile.exists()) {
             YamlConfiguration y = YamlConfiguration.loadConfiguration(accountsFile);
-            ConfigurationSection r = y.getConfigurationSection("accounts");
-            if (r != null) for (String id : r.getKeys(false)) {
-                ConfigurationSection s = r.getConfigurationSection(id);
-                if (s == null) continue;
-                BankAccount a = new BankAccount(id, UUID.fromString(s.getString("owner")), s.getString("ownerName", ""),
-                        s.getString("nation", ""), s.getString("currency", "GLD"),
-                        s.getDouble("principal", 0), BankAccount.Term.valueOf(s.getString("term", "DEMAND")),
-                        s.getDouble("rate", 0), s.getLong("openedAt", 0), s.getLong("maturesAt", 0));
-                if ("CLOSED".equals(s.getString("status", "ACTIVE"))) a.close();
-                a.setAccrued(s.getDouble("accrued", 0.0D));
-                a.setLastAccrualAt(s.getLong("lastAccrualAt", a.openedAt()));
-                accounts.put(id, a);
+            ConfigurationSection root = y.getConfigurationSection("accounts");
+            if (root != null) for (String id : root.getKeys(false)) {
+                ConfigurationSection section = root.getConfigurationSection(id);
+                if (section == null) continue;
+                BankAccount account = new BankAccount(id, UUID.fromString(section.getString("owner")),
+                        section.getString("ownerName", ""), section.getString("nation", ""),
+                        section.getString("currency", "GLD"), section.getDouble("principal", 0.0D),
+                        BankAccount.Term.valueOf(section.getString("term", "DEMAND")),
+                        section.getDouble("rate", 0.0D), section.getLong("openedAt", 0L),
+                        section.getLong("maturesAt", 0L));
+                if ("CLOSED".equals(section.getString("status", "ACTIVE"))) account.close();
+                account.setAccrued(section.getDouble("accrued", 0.0D));
+                account.setLastAccrualAt(section.getLong("lastAccrualAt", account.openedAt()));
+                accounts.put(id, account);
             }
         }
         if (loansFile.exists()) {
             YamlConfiguration y = YamlConfiguration.loadConfiguration(loansFile);
-            ConfigurationSection r = y.getConfigurationSection("loans");
-            if (r != null) for (String id : r.getKeys(false)) {
-                ConfigurationSection s = r.getConfigurationSection(id);
-                if (s == null) continue;
-                BankLoan l = new BankLoan(id, UUID.fromString(s.getString("borrower")), s.getString("borrowerName", ""),
-                        s.getString("nation", ""), s.getDouble("principal", 0),
-                        s.getString("currency", "GLD"), s.getDouble("rate", 0), s.getInt("termDays", 30),
-                        s.getLong("openedAt", 0), s.getLong("dueAt", 0),
-                        BankLoan.CollateralType.valueOf(s.getString("collateralType", "NONE")),
-                        s.getString("collateralCurrency", null), s.getString("collateralItem", null),
-                        s.getDouble("collateralValue", 0), s.getInt("creditScore", 0));
-                l.setRepaid(s.getDouble("repaid", 0));
-                l.setAccrued(s.getDouble("accrued", 0));
-                l.setLastAccrualAt(s.getLong("lastAccrualAt", l.openedAt()));
-                String st = s.getString("status", "ACTIVE");
-                if ("REPAID".equals(st)) l.markRepaid();
-                else if ("DEFAULTED".equals(st)) l.markDefaulted();
-                else if ("LIQUIDATED".equals(st)) l.markLiquidated();
-                loans.put(id, l);
+            ConfigurationSection root = y.getConfigurationSection("loans");
+            if (root != null) for (String id : root.getKeys(false)) {
+                ConfigurationSection section = root.getConfigurationSection(id);
+                if (section == null) continue;
+                BankLoan loan = new BankLoan(id, UUID.fromString(section.getString("borrower")),
+                        section.getString("borrowerName", ""), section.getString("nation", ""),
+                        section.getDouble("principal", 0.0D), section.getString("currency", "GLD"),
+                        section.getDouble("rate", 0.0D), section.getInt("termDays", 30),
+                        section.getLong("openedAt", 0L), section.getLong("dueAt", 0L),
+                        BankLoan.CollateralType.valueOf(section.getString("collateralType", "NONE")),
+                        section.getString("collateralCurrency", null), section.getString("collateralItem", null),
+                        section.getDouble("collateralValue", 0.0D), section.getInt("creditScore", 0));
+                loan.setRepaid(section.getDouble("repaid", 0.0D));
+                loan.setAccrued(section.getDouble("accrued", 0.0D));
+                loan.setLastAccrualAt(section.getLong("lastAccrualAt", loan.openedAt()));
+                switch (section.getString("status", "ACTIVE")) {
+                    case "REPAID" -> loan.markRepaid();
+                    case "DEFAULTED" -> loan.markDefaulted();
+                    case "LIQUIDATED" -> loan.markLiquidated();
+                    default -> { }
+                }
+                loans.put(id, loan);
             }
         }
         if (poolsFile.exists()) {
             YamlConfiguration y = YamlConfiguration.loadConfiguration(poolsFile);
-            ConfigurationSection p = y.getConfigurationSection("pools");
-            if (p != null) for (String k : p.getKeys(false)) pools.put(k, p.getDouble(k, 0));
-            ConfigurationSection ir = y.getConfigurationSection("interest");
-            if (ir != null) for (String k : ir.getKeys(false)) interestReserves.put(k, ir.getDouble(k, 0));
+            ConfigurationSection poolSection = y.getConfigurationSection("pools");
+            if (poolSection != null) for (String key : poolSection.getKeys(false)) {
+                pools.put(key, poolSection.getDouble(key, 0.0D));
+            }
+            ConfigurationSection interestSection = y.getConfigurationSection("interest");
+            if (interestSection != null) for (String key : interestSection.getKeys(false)) {
+                interestReserves.put(key, interestSection.getDouble(key, 0.0D));
+            }
         }
         if (creditFile.exists()) {
             YamlConfiguration y = YamlConfiguration.loadConfiguration(creditFile);
-            ConfigurationSection rp = y.getConfigurationSection("repaid");
-            if (rp != null) for (String k : rp.getKeys(false)) repaidCount.put(UUID.fromString(k), rp.getInt(k, 0));
-            ConfigurationSection df = y.getConfigurationSection("defaulted");
-            if (df != null) for (String k : df.getKeys(false)) defaultedCount.put(UUID.fromString(k), df.getInt(k, 0));
+            ConfigurationSection repaidSection = y.getConfigurationSection("repaid");
+            if (repaidSection != null) for (String key : repaidSection.getKeys(false)) {
+                repaidCount.put(UUID.fromString(key), repaidSection.getInt(key, 0));
+            }
+            ConfigurationSection defaultedSection = y.getConfigurationSection("defaulted");
+            if (defaultedSection != null) for (String key : defaultedSection.getKeys(false)) {
+                defaultedCount.put(UUID.fromString(key), defaultedSection.getInt(key, 0));
+            }
         }
         if (pendingFile.exists()) {
             YamlConfiguration y = YamlConfiguration.loadConfiguration(pendingFile);
-            ConfigurationSection pr = y.getConfigurationSection("pending");
-            if (pr != null) for (String k : pr.getKeys(false))
-                pendingReturns.put(UUID.fromString(k), new ArrayList<>(pr.getStringList(k)));
+            ConfigurationSection pendingSection = y.getConfigurationSection("pending");
+            if (pendingSection != null) for (String key : pendingSection.getKeys(false)) {
+                pendingReturns.put(UUID.fromString(key), new ArrayList<>(pendingSection.getStringList(key)));
+            }
         }
     }
 
-    public boolean saveAccounts() {
-        YamlConfiguration y = new YamlConfiguration();
-        ConfigurationSection r = y.createSection("accounts");
-        for (BankAccount a : accounts.values()) {
-            ConfigurationSection s = r.createSection(a.id());
-            s.set("owner", a.owner().toString());
-            s.set("ownerName", a.ownerName());
-            s.set("nation", a.nation());
-            s.set("currency", a.currencyId());
-            s.set("principal", a.principal());
-            s.set("term", a.term().name());
-            s.set("rate", a.rateAnnual());
-            s.set("openedAt", a.openedAt());
-            s.set("maturesAt", a.maturesAt());
-            s.set("accrued", a.accrued());
-            s.set("lastAccrualAt", a.lastAccrualAt());
-            s.set("status", a.status().name());
+    public synchronized boolean saveAccounts() {
+        List<SQLiteLedger.BankAccountRow> rows = new ArrayList<>();
+        for (BankAccount a : accounts.values()) rows.add(new SQLiteLedger.BankAccountRow(
+                a.id(), a.owner(), a.ownerName(), a.nation(), a.currencyId(), a.principal(), a.term().name(),
+                a.rateAnnual(), a.openedAt(), a.maturesAt(), a.accrued(), a.lastAccrualAt(), a.status().name()));
+        try { ledger.replaceBankAccounts(rows); return true; }
+        catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось сохранить банковские вклады в SQLite: " + exception.getMessage());
+            return false;
         }
-        return SafeStorage.saveAtomicChecked(y, accountsFile, plugin);
     }
 
-    public boolean saveLoans() {
-        YamlConfiguration y = new YamlConfiguration();
-        ConfigurationSection r = y.createSection("loans");
-        for (BankLoan l : loans.values()) {
-            ConfigurationSection s = r.createSection(l.id());
-            s.set("borrower", l.borrower().toString());
-            s.set("borrowerName", l.borrowerName());
-            s.set("nation", l.nation());
-            s.set("principal", l.principal());
-            s.set("currency", l.currencyId());
-            s.set("rate", l.rateAnnual());
-            s.set("termDays", l.termDays());
-            s.set("openedAt", l.openedAt());
-            s.set("dueAt", l.dueAt());
-            s.set("repaid", l.repaid());
-            s.set("accrued", l.accrued());
-            s.set("lastAccrualAt", l.lastAccrualAt());
-            s.set("status", l.status().name());
-            s.set("collateralType", l.collateralType().name());
-            s.set("collateralCurrency", l.collateralCurrency());
-            s.set("collateralItem", l.collateralItemBase64());
-            s.set("collateralValue", l.collateralValue());
-            s.set("creditScore", l.creditScoreAtOpen());
+    public synchronized boolean saveLoans() {
+        List<SQLiteLedger.BankLoanRow> rows = new ArrayList<>();
+        for (BankLoan l : loans.values()) rows.add(new SQLiteLedger.BankLoanRow(
+                l.id(), l.borrower(), l.borrowerName(), l.nation(), l.principal(), l.currencyId(), l.rateAnnual(),
+                l.termDays(), l.openedAt(), l.dueAt(), l.repaid(), l.accrued(), l.lastAccrualAt(), l.status().name(),
+                l.collateralType().name(), l.collateralCurrency(), l.collateralItemBase64(),
+                l.collateralValue(), l.creditScoreAtOpen()));
+        try { ledger.replaceBankLoans(rows); return true; }
+        catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось сохранить банковские кредиты в SQLite: " + exception.getMessage());
+            return false;
         }
-        return SafeStorage.saveAtomicChecked(y, loansFile, plugin);
     }
 
-    private boolean savePools() {
-        YamlConfiguration y = new YamlConfiguration();
-        ConfigurationSection p = y.createSection("pools");
-        for (Map.Entry<String, Double> e : pools.entrySet()) p.set(e.getKey(), e.getValue());
-        ConfigurationSection ir = y.createSection("interest");
-        for (Map.Entry<String, Double> e : interestReserves.entrySet()) ir.set(e.getKey(), e.getValue());
-        return SafeStorage.saveAtomicChecked(y, poolsFile, plugin);
+    private synchronized boolean savePools() {
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        keys.addAll(pools.keySet()); keys.addAll(interestReserves.keySet());
+        List<SQLiteLedger.BankPoolRow> rows = new ArrayList<>();
+        for (String key : keys) {
+            int split = key.indexOf('|');
+            if (split <= 0 || split == key.length() - 1) continue;
+            String nation = key.substring(0, split);
+            String currency = key.substring(split + 1);
+            rows.add(new SQLiteLedger.BankPoolRow(nation, currency,
+                    pools.getOrDefault(key, 0.0D), interestReserves.getOrDefault(key, 0.0D)));
+        }
+        try { ledger.replaceBankPools(rows); return true; }
+        catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось сохранить банковские пулы в SQLite: " + exception.getMessage());
+            return false;
+        }
     }
-    private boolean saveCredit() {
-        YamlConfiguration y = new YamlConfiguration();
-        ConfigurationSection rp = y.createSection("repaid");
-        for (Map.Entry<UUID, Integer> e : repaidCount.entrySet()) rp.set(e.getKey().toString(), e.getValue());
-        ConfigurationSection df = y.createSection("defaulted");
-        for (Map.Entry<UUID, Integer> e : defaultedCount.entrySet()) df.set(e.getKey().toString(), e.getValue());
-        return SafeStorage.saveAtomicChecked(y, creditFile, plugin);
+
+    private synchronized boolean saveCredit() {
+        java.util.Set<UUID> players = new java.util.HashSet<>();
+        players.addAll(repaidCount.keySet()); players.addAll(defaultedCount.keySet());
+        List<SQLiteLedger.BankCreditRow> rows = new ArrayList<>();
+        for (UUID player : players) rows.add(new SQLiteLedger.BankCreditRow(player,
+                repaidCount.getOrDefault(player, 0), defaultedCount.getOrDefault(player, 0)));
+        try { ledger.replaceBankCredit(rows); return true; }
+        catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось сохранить кредитную историю в SQLite: " + exception.getMessage());
+            return false;
+        }
     }
-    private boolean savePending() {
-        YamlConfiguration y = new YamlConfiguration();
-        ConfigurationSection pr = y.createSection("pending");
-        for (Map.Entry<UUID, List<String>> e : pendingReturns.entrySet()) pr.set(e.getKey().toString(), e.getValue());
-        return SafeStorage.saveAtomicChecked(y, pendingFile, plugin);
+
+    private synchronized boolean savePending() {
+        List<SQLiteLedger.BankPendingRow> rows = new ArrayList<>();
+        for (Map.Entry<UUID, List<String>> entry : pendingReturns.entrySet()) {
+            for (String item : entry.getValue()) rows.add(new SQLiteLedger.BankPendingRow(entry.getKey(), item));
+        }
+        try { ledger.replaceBankPending(rows); return true; }
+        catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось сохранить ожидающие возвраты в SQLite: " + exception.getMessage());
+            return false;
+        }
     }
-    public void saveAll() { saveAccounts(); saveLoans(); savePools(); saveCredit(); savePending(); }
+
+    public synchronized boolean saveAll() {
+        return saveAccounts() && saveLoans() && savePools() && saveCredit() && savePending();
+    }
 
     private static String serialize(ItemStack item) {
         try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
