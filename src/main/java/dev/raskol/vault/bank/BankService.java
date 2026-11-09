@@ -174,6 +174,9 @@ public final class BankService implements Listener {
         if (!a.isActive()) return "вклад уже закрыт";
         long now = System.currentTimeMillis();
         a.accrue(now, params(a.nation()).demandRate());
+        // Сохраняем рассчитанные проценты до выплаты: повтор после рестарта
+        // использует тот же payout и тот же ключ идемпотентности.
+        saveAccounts();
         double payout;
         double interest = 0.0D;
         if (a.isDemand() || a.isMatured(now)) {
@@ -422,6 +425,8 @@ public final class BankService implements Listener {
                         s.getDouble("principal", 0), BankAccount.Term.valueOf(s.getString("term", "DEMAND")),
                         s.getDouble("rate", 0), s.getLong("openedAt", 0), s.getLong("maturesAt", 0));
                 if ("CLOSED".equals(s.getString("status", "ACTIVE"))) a.close();
+                a.setAccrued(s.getDouble("accrued", 0.0D));
+                a.setLastAccrualAt(s.getLong("lastAccrualAt", a.openedAt()));
                 accounts.put(id, a);
             }
         }
@@ -484,6 +489,8 @@ public final class BankService implements Listener {
             s.set("rate", a.rateAnnual());
             s.set("openedAt", a.openedAt());
             s.set("maturesAt", a.maturesAt());
+            s.set("accrued", a.accrued());
+            s.set("lastAccrualAt", a.lastAccrualAt());
             s.set("status", a.status().name());
         }
         SafeStorage.saveAtomic(y, accountsFile, plugin);
