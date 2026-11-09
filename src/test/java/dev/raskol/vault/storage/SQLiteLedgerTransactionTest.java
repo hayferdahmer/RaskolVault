@@ -145,6 +145,51 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void itemCollateralIntentSurvivesRestartUntilExplicitlyAcknowledged() {
+        UUID player = UUID.randomUUID();
+        SQLiteLedger.BankCollateralIntentRow intent = new SQLiteLedger.BankCollateralIntentRow(
+                "intent-crash-001", player, "loan-crash-001", "serialized-item-payload", 1_700_000_000_000L);
+
+        ledger.createBankCollateralIntent(intent);
+
+        SQLiteLedger.BankCollateralIntentRow stored = ledger.bankCollateralIntentsAll().get(0);
+        assertEquals(intent.intentId(), stored.intentId());
+        assertEquals(player, stored.player());
+        assertEquals(intent.loanId(), stored.loanId());
+        assertEquals(intent.itemBase64(), stored.itemBase64());
+
+        // Повторное открытие того же SQLite-файла моделирует восстановление после рестарта.
+        ledger.close();
+        ledger = new SQLiteLedger(testPlugin(), tempDir.resolve("ledger.db").toFile(),
+                2, "FULL", 2_000L);
+        ledger.init();
+        assertEquals(1, ledger.bankCollateralIntentsAll().size());
+        assertEquals(intent.intentId(), ledger.bankCollateralIntentsAll().get(0).intentId());
+
+        ledger.deleteBankCollateralIntent(intent.intentId());
+        org.junit.jupiter.api.Assertions.assertTrue(ledger.bankCollateralIntentsAll().isEmpty());
+    }
+
+    private Plugin testPlugin() {
+        return (Plugin) Proxy.newProxyInstance(
+                Plugin.class.getClassLoader(),
+                new Class<?>[]{Plugin.class},
+                (proxy, method, args) -> {
+                    if ("getLogger".equals(method.getName())) return Logger.getLogger("RaskolVault-reopen-test");
+                    Class<?> type = method.getReturnType();
+                    if (type == boolean.class) return false;
+                    if (type == int.class) return 0;
+                    if (type == long.class) return 0L;
+                    if (type == double.class) return 0.0D;
+                    if (type == float.class) return 0.0F;
+                    if (type == short.class) return (short) 0;
+                    if (type == byte.class) return (byte) 0;
+                    if (type == char.class) return (char) 0;
+                    return null;
+                });
+    }
+
+    @Test
     void bankYamlImportMarkerIsWrittenOnlyWhenRequested() {
         org.junit.jupiter.api.Assertions.assertFalse(ledger.bankStorageInitialized());
         ledger.markBankStorageInitialized();
