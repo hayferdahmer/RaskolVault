@@ -119,8 +119,6 @@ public final class BankService implements Listener {
     private String poolKey(String nation, String currency) { return nation.toLowerCase() + "|" + currency; }
     public double pool(String nation, String currency) { return pools.getOrDefault(poolKey(nation, currency), 0.0D); }
     public double interestReserve(String nation, String currency) { return interestReserves.getOrDefault(poolKey(nation, currency), 0.0D); }
-    private void addPool(String n, String c, double d) { pools.merge(poolKey(n, c), d, Double::sum); savePools(); }
-    private void addInterestReserve(String n, String c, double d) { interestReserves.merge(poolKey(n, c), d, Double::sum); savePools(); }
 
     public double maxLoans(String nation) { return bank.reserveOf(nation) * params(nation).reserveMultiplier(); }
 
