@@ -844,29 +844,40 @@ public final class BankService implements Listener {
                     player.getInventory().setItem(slot, restored);
                 }
             }
-            if (!loanCommitted) {
-                boolean pendingAlreadyExists = pendingReturns.getOrDefault(owner, List.of()).stream()
-                        .anyMatch(row -> row.returnId().equals(intent.intentId()));
-                if (!markerFound && !pendingAlreadyExists) {
-                    ItemStack original = deserialize(intent.itemBase64());
-                    boolean originalStillPresent = false;
-                    if (original != null) {
-                        for (ItemStack item : player.getInventory().getContents()) {
-                            if (item != null && !item.getType().isAir()
-                                    && item.isSimilar(original) && item.getAmount() >= original.getAmount()) {
-                                originalStillPresent = true;
-                                break;
-                            }
+
+            if (!loanCommitted && !markerFound) {
+                ItemStack original = deserialize(intent.itemBase64());
+                boolean originalStillPresent = false;
+                if (original != null) {
+                    for (ItemStack item : player.getInventory().getContents()) {
+                        if (item != null && !item.getType().isAir()
+                                && item.isSimilar(original) && item.getAmount() >= original.getAmount()) {
+                            originalStillPresent = true;
+                            break;
                         }
                     }
-                    if (!originalStillPresent) {
-                        pendingReturns.computeIfAbsent(owner, ignored -> new ArrayList<>()).add(
-                                new SQLiteLedger.BankPendingRow(intent.intentId(), owner, intent.itemBase64()));
-                        if (!savePending()) {
-                            plugin.getLogger().severe("Не удалось поставить предмет " + intent.intentId()
-                                    + " в очередь восстановления; intent сохранён.");
-                            continue;
-                        }
+                }
+                List<SQLiteLedger.BankPendingRow> playerPending =
+                        pendingReturns.computeIfAbsent(owner, ignored -> new ArrayList<>());
+                boolean pendingAlreadyExists = playerPending.stream()
+                        .anyMatch(row -> row.returnId().equals(intent.intentId()));
+                if (originalStillPresent && pendingAlreadyExists) {
+                    playerPending.removeIf(row -> row.returnId().equals(intent.intentId()));
+                    if (playerPending.isEmpty()) pendingReturns.remove(owner);
+                    if (!savePending()) {
+                        plugin.getLogger().severe("Не удалось отменить дублирующую очередь возврата "
+                                + intent.intentId() + "; intent оставлен для повторной сверки.");
+                        continue;
+                    }
+                } else if (!originalStillPresent && !pendingAlreadyExists) {
+                    playerPending.add(new SQLiteLedger.BankPendingRow(
+                            intent.intentId(), owner, intent.itemBase64()));
+                    if (!savePending()) {
+                        playerPending.removeIf(row -> row.returnId().equals(intent.intentId()));
+                        if (playerPending.isEmpty()) pendingReturns.remove(owner);
+                        plugin.getLogger().severe("Не удалось поставить предмет " + intent.intentId()
+                                + " в очередь восстановления; intent сохранён.");
+                        continue;
                     }
                 }
             }
