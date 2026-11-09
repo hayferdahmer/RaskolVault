@@ -247,8 +247,8 @@ public final class BankGui implements Listener {
         }
         if (raw instanceof LoanCollateralHolder) {
             if (slot == 22) { openLoanType(p); return; }
-            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "loan-sec-currency"); msg(p, "&7Введите код валюты залога и сумму через пробел (например: SILVER 100):"); return; }
-            if (slot == 13) { p.closeInventory(); chatField.put(uuid, "loan-sec-item"); msg(p, "&7Сумма кредита под залог предмета в руке:"); return; }
+            if (slot == 11) { msg(p, "&cВалютный залог временно отключён: требуется корректная оценка и учёт залогового актива."); return; }
+            if (slot == 13) { msg(p, "&cПредметный залог временно отключён: готовится безопасное резервирование с восстановлением после сбоя."); return; }
             return;
         }
     }
