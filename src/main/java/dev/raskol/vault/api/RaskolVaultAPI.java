@@ -59,11 +59,50 @@ public final class RaskolVaultAPI {
                 TransactionType.PAY, reason == null ? "api" : reason);
     }
 
+    /**
+     * Начисление с защитой от повтора. operationId должен оставаться одинаковым
+     * при повторной отправке одного и того же запроса.
+     * Для GLOBAL/EssentialsX гарантия идемпотентности не предоставляется внешним бэкендом.
+     */
+    public boolean depositOnce(UUID player, String currencyId, double amount,
+                               String reason, String operationId) {
+        if (player == null || currencyId == null || !(amount > 0.0D)
+                || operationId == null || operationId.isBlank()) return false;
+        return plugin.getWallets().depositOnce(player, currencyId.toUpperCase(Locale.ROOT),
+                amount, TransactionType.PAY, reason == null ? "api" : reason, operationId);
+    }
+
+    /**
+     * Списание с защитой от повтора. operationId должен оставаться одинаковым
+     * при повторной отправке одного и того же запроса.
+     * Для GLOBAL/EssentialsX гарантия идемпотентности не предоставляется внешним бэкендом.
+     */
+    public boolean withdrawOnce(UUID player, String currencyId, double amount,
+                                String reason, String operationId) {
+        if (player == null || currencyId == null || !(amount > 0.0D)
+                || operationId == null || operationId.isBlank()) return false;
+        return plugin.getWallets().withdrawOnce(player, currencyId.toUpperCase(Locale.ROOT),
+                amount, TransactionType.PAY, reason == null ? "api" : reason, operationId);
+    }
+
     /** Перевод между игроками. */
     public boolean transfer(UUID from, UUID to, String currencyId, double amount, String reason) {
         if (from == null || to == null || currencyId == null || !(amount > 0.0D)) return false;
         return plugin.getWallets().transfer(from, to, currencyId.toUpperCase(Locale.ROOT),
                 amount, reason == null ? "api" : reason);
+    }
+
+    /**
+     * Перевод с защитой от повтора. operationId должен оставаться одинаковым
+     * при повторной отправке одного и того же запроса.
+     * Для GLOBAL/EssentialsX гарантия идемпотентности не предоставляется внешним бэкендом.
+     */
+    public boolean transferOnce(UUID from, UUID to, String currencyId, double amount,
+                                String reason, String operationId) {
+        if (from == null || to == null || currencyId == null || !(amount > 0.0D)
+                || operationId == null || operationId.isBlank()) return false;
+        return plugin.getWallets().transferOnce(from, to, currencyId.toUpperCase(Locale.ROOT),
+                amount, reason == null ? "api" : reason, operationId);
     }
 
     // ============ Конвертация ============
