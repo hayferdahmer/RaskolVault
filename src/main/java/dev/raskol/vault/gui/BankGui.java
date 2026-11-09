@@ -248,7 +248,12 @@ public final class BankGui implements Listener {
         if (raw instanceof LoanCollateralHolder) {
             if (slot == 22) { openLoanType(p); return; }
             if (slot == 11) { msg(p, "&cВалютный залог временно отключён: требуется корректная оценка и учёт залогового актива."); return; }
-            if (slot == 13) { msg(p, "&cПредметный залог временно отключён: готовится безопасное резервирование с восстановлением после сбоя."); return; }
+            if (slot == 13) {
+                msg(p, "&eПредметный залог оформляется через защищённое резервирование. Введите сумму кредита.");
+                chatField.put(p.getUniqueId(), "loan-sec-item");
+                p.closeInventory();
+                return;
+            }
             return;
         }
     }
@@ -300,14 +305,8 @@ public final class BankGui implements Listener {
             }
             if (field.equals("loan-sec-item")) {
                 if (!(v > 0)) { msg(p, "&cСумма > 0"); openBank(p); return; }
-                ItemStack hand = p.getInventory().getItemInMainHand();
-                if (hand == null || hand.getType().isAir()) { msg(p, "&cПустая рука"); openBank(p); return; }
-                ItemStack taken = hand.clone();
-                p.getInventory().setItemInMainHand(new ItemStack(Material.AIR));
-                String err = bank().applyLoan(uuid, p.getName(), nation, glb(), v, 30,
-                        BankLoan.CollateralType.ITEM, null, taken);
-                if (err != null) p.getInventory().setItemInMainHand(taken);
-                msg(p, err == null ? "&aКредит выдан, предмет в залоге" : "&c" + err + " (предмет возвращён)");
+                String err = bank().applyItemCollateralLoan(p, nation, glb(), v, 30);
+                msg(p, err == null ? "&aКредит выдан, предмет надёжно принят в залог" : "&c" + err);
                 openBank(p);
                 return;
             }
