@@ -104,7 +104,9 @@ public final class BankService implements Listener {
     }
 
     public void setParam(String nation, String key, double value) {
-        plugin.getConfig().set("bank.nations." + nation.toLowerCase() + "." + key, value);
+        if (nation == null || nation.isBlank() || key == null || key.isBlank()
+                || !Double.isFinite(value)) return;
+        plugin.getConfig().set("bank.nations." + nation.toLowerCase(java.util.Locale.ROOT) + "." + key, value);
         plugin.saveConfig();
     }
 
@@ -152,7 +154,9 @@ public final class BankService implements Listener {
     // ---------- вклады ----------
     public synchronized String openDeposit(UUID owner, String ownerName, String nation, String currency,
                               double amount, BankAccount.Term term) {
-        if (!(amount > 0.0D)) return "сумма должна быть > 0";
+        if (owner == null || ownerName == null || nation == null || nation.isBlank()
+                || currency == null || currency.isBlank() || term == null
+                || !Double.isFinite(amount) || !(amount > 0.0D)) return "некорректные параметры вклада";
         if (!wallets.has(owner, currency, amount)) return "недостаточно средств";
         BankParams p = params(nation);
         double rate = switch (term) { case DEMAND -> p.demandRate(); case TERM_7 -> p.r7(); case TERM_30 -> p.r30(); case TERM_90 -> p.r90(); };
@@ -170,6 +174,7 @@ public final class BankService implements Listener {
     }
 
     public synchronized String closeDeposit(UUID owner, String accountId) {
+        if (owner == null || accountId == null || accountId.isBlank()) return "некорректный вклад";
         BankAccount a = accounts.get(accountId);
         if (a == null || !a.owner().equals(owner)) return "вклад не найден";
         if (!a.isActive()) return "вклад уже закрыт";
@@ -214,7 +219,9 @@ public final class BankService implements Listener {
     /** Необеспеченный кредит (по скору). */
     public synchronized String applyLoanUnsecured(UUID borrower, String borrowerName, String nation, String currency,
                                      double amount, int termDays) {
-        if (!(amount > 0.0D)) return "сумма должна быть > 0";
+        if (borrower == null || borrowerName == null || nation == null || nation.isBlank()
+                || currency == null || currency.isBlank() || !Double.isFinite(amount)
+                || !(amount > 0.0D)) return "некорректные параметры кредита";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
         BankParams p = params(nation);
         if (amount > unsecuredMax(borrower, nation))
@@ -233,7 +240,9 @@ public final class BankService implements Listener {
                             double amount, int termDays,
                             BankLoan.CollateralType collateralType, String collateralCurrency,
                             ItemStack collateralItem) {
-        if (!(amount > 0.0D)) return "сумма должна быть > 0";
+        if (borrower == null || borrowerName == null || nation == null || nation.isBlank()
+                || currency == null || currency.isBlank() || !Double.isFinite(amount)
+                || !(amount > 0.0D)) return "некорректные параметры кредита";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
         BankParams p = params(nation);
         if (totalOutstandingLoans(nation) + amount * priceInGld(currency) > maxLoans(nation))
@@ -279,6 +288,10 @@ public final class BankService implements Listener {
                               BankLoan.CollateralType ctype, String ccur, String citem, double cvalue) {
         long now = System.currentTimeMillis();
         long due = now + termDays * 86_400_000L;
+        if (id == null || id.isBlank() || !Double.isFinite(amount) || !(amount > 0.0D)
+                || !Double.isFinite(rate) || rate < 0.0D) {
+            return "некорректные параметры кредита";
+        }
         if (!wallets.depositOnce(borrower, currency, amount, TransactionType.PAY,
                 "bank:loan:disburse:" + id, "bank:loan:disburse:" + id)) {
             return "не удалось выдать кредит";
@@ -291,6 +304,8 @@ public final class BankService implements Listener {
     }
 
     public synchronized String repayLoan(UUID borrower, String loanId, double amount) {
+        if (borrower == null || loanId == null || loanId.isBlank()
+                || !Double.isFinite(amount) || !(amount > 0.0D)) return "некорректная сумма погашения";
         BankLoan l = loans.get(loanId);
         if (l == null || !l.borrower().equals(borrower)) return "кредит не найден";
         if (!l.isActive()) return "кредит закрыт";
