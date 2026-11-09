@@ -143,6 +143,31 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void bankSnapshotSqlFailureRollsBackWalletAndIdempotencyRecord() {
+        UUID owner = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(owner, "GLD", 100.0D)), List.of());
+
+        SQLiteLedger.BankAccountRow duplicateOne = new SQLiteLedger.BankAccountRow(
+                "duplicate-account", owner, "Игрок", "raskol", "GLD", 25.0D,
+                "DEMAND", 0.01D, 100L, 0L, 0.0D, 100L, "ACTIVE");
+        SQLiteLedger.BankAccountRow duplicateTwo = new SQLiteLedger.BankAccountRow(
+                "duplicate-account", owner, "Игрок", "raskol", "GLD", 30.0D,
+                "DEMAND", 0.01D, 100L, 0L, 0.0D, 100L, "ACTIVE");
+        SQLiteLedger.BankSnapshot invalidSnapshot = new SQLiteLedger.BankSnapshot(
+                List.of(duplicateOne, duplicateTwo), List.of(), List.of(), List.of(), List.of());
+
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                "bank-snapshot-sql-failure", "bank-snapshot-sql-failure-fingerprint",
+                List.of(new SQLiteLedger.CheckedBalance(owner, "GLD", 100.0D, 50.0D)),
+                List.of(), List.of(), invalidSnapshot, List.of()));
+
+        assertEquals(100.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
+        org.junit.jupiter.api.Assertions.assertTrue(ledger.bankAccountsAll().isEmpty());
+        org.junit.jupiter.api.Assertions.assertFalse(ledger.operationExists("bank-snapshot-sql-failure"));
+    }
+
+    @Test
     void bankOnlySnapshotCanCommitWithoutWalletDeltas() {
         SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
                 List.of(), List.of(),
