@@ -333,6 +333,18 @@ public final class BankService implements Listener {
                 || !Double.isFinite(rate) || rate < 0.0D) {
             return "некорректные параметры кредита";
         }
+        if (ctype == BankLoan.CollateralType.CURRENCY) {
+            if (ccur == null || ccur.isBlank() || ccur.equalsIgnoreCase(currency)
+                    || !Double.isFinite(cvalue) || cvalue <= 0.0D
+                    || !Double.isFinite(camount) || camount <= 0.0D
+                    || !Double.isFinite(cprice) || cprice <= 0.0D
+                    || Math.abs(camount * cprice - cvalue) > Math.max(1.0E-8D, cvalue * 1.0E-8D)) {
+                return "некорректные параметры валютного залога";
+            }
+        } else if (ctype == BankLoan.CollateralType.NONE
+                && (cvalue != 0.0D || camount != 0.0D)) {
+            return "необеспеченный кредит содержит параметры залога";
+        }
         String key = poolKey(nation, currency);
         double oldPool = pools.getOrDefault(key, 0.0D);
         if (oldPool < amount) return "недостаточно ликвидности в пуле";
