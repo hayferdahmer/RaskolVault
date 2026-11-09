@@ -2,7 +2,7 @@ name: RaskolVault Build
 
 on:
   push:
-    branches: [ main, dev ]
+    branches: [ main, dev, 'fix/**' ]
   pull_request:
     branches: [ main ]
 
