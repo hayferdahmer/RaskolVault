@@ -18,6 +18,8 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.NamespacedKey;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 
@@ -62,7 +64,8 @@ public final class BankService implements Listener {
     private final Map<String, Double> interestReserves = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> repaidCount = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> defaultedCount = new ConcurrentHashMap<>();
-    private final Map<UUID, List<String>> pendingReturns = new ConcurrentHashMap<>();
+    private final Map<UUID, List<SQLiteLedger.BankPendingRow>> pendingReturns = new ConcurrentHashMap<>();
+    private final NamespacedKey collateralReturnKey = new NamespacedKey(plugin, "collateral_return_id");
 
     public BankService(RaskolVault plugin, WalletService wallets, ReserveBank bank) {
         this.plugin = plugin;
@@ -391,7 +394,8 @@ public final class BankService implements Listener {
             // Доставка выполняется после фиксации, чтобы сбой сервера не потерял залог между операциями.
             previousPending = new ArrayList<>(pendingReturns.getOrDefault(borrower, List.of()));
             pendingReturns.computeIfAbsent(borrower, ignored -> new ArrayList<>())
-                    .add(l.collateralItemBase64());
+                    .add(new SQLiteLedger.BankPendingRow(UUID.randomUUID().toString(),
+                            borrower, l.collateralItemBase64()));
             pendingCollateralReturn = true;
         }
 
@@ -542,19 +546,87 @@ public final class BankService implements Listener {
 
     @EventHandler
     public synchronized void onJoin(PlayerJoinEvent e) {
-        UUID u = e.getPlayer().getUniqueId();
-        List<String> b64 = pendingReturns.remove(u);
-        if (b64 == null || b64.isEmpty()) return;
-        for (String b : b64) {
-            ItemStack it = deserialize(b);
-            if (it != null) {
-                var ov = e.getPlayer().getInventory().addItem(it);
-                for (ItemStack left : ov.values()) e.getPlayer().getWorld().dropItemNaturally(e.getPlayer().getLocation(), left);
+        Player player = e.getPlayer();
+        UUID owner = player.getUniqueId();
+        List<SQLiteLedger.BankPendingRow> rows = pendingReturns.get(owner);
+        if (rows == null || rows.isEmpty()) return;
+
+        int delivered = 0;
+        for (SQLiteLedger.BankPendingRow row : new ArrayList<>(rows)) {
+            if (hasDeliveredCollateral(player, row.returnId())) {
+                acknowledgeCollateralReturn(owner, row);
+                continue;
             }
+
+            ItemStack item = deserialize(row.itemBase64());
+            if (item == null) {
+                plugin.getLogger().severe("Не удалось прочитать предметный залог " + row.returnId()
+                        + " игрока " + owner + "; запись оставлена в очереди.");
+                continue;
+            }
+            item = item.clone();
+            item.editMeta(meta -> meta.getPersistentDataContainer().set(
+                    collateralReturnKey, PersistentDataType.STRING, row.returnId()));
+
+            if (!canFit(player, item)) {
+                player.sendMessage(org.bukkit.ChatColor.translateAlternateColorCodes('&',
+                        plugin.getMessages().prefix() + "&eОсвободите место в инвентаре: предметный залог ожидает выдачи."));
+                continue;
+            }
+
+            Map<Integer, ItemStack> leftovers = player.getInventory().addItem(item);
+            if (!leftovers.isEmpty()) {
+                // Предварительная проверка вместимости должна исключать этот случай.
+                // При неожиданном отказе не подтверждаем возврат и не выбрасываем предмет в мир.
+                plugin.getLogger().severe("Не удалось полностью выдать предметный залог " + row.returnId()
+                        + "; запись оставлена в очереди.");
+                continue;
+            }
+            delivered++;
+            acknowledgeCollateralReturn(owner, row);
         }
-        savePending();
-        e.getPlayer().sendMessage(org.bukkit.ChatColor.translateAlternateColorCodes('&',
-                plugin.getMessages().prefix() + "&aВам возвращён залог по погашенному кредиту"));
+
+        if (delivered > 0) {
+            player.sendMessage(org.bukkit.ChatColor.translateAlternateColorCodes('&',
+                    plugin.getMessages().prefix() + "&aВозвращён предметный залог по погашенному кредиту."));
+        }
+    }
+
+    private boolean hasDeliveredCollateral(Player player, String returnId) {
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (item == null || item.getType().isAir()) continue;
+            String marker = item.getPersistentDataContainer().get(
+                    collateralReturnKey, PersistentDataType.STRING);
+            if (returnId.equals(marker)) return true;
+        }
+        return false;
+    }
+
+    private boolean canFit(Player player, ItemStack item) {
+        int remaining = item.getAmount();
+        int maxStack = item.getMaxStackSize();
+        for (ItemStack existing : player.getInventory().getStorageContents()) {
+            if (existing == null || existing.getType().isAir()) {
+                remaining -= maxStack;
+            } else if (existing.isSimilar(item)) {
+                remaining -= Math.max(0, maxStack - existing.getAmount());
+            }
+            if (remaining <= 0) return true;
+        }
+        return false;
+    }
+
+    private void acknowledgeCollateralReturn(UUID owner, SQLiteLedger.BankPendingRow row) {
+        List<SQLiteLedger.BankPendingRow> current = pendingReturns.get(owner);
+        if (current == null || !current.removeIf(entry -> entry.returnId().equals(row.returnId()))) return;
+        if (current.isEmpty()) pendingReturns.remove(owner);
+        if (!savePending()) {
+            // Предмет уже помечен в инвентаре. При следующем входе метка позволит
+            // безопасно повторить подтверждение без повторной выдачи.
+            pendingReturns.computeIfAbsent(owner, ignored -> new ArrayList<>()).add(row);
+            plugin.getLogger().severe("Не удалось подтвердить возврат предметного залога "
+                    + row.returnId() + "; повторная выдача будет предотвращена меткой предмета.");
+        }
     }
 
     public double appraisal(ItemStack item) {
@@ -692,7 +764,7 @@ public final class BankService implements Listener {
             defaultedCount.put(row.player(), row.defaultedCount());
         }
         for (SQLiteLedger.BankPendingRow row : ledger.bankPendingAll()) {
-            pendingReturns.computeIfAbsent(row.player(), ignored -> new ArrayList<>()).add(row.itemBase64());
+            pendingReturns.computeIfAbsent(row.player(), ignored -> new ArrayList<>()).add(row);
         }
     }
 
@@ -771,7 +843,12 @@ public final class BankService implements Listener {
             YamlConfiguration y = loadYamlStrict(pendingFile);
             ConfigurationSection pendingSection = y.getConfigurationSection("pending");
             if (pendingSection != null) for (String key : pendingSection.getKeys(false)) {
-                pendingReturns.put(UUID.fromString(key), new ArrayList<>(pendingSection.getStringList(key)));
+                List<SQLiteLedger.BankPendingRow> legacyRows = new ArrayList<>();
+                for (String item : pendingSection.getStringList(key)) {
+                    legacyRows.add(new SQLiteLedger.BankPendingRow(UUID.randomUUID().toString(),
+                            UUID.fromString(key), item));
+                }
+                pendingReturns.put(UUID.fromString(key), legacyRows);
             }
         }
     }
@@ -824,9 +901,7 @@ public final class BankService implements Listener {
         List<UUID> pendingPlayers = new ArrayList<>(pendingReturns.keySet());
         pendingPlayers.sort(java.util.Comparator.comparing(UUID::toString));
         for (UUID player : pendingPlayers) {
-            for (String item : pendingReturns.getOrDefault(player, List.of())) {
-                pendingRows.add(new SQLiteLedger.BankPendingRow(player, item));
-            }
+            pendingRows.addAll(pendingReturns.getOrDefault(player, List.of()));
         }
         return new SQLiteLedger.BankSnapshot(accountRows, loanRows, poolRows, creditRows, pendingRows);
     }
