@@ -761,7 +761,8 @@ public final class BankService implements Listener {
             BankLoan loan = new BankLoan(row.id(), row.borrower(), row.borrowerName(), row.nation(),
                     row.principal(), row.currencyId(), row.rateAnnual(), row.termDays(), row.openedAt(),
                     row.dueAt(), BankLoan.CollateralType.valueOf(row.collateralType()),
-                    row.collateralCurrency(), row.collateralItem(), row.collateralValue(), row.creditScoreAtOpen());
+                    row.collateralCurrency(), row.collateralItem(), row.collateralValue(),
+                    row.collateralAmount(), row.collateralPrice(), row.creditScoreAtOpen());
             loan.setRepaid(row.repaid());
             loan.setAccrued(row.accrued());
             loan.setLastAccrualAt(row.lastAccrualAt());
@@ -823,7 +824,9 @@ public final class BankService implements Listener {
                         section.getLong("openedAt", 0L), section.getLong("dueAt", 0L),
                         BankLoan.CollateralType.valueOf(section.getString("collateralType", "NONE")),
                         section.getString("collateralCurrency", null), section.getString("collateralItem", null),
-                        section.getDouble("collateralValue", 0.0D), section.getInt("creditScore", 0));
+                        section.getDouble("collateralValue", 0.0D),
+                        section.getDouble("collateralAmount", section.getDouble("collateralValue", 0.0D)),
+                        section.getDouble("collateralPrice", 1.0D), section.getInt("creditScore", 0));
                 loan.setRepaid(section.getDouble("repaid", 0.0D));
                 loan.setAccrued(section.getDouble("accrued", 0.0D));
                 loan.setLastAccrualAt(section.getLong("lastAccrualAt", loan.openedAt()));
@@ -890,7 +893,8 @@ public final class BankService implements Listener {
             loanRows.add(new SQLiteLedger.BankLoanRow(l.id(), l.borrower(), l.borrowerName(), l.nation(),
                     l.principal(), l.currencyId(), l.rateAnnual(), l.termDays(), l.openedAt(), l.dueAt(),
                     l.repaid(), l.accrued(), l.lastAccrualAt(), l.status().name(), l.collateralType().name(),
-                    l.collateralCurrency(), l.collateralItemBase64(), l.collateralValue(), l.creditScoreAtOpen()));
+                    l.collateralCurrency(), l.collateralItemBase64(), l.collateralValue(),
+                    l.collateralAmount(), l.collateralPrice(), l.creditScoreAtOpen()));
         }
         loanRows.sort(java.util.Comparator.comparing(SQLiteLedger.BankLoanRow::id));
 
@@ -943,7 +947,7 @@ public final class BankService implements Listener {
                 l.id(), l.borrower(), l.borrowerName(), l.nation(), l.principal(), l.currencyId(), l.rateAnnual(),
                 l.termDays(), l.openedAt(), l.dueAt(), l.repaid(), l.accrued(), l.lastAccrualAt(), l.status().name(),
                 l.collateralType().name(), l.collateralCurrency(), l.collateralItemBase64(),
-                l.collateralValue(), l.creditScoreAtOpen()));
+                l.collateralValue(), l.collateralAmount(), l.collateralPrice(), l.creditScoreAtOpen()));
         try { ledger.replaceBankLoans(rows); return true; }
         catch (RuntimeException exception) {
             plugin.getLogger().severe("Не удалось сохранить банковские кредиты в SQLite: " + exception.getMessage());
