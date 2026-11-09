@@ -3,6 +3,7 @@ package dev.raskol.vault.command;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
+import dev.raskol.vault.bank.BankAdminCommand;
 import dev.raskol.vault.command.sub.AdminSubcommand;
 import dev.raskol.vault.command.sub.AuctionAdminCommand;
 import dev.raskol.vault.command.sub.ConvertSubcommand;
@@ -37,6 +38,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
     private final RatesSubcommand ratesSubcommand;
     private final AdminSubcommand adminSubcommand;
     private final AuctionAdminCommand auctionAdminSubcommand;
+    private final BankAdminCommand bankAdminCommand;
 
     public RaskolVaultCommand(RaskolVault plugin, ConvertSubcommand convertSubcommand) {
         this.plugin = plugin;
@@ -48,6 +50,7 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         this.ratesSubcommand = new RatesSubcommand(plugin);
         this.adminSubcommand = new AdminSubcommand(plugin);
         this.auctionAdminSubcommand = new AuctionAdminCommand(plugin);
+        this.bankAdminCommand = new BankAdminCommand(plugin);
     }
 
     private String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
@@ -61,7 +64,10 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
             case "help", "?" -> help(sender);
             case "version" -> send(sender, "&fRaskolVault &6" + plugin.getPluginMeta().getVersion());
             case "wallet" -> openWallet(sender);          // работает, но скрыт из tab
-            case "bank" -> openBank(sender);
+            case "bank" -> {
+                if (args.length >= 2 && args[1].equalsIgnoreCase("admin")) bankAdminCommand.execute(sender, args);
+                else openBank(sender);
+            }
             case "exchange" -> openExchange(sender, args);
             case "auction" -> openAuction(sender);
             case "cabinet" -> openCabinet(sender);
@@ -139,7 +145,12 @@ public final class RaskolVaultCommand implements CommandExecutor, TabCompleter {
         }
         String op = args[0].toLowerCase(Locale.ROOT);
         if (op.equals("auction")) return auctionAdminSubcommand.tabComplete(sender, args);
-        if (op.equals("bank")) return Collections.emptyList();
+        if (op.equals("bank")) {
+            if (args.length == 2) return filter(Arrays.asList("admin"), args[1]);
+            if (args.length >= 3 && args[1].equalsIgnoreCase("admin"))
+                return bankAdminCommand.tabComplete(sender, Arrays.copyOfRange(args, 1, args.length));
+            return Collections.emptyList();
+        }
         OfflinePlayerRegistry offline = plugin.getOfflinePlayerRegistry();
         if (args.length == 2) {
             if (op.equals("convert") || op.equals("rates")) return currencyTab(args[1]);
