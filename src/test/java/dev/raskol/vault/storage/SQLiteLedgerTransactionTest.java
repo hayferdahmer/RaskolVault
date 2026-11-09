@@ -61,6 +61,40 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void bankRecordsRoundTripThroughSqlite() {
+        UUID owner = UUID.randomUUID();
+        UUID borrower = UUID.randomUUID();
+        UUID player = UUID.randomUUID();
+
+        ledger.replaceBankAccounts(List.of(new SQLiteLedger.BankAccountRow(
+                "deposit-1", owner, "Игрок", "raskol", "GLD", 125.50D, "TERM_30",
+                0.035D, 100L, 200L, 1.25D, 150L, "ACTIVE")));
+        ledger.replaceBankLoans(List.of(new SQLiteLedger.BankLoanRow(
+                "loan-1", borrower, "Заёмщик", "raskol", 500.0D, "GLD", 0.10D, 30,
+                100L, 300L, 50.0D, 5.0D, 200L, "ACTIVE", "CURRENCY", "SILVER",
+                null, 600.0D, 4)));
+        ledger.replaceBankPools(List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 900.0D, 25.0D)));
+        ledger.replaceBankCredit(List.of(new SQLiteLedger.BankCreditRow(player, 3, 1)));
+        ledger.replaceBankPending(List.of(new SQLiteLedger.BankPendingRow(player, "item-data")));
+
+        assertEquals(125.50D, ledger.bankAccountsAll().get(0).principal(), 0.000_001D);
+        assertEquals("TERM_30", ledger.bankAccountsAll().get(0).term());
+        assertEquals(50.0D, ledger.bankLoansAll().get(0).repaid(), 0.000_001D);
+        assertEquals("CURRENCY", ledger.bankLoansAll().get(0).collateralType());
+        assertEquals(900.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
+        assertEquals(25.0D, ledger.bankPoolsAll().get(0).interestReserve(), 0.000_001D);
+        assertEquals(3, ledger.bankCreditAll().get(0).repaidCount());
+        assertEquals("item-data", ledger.bankPendingAll().get(0).itemBase64());
+    }
+
+    @Test
+    void bankYamlImportMarkerIsWrittenOnlyWhenRequested() {
+        org.junit.jupiter.api.Assertions.assertFalse(ledger.bankStorageInitialized());
+        ledger.markBankStorageInitialized();
+        org.junit.jupiter.api.Assertions.assertTrue(ledger.bankStorageInitialized());
+    }
+
+    @Test
     void checkedCommitRejectsStaleBalance() {
         UUID player = UUID.randomUUID();
         ledger.commitAbsolute(List.of(
