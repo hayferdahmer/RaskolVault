@@ -198,4 +198,59 @@ class SQLiteLedgerTransactionTest {
         org.junit.jupiter.api.Assertions.assertFalse(
                 ledger.operationCommitted("reserve-transfer-002", "wallet-and-reserve-conflict"));
     }
+
+    @Test
+    void escrowAndWalletBalancesCommitInOneTransaction() {
+        UUID owner = UUID.randomUUID();
+        UUID escrowWallet = UUID.randomUUID();
+        UUID recipient = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(owner, "GLD", 100.0D),
+                new SQLiteLedger.AbsoluteBalance(escrowWallet, "GLD", 0.0D),
+                new SQLiteLedger.AbsoluteBalance(recipient, "GLD", 0.0D)), List.of());
+
+        ledger.commitAbsoluteCheckedOnce("escrow-hold-test", "escrow-hold-fingerprint",
+                List.of(
+                        new SQLiteLedger.CheckedBalance(owner, "GLD", 100.0D, 50.0D),
+                        new SQLiteLedger.CheckedBalance(escrowWallet, "GLD", 0.0D, 50.0D)),
+                List.of(), List.of(new SQLiteLedger.CheckedEscrow(
+                        "ticket-atomic", owner, "GLD", 0.0D, 50.0D, false)), List.of());
+
+        assertEquals(50.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
+        assertEquals(50.0D, ledger.getBalance(escrowWallet, "GLD"), 0.000_001D);
+        assertEquals(50.0D, ledger.escrowGet("ticket-atomic").amount(), 0.000_001D);
+
+        ledger.commitAbsoluteCheckedOnce("escrow-release-test", "escrow-release-fingerprint",
+                List.of(
+                        new SQLiteLedger.CheckedBalance(escrowWallet, "GLD", 50.0D, 0.0D),
+                        new SQLiteLedger.CheckedBalance(recipient, "GLD", 0.0D, 50.0D)),
+                List.of(), List.of(new SQLiteLedger.CheckedEscrow(
+                        "ticket-atomic", owner, "GLD", 50.0D, 0.0D, true)), List.of());
+
+        assertEquals(0.0D, ledger.getBalance(escrowWallet, "GLD"), 0.000_001D);
+        assertEquals(50.0D, ledger.getBalance(recipient, "GLD"), 0.000_001D);
+        org.junit.jupiter.api.Assertions.assertNull(ledger.escrowGet("ticket-atomic"));
+    }
+
+    @Test
+    void staleEscrowMetadataRollsBackWalletChanges() {
+        UUID owner = UUID.randomUUID();
+        UUID escrowWallet = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(owner, "GLD", 100.0D),
+                new SQLiteLedger.AbsoluteBalance(escrowWallet, "GLD", 50.0D)), List.of());
+        ledger.escrowInsert("ticket-stale", owner, "GLD", 50.0D);
+
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                "escrow-stale-test", "escrow-stale-fingerprint",
+                List.of(
+                        new SQLiteLedger.CheckedBalance(owner, "GLD", 100.0D, 50.0D),
+                        new SQLiteLedger.CheckedBalance(escrowWallet, "GLD", 50.0D, 100.0D)),
+                List.of(), List.of(new SQLiteLedger.CheckedEscrow(
+                        "ticket-stale", owner, "GLD", 25.0D, 75.0D, false)), List.of()));
+
+        assertEquals(100.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
+        assertEquals(50.0D, ledger.getBalance(escrowWallet, "GLD"), 0.000_001D);
+        assertEquals(50.0D, ledger.escrowGet("ticket-stale").amount(), 0.000_001D);
+    }
 }
