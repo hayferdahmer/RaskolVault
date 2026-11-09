@@ -30,6 +30,7 @@ public final class SQLiteLedger {
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
+    public record CheckedReserve(String nation, double expectedOld, double newAmount) {}
     public record EscrowRow(String ticket, UUID owner, String currencyId, double amount) {}
     public record ExchangeOrderRow(String id, UUID owner, String nation, String sellCurrency,
                                    String buyCurrency, double sellAmount, double buyAmount,
@@ -296,6 +297,13 @@ public final class SQLiteLedger {
     public boolean commitAbsoluteCheckedOnce(String operationId, String fingerprint,
                                              List<CheckedBalance> balances,
                                              List<Transaction> txs) {
+        return commitAbsoluteCheckedOnce(operationId, fingerprint, balances, List.of(), txs);
+    }
+
+    public boolean commitAbsoluteCheckedOnce(String operationId, String fingerprint,
+                                             List<CheckedBalance> balances,
+                                             List<CheckedReserve> reserves,
+                                             List<Transaction> txs) {
         if (operationId == null || operationId.isBlank() || operationId.length() > 128
                 || fingerprint == null || fingerprint.isBlank() || fingerprint.length() > 512) {
             throw new LedgerException("invalid idempotency key or fingerprint");
@@ -323,8 +331,10 @@ public final class SQLiteLedger {
             }
 
             validateCheckedBalances(balances);
+            validateCheckedReserves(reserves);
             guardTransactions(txs);
             applyCheckedBalances(c, balances);
+            applyCheckedReserves(c, reserves);
 
             try (PreparedStatement ps = c.prepareStatement(
                     "INSERT INTO operation_requests(operation_id, fingerprint, created_at) VALUES(?,?,?)")) {
@@ -345,6 +355,46 @@ public final class SQLiteLedger {
             throw new LedgerException("commitAbsoluteCheckedOnce: " + e.getMessage(), e);
         } finally {
             finish(c, ok);
+        }
+    }
+
+    private void validateCheckedReserves(List<CheckedReserve> reserves) {
+        for (CheckedReserve reserve : reserves) {
+            if (reserve.nation() == null || reserve.nation().isBlank()
+                    || !Double.isFinite(reserve.expectedOld()) || reserve.expectedOld() < 0.0D
+                    || !Double.isFinite(reserve.newAmount()) || reserve.newAmount() < -1.0E-9D) {
+                throw new LedgerException("invalid checked reserve: " + reserve.nation());
+            }
+        }
+    }
+
+    private void applyCheckedReserves(Connection c, List<CheckedReserve> reserves) throws SQLException {
+        for (CheckedReserve reserve : reserves) {
+            int updated;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE reserves SET amount=?, updated_at=? WHERE nation=? AND amount=?")) {
+                ps.setDouble(1, Math.max(0.0D, reserve.newAmount()));
+                ps.setLong(2, System.currentTimeMillis());
+                ps.setString(3, reserve.nation());
+                ps.setDouble(4, reserve.expectedOld());
+                updated = ps.executeUpdate();
+            }
+
+            if (updated == 0) {
+                if (Double.compare(reserve.expectedOld(), 0.0D) != 0) {
+                    throw new SQLException("reserve optimistic lock failed: " + reserve.nation());
+                }
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO reserves(nation, amount, updated_at) VALUES(?,?,?) "
+                                + "ON CONFLICT(nation) DO NOTHING")) {
+                    ps.setString(1, reserve.nation());
+                    ps.setDouble(2, Math.max(0.0D, reserve.newAmount()));
+                    ps.setLong(3, System.currentTimeMillis());
+                    if (ps.executeUpdate() == 0) {
+                        throw new SQLException("reserve optimistic insert conflict: " + reserve.nation());
+                    }
+                }
+            }
         }
     }
 
