@@ -1,0 +1,52 @@
+name: RaskolVault Release Gatekeeper
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "pom.xml"
+      - "src/main/resources/plugin.yml"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/release-gatekeeper.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  platform-contract:
+    name: Java and Paper platform contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate release metadata
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+          import xml.etree.ElementTree as ET
+          import yaml
+
+          pom = ET.parse("pom.xml").getroot()
+          ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+          version = pom.findtext("m:version", namespaces=ns)
+          release = pom.findtext("m:properties/m:maven.compiler.release", namespaces=ns)
+          paper = pom.findtext(".//m:dependency[m:artifactId='paper-api']/m:version", namespaces=ns)
+          compiler = pom.findtext(".//m:plugin[m:artifactId='maven-compiler-plugin']/m:configuration/m:release", namespaces=ns)
+          plugin = yaml.safe_load(pathlib.Path("src/main/resources/plugin.yml").read_text(encoding="utf-8"))
+
+          errors = []
+          if release != "25" or compiler != "25":
+              errors.append(f"Expected Java 25 compiler settings; properties={release}, plugin={compiler}")
+          if not paper or not paper.startswith("26.2.build.") or not paper.endswith("-stable"):
+              errors.append(f"Expected a pinned stable Paper 26.2 API; got {paper}")
+          if str(plugin.get("api-version")) != "26.2":
+              errors.append(f"plugin.yml api-version must be 26.2; got {plugin.get('api-version')}")
+          if str(plugin.get("version")) != version:
+              errors.append(f"Version mismatch: pom.xml={version}, plugin.yml={plugin.get('version')}")
+
+          if errors:
+              raise SystemExit("\n".join(errors))
+          print(f"Platform contract OK: RaskolVault {version}, Java {release}, Paper API {paper}")
+          PY
