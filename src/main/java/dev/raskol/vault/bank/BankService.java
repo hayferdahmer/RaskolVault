@@ -7,6 +7,7 @@ import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.storage.SafeStorage;
 import dev.raskol.vault.wallet.WalletService;
+import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -350,9 +351,16 @@ public final class BankService implements Listener {
     }
 
     private void releaseCollateral(BankLoan l) {
+        if (!Bukkit.isPrimaryThread()) {
+            plugin.getServer().getScheduler().runTask(plugin, () -> releaseCollateral(l));
+            return;
+        }
         if (l.collateralType() == BankLoan.CollateralType.CURRENCY && l.collateralCurrency() != null) {
-            wallets.deposit(l.borrower(), l.collateralCurrency(), l.collateralValue(),
-                    TransactionType.PAY, "bank:collateral:release");
+            if (!wallets.depositOnce(l.borrower(), l.collateralCurrency(), l.collateralValue(),
+                    TransactionType.PAY, "bank:collateral:release:" + l.id(),
+                    "bank:collateral:release:" + l.id())) {
+                plugin.getLogger().severe("RaskolVault: не удалось вернуть валютный залог по кредиту " + l.id());
+            }
         }
         if (l.collateralType() == BankLoan.CollateralType.ITEM && l.collateralItemBase64() != null) {
             Player p = plugin.getServer().getPlayer(l.borrower());
