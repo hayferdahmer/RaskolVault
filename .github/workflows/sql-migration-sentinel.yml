@@ -1,0 +1,40 @@
+name: RaskolVault SQL Migration Sentinel
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/main/java/dev/raskol/vault/storage/**"
+      - "src/main/java/dev/raskol/vault/bank/**"
+      - "src/test/**"
+      - "pom.xml"
+      - ".github/workflows/sql-migration-sentinel.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migration-regression:
+    name: SQLite migration regression
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      - name: Run SQLite and bank persistence tests
+        run: mvn -B -Dtest=SQLiteLedgerTransactionTest test
+      - name: Verify bank schema and migration marker exist
+        shell: bash
+        run: |
+          grep -q 'SCHEMA_VERSION = 5' src/main/java/dev/raskol/vault/storage/SQLiteLedger.java
+          grep -q 'CREATE TABLE IF NOT EXISTS bank_accounts' src/main/java/dev/raskol/vault/storage/SQLiteLedger.java
+          grep -q 'CREATE TABLE IF NOT EXISTS bank_loans' src/main/java/dev/raskol/vault/storage/SQLiteLedger.java
+          grep -q 'CREATE TABLE IF NOT EXISTS bank_pending_returns' src/main/java/dev/raskol/vault/storage/SQLiteLedger.java
+          grep -q 'markBankStorageInitialized' src/main/java/dev/raskol/vault/bank/BankService.java
+          echo "SQLite bank schema checks passed."
