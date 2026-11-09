@@ -95,6 +95,45 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void walletAndCompleteBankSnapshotCommitAtomically() {
+        UUID owner = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(owner, "GLD", 100.0D)), List.of());
+
+        SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
+                List.of(new SQLiteLedger.BankAccountRow("atomic-deposit", owner, "Игрок",
+                        "raskol", "GLD", 25.0D, "DEMAND", 0.01D, 100L, 0L,
+                        0.0D, 100L, "ACTIVE")),
+                List.of(),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 25.0D, 0.0D)),
+                List.of(),
+                List.of());
+
+        ledger.commitAbsoluteCheckedOnce("bank-open-atomic-001", "bank-open-fingerprint",
+                List.of(new SQLiteLedger.CheckedBalance(owner, "GLD", 100.0D, 75.0D)),
+                List.of(), List.of(), snapshot, List.of());
+
+        assertEquals(75.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
+        assertEquals(25.0D, ledger.bankAccountsAll().get(0).principal(), 0.000_001D);
+        assertEquals(25.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
+
+        SQLiteLedger.BankSnapshot changedSnapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 0.0D, 0.0D)),
+                List.of(), List.of());
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                "bank-open-atomic-rollback", "bank-open-rollback-fingerprint",
+                List.of(new SQLiteLedger.CheckedBalance(owner, "GLD", 1.0D, 0.0D)),
+                List.of(), List.of(), changedSnapshot, List.of()));
+
+        assertEquals(75.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
+        assertEquals(25.0D, ledger.bankAccountsAll().get(0).principal(), 0.000_001D);
+        assertEquals(25.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
+        org.junit.jupiter.api.Assertions.assertFalse(
+                ledger.operationExists("bank-open-atomic-rollback"));
+    }
+
+    @Test
     void checkedCommitRejectsStaleBalance() {
         UUID player = UUID.randomUUID();
         ledger.commitAbsolute(List.of(
