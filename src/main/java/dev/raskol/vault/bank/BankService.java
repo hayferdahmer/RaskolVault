@@ -149,52 +149,66 @@ public final class BankService implements Listener {
     }
 
     // ---------- вклады ----------
-    public String openDeposit(UUID owner, String ownerName, String nation, String currency,
+    public synchronized String openDeposit(UUID owner, String ownerName, String nation, String currency,
                               double amount, BankAccount.Term term) {
         if (!(amount > 0.0D)) return "сумма должна быть > 0";
         if (!wallets.has(owner, currency, amount)) return "недостаточно средств";
         BankParams p = params(nation);
         double rate = switch (term) { case DEMAND -> p.demandRate(); case TERM_7 -> p.r7(); case TERM_30 -> p.r30(); case TERM_90 -> p.r90(); };
-        if (!wallets.withdraw(owner, currency, amount, TransactionType.PAY, "bank:deposit")) return "не удалось списать";
         long now = System.currentTimeMillis();
         long matures = (term == BankAccount.Term.DEMAND) ? 0L : now + termDaysOf(term) * 86_400_000L;
         String id = UUID.randomUUID().toString();
+        if (!wallets.withdrawOnce(owner, currency, amount, TransactionType.PAY,
+                "bank:deposit:" + id, "bank:deposit:open:" + id)) {
+            return "не удалось списать";
+        }
         accounts.put(id, new BankAccount(id, owner, ownerName, nation, currency, amount, term, rate, now, matures));
         addPool(nation, currency, amount);
         saveAccounts();
         return null;
     }
 
-    public String closeDeposit(UUID owner, String accountId) {
+    public synchronized String closeDeposit(UUID owner, String accountId) {
         BankAccount a = accounts.get(accountId);
         if (a == null || !a.owner().equals(owner)) return "вклад не найден";
         if (!a.isActive()) return "вклад уже закрыт";
         long now = System.currentTimeMillis();
         a.accrue(now, params(a.nation()).demandRate());
         double payout;
+        double interest = 0.0D;
         if (a.isDemand() || a.isMatured(now)) {
-            if (pool(a.nation(), a.currencyId()) < a.principal())
+            if (pool(a.nation(), a.currencyId()) < a.principal()) {
                 return "недостаточно ликвидности в банке — обратитесь к королю нации";
-            addPool(a.nation(), a.currencyId(), -a.principal());
-            double ir = interestReserve(a.nation(), a.currencyId());
-            double interest = Math.min(a.accrued(), Math.max(0, ir));
-            addInterestReserve(a.nation(), a.currencyId(), -interest);
+            }
+            double availableInterest = interestReserve(a.nation(), a.currencyId());
+            interest = Math.min(a.accrued(), Math.max(0.0D, availableInterest));
             payout = a.principal() + interest;
         } else {
             double penalty = a.earlyPenalty(params(a.nation()).earlyPenaltyRate());
-            payout = Math.max(0, a.principal() - penalty);
-            addPool(a.nation(), a.currencyId(), -a.principal());
+            payout = Math.max(0.0D, a.principal() - penalty);
+        }
+
+        // Сначала подтверждаем выплату. Повтор после сбоя не начислит её второй раз
+        // для внутренних валют, поскольку ключ привязан к ID вклада.
+        if (payout > 0.0D && !wallets.depositOnce(owner, a.currencyId(), payout,
+                TransactionType.PAY, "bank:withdraw:" + accountId,
+                "bank:deposit:close:" + accountId)) {
+            return "не удалось выплатить вклад";
+        }
+
+        addPool(a.nation(), a.currencyId(), -a.principal());
+        if (interest > 0.0D) {
+            addInterestReserve(a.nation(), a.currencyId(), -interest);
         }
         a.payOutAccrued();
         a.close();
-        if (payout > 0) wallets.deposit(owner, a.currencyId(), payout, TransactionType.PAY, "bank:withdraw");
         saveAccounts();
         return null;
     }
 
     // ---------- кредиты ----------
     /** Необеспеченный кредит (по скору). */
-    public String applyLoanUnsecured(UUID borrower, String borrowerName, String nation, String currency,
+    public synchronized String applyLoanUnsecured(UUID borrower, String borrowerName, String nation, String currency,
                                      double amount, int termDays) {
         if (!(amount > 0.0D)) return "сумма должна быть > 0";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
@@ -205,12 +219,13 @@ public final class BankService implements Listener {
             return "банк исчерпал лимит выдачи (резерв)";
         if (pool(nation, currency) < amount) return "недостаточно ликвидности в пуле";
         double rate = p.loanRate() + p.unsecuredPremium() + creditRateBonus(borrower);
-        return createLoan(borrower, borrowerName, nation, currency, amount, termDays, rate,
+        String loanId = UUID.randomUUID().toString();
+        return createLoan(loanId, borrower, borrowerName, nation, currency, amount, termDays, rate,
                 BankLoan.CollateralType.NONE, null, null, 0.0D);
     }
 
     /** Обеспеченный кредит (залог предметом/валютой, ratio 1.2). */
-    public String applyLoan(UUID borrower, String borrowerName, String nation, String currency,
+    public synchronized String applyLoan(UUID borrower, String borrowerName, String nation, String currency,
                             double amount, int termDays,
                             BankLoan.CollateralType collateralType, String collateralCurrency,
                             ItemStack collateralItem) {
@@ -223,12 +238,16 @@ public final class BankService implements Listener {
         double required = amount * p.collateralRatio();
         double collateralValue = 0;
         String itemB64 = null;
+        String loanId = UUID.randomUUID().toString();
         if (collateralType == BankLoan.CollateralType.CURRENCY) {
             if (collateralCurrency == null) return "укажите валюту залога";
             if (collateralCurrency.equalsIgnoreCase(currency)) return "нельзя брать кредит под залог той же валюты";
             if (!wallets.has(borrower, collateralCurrency, required)) return "недостаточно залога";
             collateralValue = required;
-            if (!wallets.withdraw(borrower, collateralCurrency, required, TransactionType.PAY, "bank:collateral:lock")) return "не удалось заблокировать залог";
+            if (!wallets.withdrawOnce(borrower, collateralCurrency, required, TransactionType.PAY,
+                    "bank:collateral:lock:" + loanId, "bank:collateral:lock:" + loanId)) {
+                return "не удалось заблокировать залог";
+            }
         } else if (collateralType == BankLoan.CollateralType.ITEM) {
             if (collateralItem == null) return "предмет залога не передан";
             collateralValue = appraisal(collateralItem);
@@ -238,25 +257,36 @@ public final class BankService implements Listener {
             return "для обеспеченного кредита укажите залог";
         }
         double rate = p.loanRate() + creditRateBonus(borrower);
-        return createLoan(borrower, borrowerName, nation, currency, amount, termDays, rate,
+        String result = createLoan(loanId, borrower, borrowerName, nation, currency, amount, termDays, rate,
                 collateralType, collateralCurrency, itemB64, collateralValue);
+        if (result != null && collateralType == BankLoan.CollateralType.CURRENCY) {
+            if (!wallets.depositOnce(borrower, collateralCurrency, collateralValue,
+                    TransactionType.PAY, "bank:collateral:unlock:" + loanId,
+                    "bank:collateral:unlock:" + loanId)) {
+                plugin.getLogger().severe("RaskolVault: не удалось вернуть залог после отказа в кредите "
+                        + loanId + " игроку " + borrower);
+            }
+        }
+        return result;
     }
 
-    private String createLoan(UUID borrower, String borrowerName, String nation, String currency,
-                              double amount, int termDays, double rate,
+    private synchronized String createLoan(String id, UUID borrower, String borrowerName,
+                              String nation, String currency, double amount, int termDays, double rate,
                               BankLoan.CollateralType ctype, String ccur, String citem, double cvalue) {
         long now = System.currentTimeMillis();
         long due = now + termDays * 86_400_000L;
-        String id = UUID.randomUUID().toString();
+        if (!wallets.depositOnce(borrower, currency, amount, TransactionType.PAY,
+                "bank:loan:disburse:" + id, "bank:loan:disburse:" + id)) {
+            return "не удалось выдать кредит";
+        }
         loans.put(id, new BankLoan(id, borrower, borrowerName, nation, amount, currency, rate, termDays,
                 now, due, ctype, ccur, citem, cvalue, creditScore(borrower)));
         addPool(nation, currency, -amount);
-        wallets.deposit(borrower, currency, amount, TransactionType.PAY, "bank:loan:disburse");
         saveLoans();
         return null;
     }
 
-    public String repayLoan(UUID borrower, String loanId, double amount) {
+    public synchronized String repayLoan(UUID borrower, String loanId, double amount) {
         BankLoan l = loans.get(loanId);
         if (l == null || !l.borrower().equals(borrower)) return "кредит не найден";
         if (!l.isActive()) return "кредит закрыт";
@@ -281,7 +311,7 @@ public final class BankService implements Listener {
         return null;
     }
 
-    public String liquidate(String loanId) {
+    public synchronized String liquidate(String loanId) {
         BankLoan l = loans.get(loanId);
         if (l == null) return "кредит не найден";
         if (!l.isActive()) return "кредит закрыт";
@@ -299,7 +329,7 @@ public final class BankService implements Listener {
         return null;
     }
 
-    public int autoLiquidateOverdue() {
+    public synchronized int autoLiquidateOverdue() {
         long now = System.currentTimeMillis();
         int count = 0;
         for (BankLoan l : new ArrayList<>(loans.values())) {
@@ -308,7 +338,7 @@ public final class BankService implements Listener {
         return count;
     }
 
-    public void accrueAll() {
+    public synchronized void accrueAll() {
         long now = System.currentTimeMillis();
         for (BankAccount a : accounts.values()) if (a.isActive()) a.accrue(now, params(a.nation()).demandRate());
         for (BankLoan l : loans.values()) if (l.isActive()) l.accrueTo(now);
