@@ -59,8 +59,8 @@ public final class SQLiteLedger {
     public record BankPendingRow(String returnId, UUID player, String itemBase64) {}
     public record BankCollateralIntentRow(String intentId, UUID player, String loanId,
                                            String itemBase64, long createdAt) {}
-    public record BankAssetLotRow(String lotId, String nation, UUID sourceBorrower, String sourceLoanId,
-                                  String currencyId, double amount, double lockedPrice,
+    public record BankAssetLotRow(String lotId, String assetType, String nation, UUID sourceBorrower, String sourceLoanId,
+                                  String currencyId, double amount, double lockedPrice, String itemBase64,
                                   String valuationCurrencyId, double lockedValue,
                                   double recoverableInterest, double recoverablePrincipal, String status) {}
     public record BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
@@ -572,8 +572,9 @@ public final class SQLiteLedger {
             }
         }
         for (BankAssetLotRow row : snapshot.assetLots()) {
-            if (row == null || blank(row.lotId()) || blank(row.nation()) || row.sourceBorrower() == null
-                    || blank(row.sourceLoanId()) || blank(row.currencyId()) || blank(row.valuationCurrencyId())
+            if (row == null || blank(row.lotId()) || blank(row.assetType()) || blank(row.nation()) || row.sourceBorrower() == null
+                    || blank(row.sourceLoanId()) || ("CURRENCY".equals(row.assetType()) && blank(row.currencyId()))
+                    || ("ITEM".equals(row.assetType()) && blank(row.itemBase64())) || blank(row.valuationCurrencyId())
                     || !Double.isFinite(row.amount()) || row.amount() <= 0.0D
                     || !Double.isFinite(row.lockedPrice()) || row.lockedPrice() <= 0.0D
                     || !Double.isFinite(row.lockedValue()) || row.lockedValue() <= 0.0D
@@ -647,13 +648,14 @@ public final class SQLiteLedger {
             }
             ps.executeBatch();
         }
-        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_asset_lots VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")) {
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_asset_lots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
             for (BankAssetLotRow r : snapshot.assetLots()) {
-                ps.setString(1,r.lotId()); ps.setString(2,r.nation()); ps.setString(3,r.sourceBorrower().toString());
-                ps.setString(4,r.sourceLoanId()); ps.setString(5,r.currencyId()); ps.setDouble(6,r.amount());
-                ps.setDouble(7,r.lockedPrice()); ps.setString(8,r.valuationCurrencyId()); ps.setDouble(9,r.lockedValue());
-                ps.setDouble(10,r.recoverableInterest()); ps.setDouble(11,r.recoverablePrincipal());
-                ps.setString(12,r.status()); ps.addBatch();
+                ps.setString(1,r.lotId()); ps.setString(2,r.assetType()); ps.setString(3,r.nation());
+                ps.setString(4,r.sourceBorrower().toString()); ps.setString(5,r.sourceLoanId());
+                ps.setString(6,r.currencyId()); ps.setDouble(7,r.amount()); ps.setDouble(8,r.lockedPrice());
+                ps.setString(9,r.itemBase64()); ps.setString(10,r.valuationCurrencyId()); ps.setDouble(11,r.lockedValue());
+                ps.setDouble(12,r.recoverableInterest()); ps.setDouble(13,r.recoverablePrincipal());
+                ps.setString(14,r.status()); ps.addBatch();
             }
             ps.executeBatch();
         }
@@ -964,10 +966,10 @@ public final class SQLiteLedger {
         Connection c = pool.borrow(); boolean ok = false;
         try (Statement st = c.createStatement();
              ResultSet rs = st.executeQuery("SELECT * FROM bank_asset_lots ORDER BY lot_id")) {
-            while (rs.next()) out.add(new BankAssetLotRow(rs.getString("lot_id"), rs.getString("nation"),
+            while (rs.next()) out.add(new BankAssetLotRow(rs.getString("lot_id"), rs.getString("asset_type"), rs.getString("nation"),
                     UUID.fromString(rs.getString("source_borrower")), rs.getString("source_loan_id"),
                     rs.getString("currency_id"), rs.getDouble("amount"), rs.getDouble("locked_price"),
-                    rs.getString("valuation_currency_id"), rs.getDouble("locked_value"),
+                    rs.getString("item_base64"), rs.getString("valuation_currency_id"), rs.getDouble("locked_value"),
                     rs.getDouble("recoverable_interest"), rs.getDouble("recoverable_principal"),
                     rs.getString("status")));
             ok = true;
