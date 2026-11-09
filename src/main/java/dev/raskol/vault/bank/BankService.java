@@ -210,6 +210,9 @@ public final class BankService implements Listener {
         } else {
             double penalty = staged.earlyPenalty(params(a.nation()).earlyPenaltyRate());
             payout = Math.max(0.0D, staged.principal() - penalty);
+            if (pool(a.nation(), a.currencyId()) < payout) {
+                return "недостаточно ликвидности в банке — обратитесь к королю нации";
+            }
         }
 
         String key = poolKey(staged.nation(), staged.currencyId());
