@@ -431,6 +431,9 @@ public final class BankService implements Listener {
         } else if (ctype == BankLoan.CollateralType.NONE
                 && (cvalue != 0.0D || camount != 0.0D)) {
             return "необеспеченный кредит содержит параметры залога";
+        } else if (ctype == BankLoan.CollateralType.ITEM
+                && (citem == null || citem.isBlank() || !Double.isFinite(cvalue) || cvalue <= 0.0D)) {
+            return "некорректные параметры предметного залога";
         }
         String key = poolKey(nation, currency);
         double oldPool = pools.getOrDefault(key, 0.0D);
@@ -629,7 +632,7 @@ public final class BankService implements Listener {
      * proceeds — реально полученная сумма в валюте оценки лота, а не оценочная стоимость.
      */
     public synchronized String realizeCollateralAsset(String lotId, double proceeds) {
-        if (lotId == null || lotId.isBlank() || !Double.isFinite(proceeds) || proceeds < 0.0D)
+        if (lotId == null || lotId.isBlank() || !Double.isFinite(proceeds) || proceeds <= 0.0D)
             return "некорректные параметры реализации залога";
         SQLiteLedger.BankAssetLotRow lot = assetLots.get(lotId);
         if (lot == null) return "лот залога не найден";
@@ -655,7 +658,7 @@ public final class BankService implements Listener {
                 ? List.of(new WalletService.WalletDelta(lot.sourceBorrower(), lot.valuationCurrencyId(), surplus))
                 : List.of();
         List<Transaction> journal = List.of(new Transaction(-1L, System.currentTimeMillis(),
-                null, lot.sourceBorrower(), lot.valuationCurrencyId(), Math.max(proceeds, 1.0E-8D),
+                null, null, lot.valuationCurrencyId(), proceeds,
                 TransactionType.PAY, "bank:collateral:realize:" + lotId,
                 "{\"proceeds\":" + proceeds + ",\"interest\":" + interestRecovered
                         + ",\"principal\":" + principalRecovered + ",\"surplus\":" + surplus + "}"));
