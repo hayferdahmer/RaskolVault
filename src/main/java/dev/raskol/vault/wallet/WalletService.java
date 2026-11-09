@@ -438,6 +438,12 @@ public final class WalletService {
                     delta.delta(), Double::sum);
         }
 
+        for (double delta : normalizedWallets.values()) {
+            if (!Double.isFinite(delta) || Math.abs(delta) > maxTx()) {
+                return false;
+            }
+        }
+
         Map<String, Double> normalizedReserves = new TreeMap<>();
         for (ReserveDelta delta : reserveDeltas) {
             if (delta == null || delta.nation() == null || delta.nation().isBlank()
