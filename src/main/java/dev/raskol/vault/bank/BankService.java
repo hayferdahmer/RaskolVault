@@ -396,7 +396,17 @@ public final class BankService implements Listener {
         }
 
         if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM) {
-            releaseCollateral(l);
+            Player collateralOwner = plugin.getServer().getPlayer(borrower);
+            if (collateralOwner == null || !collateralOwner.isOnline()) {
+                pendingReturns.computeIfAbsent(borrower, ignored -> new ArrayList<>())
+                        .add(l.collateralItemBase64());
+                if (!savePending()) {
+                    plugin.getLogger().severe("Залог предметом возвращён в pending-пуле, но его сохранение требует проверки: "
+                            + loanId);
+                }
+            } else {
+                releaseCollateral(l);
+            }
         }
         return null;
     }
@@ -406,16 +416,40 @@ public final class BankService implements Listener {
         if (l == null) return "кредит не найден";
         if (!l.isActive()) return "кредит закрыт";
         long now = System.currentTimeMillis();
-        double out = l.outstanding(now);
+
+        BankLoan staged = new BankLoan(l.id(), l.borrower(), l.borrowerName(), l.nation(),
+                l.principal(), l.currencyId(), l.rateAnnual(), l.termDays(), l.openedAt(), l.dueAt(),
+                l.collateralType(), l.collateralCurrency(), l.collateralItemBase64(),
+                l.collateralValue(), l.creditScoreAtOpen());
+        staged.setRepaid(l.repaid());
+        staged.setAccrued(l.accrued());
+        staged.setLastAccrualAt(l.lastAccrualAt());
+        double out = staged.outstanding(now);
         double proceeds = l.collateralValue();
         double toInterest = Math.min(out, proceeds);
-        double remainder = Math.max(0, proceeds - toInterest);
-        addInterestReserve(l.nation(), l.currencyId(), toInterest);
-        addPool(l.nation(), l.currencyId(), remainder);
-        l.markLiquidated();
-        defaultedCount.merge(l.borrower(), 1, Integer::sum);
-        saveCredit();
-        saveLoans();
+        double remainder = Math.max(0.0D, proceeds - toInterest);
+        String key = poolKey(l.nation(), l.currencyId());
+        double oldPool = pools.getOrDefault(key, 0.0D);
+        double oldInterestReserve = interestReserves.getOrDefault(key, 0.0D);
+        int oldDefaultedCount = defaultedCount.getOrDefault(l.borrower(), 0);
+
+        staged.markLiquidated();
+        loans.put(loanId, staged);
+        pools.put(key, oldPool + remainder);
+        interestReserves.put(key, oldInterestReserve + toInterest);
+        defaultedCount.put(l.borrower(), oldDefaultedCount + 1);
+
+        boolean committed = wallets.applyBatchOnce("bank:loan:liquidate:" + loanId,
+                List.of(), List.of(), List.of(), bankSnapshot(), List.of());
+        if (!committed) {
+            loans.put(loanId, l);
+            pools.put(key, oldPool);
+            if (oldInterestReserve == 0.0D) interestReserves.remove(key);
+            else interestReserves.put(key, oldInterestReserve);
+            if (oldDefaultedCount == 0) defaultedCount.remove(l.borrower());
+            else defaultedCount.put(l.borrower(), oldDefaultedCount);
+            return "не удалось ликвидировать кредит: транзакция не подтверждена";
+        }
         return null;
     }
 
