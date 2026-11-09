@@ -104,7 +104,9 @@ class SQLiteLedgerTransactionTest {
                 List.of(new SQLiteLedger.BankAccountRow("atomic-deposit", owner, "Игрок",
                         "raskol", "GLD", 25.0D, "DEMAND", 0.01D, 100L, 0L,
                         0.0D, 100L, "ACTIVE")),
-                List.of(),
+                List.of(new SQLiteLedger.BankLoanRow("repaid-loan", owner, "Игрок", "raskol",
+                        0.0D, "GLD", 0.10D, 30, 100L, 200L, 110.0D, 0.0D,
+                        200L, "REPAID", "NONE", null, null, 0.0D, 0)),
                 List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 25.0D, 0.0D)),
                 List.of(),
                 List.of());
@@ -115,6 +117,8 @@ class SQLiteLedgerTransactionTest {
 
         assertEquals(75.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
         assertEquals(25.0D, ledger.bankAccountsAll().get(0).principal(), 0.000_001D);
+        assertEquals(0.0D, ledger.bankLoansAll().get(0).principal(), 0.000_001D);
+        assertEquals("REPAID", ledger.bankLoansAll().get(0).status());
         assertEquals(25.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
 
         SQLiteLedger.BankSnapshot changedSnapshot = new SQLiteLedger.BankSnapshot(
