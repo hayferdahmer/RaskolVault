@@ -13,6 +13,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.sql.DriverManager;
+import java.sql.Statement;
 import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
@@ -91,6 +93,55 @@ class SQLiteLedgerTransactionTest {
         assertEquals(3, ledger.bankCreditAll().get(0).repaidCount());
         assertEquals("item-data", ledger.bankPendingAll().get(0).itemBase64());
         assertEquals("return-test-001", ledger.bankPendingAll().get(0).returnId());
+    }
+
+    @Test
+    void schemaSixCurrencyCollateralMigratesToExplicitQuantityAndLockedPrice() throws Exception {
+        Path legacyFile = tempDir.resolve("legacy-v6.db");
+        UUID borrower = UUID.randomUUID();
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + legacyFile.toAbsolutePath());
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE bank_loans ("
+                    + "id TEXT PRIMARY KEY, borrower TEXT NOT NULL, borrower_name TEXT NOT NULL,"
+                    + "nation TEXT NOT NULL, principal REAL NOT NULL, currency_id TEXT NOT NULL,"
+                    + "rate_annual REAL NOT NULL, term_days INTEGER NOT NULL, opened_at INTEGER NOT NULL,"
+                    + "due_at INTEGER NOT NULL, repaid REAL NOT NULL, accrued REAL NOT NULL,"
+                    + "last_accrual_at INTEGER NOT NULL, status TEXT NOT NULL, collateral_type TEXT NOT NULL,"
+                    + "collateral_currency TEXT, collateral_item TEXT, collateral_value REAL NOT NULL,"
+                    + "credit_score_at_open INTEGER NOT NULL)");
+            statement.execute("INSERT INTO bank_loans VALUES("
+                    + "'legacy-loan','" + borrower + "','Игрок','raskol',100,'GLD',0.1,30,"
+                    + "100,200,0,0,100,'ACTIVE','CURRENCY','SILVER',NULL,120,0)");
+            statement.execute("PRAGMA user_version=6");
+        }
+
+        Plugin plugin = (Plugin) Proxy.newProxyInstance(
+                Plugin.class.getClassLoader(),
+                new Class<?>[]{Plugin.class},
+                (proxy, method, args) -> {
+                    if ("getLogger".equals(method.getName())) return Logger.getLogger("RaskolVault-migration-test");
+                    Class<?> type = method.getReturnType();
+                    if (type == boolean.class) return false;
+                    if (type == int.class) return 0;
+                    if (type == long.class) return 0L;
+                    if (type == double.class) return 0.0D;
+                    if (type == float.class) return 0.0F;
+                    if (type == short.class) return (short) 0;
+                    if (type == byte.class) return (byte) 0;
+                    if (type == char.class) return (char) 0;
+                    return null;
+                });
+
+        SQLiteLedger legacyLedger = new SQLiteLedger(plugin, legacyFile.toFile(), 1, "FULL", 2_000L);
+        try {
+            legacyLedger.init();
+            SQLiteLedger.BankLoanRow migrated = legacyLedger.bankLoansAll().get(0);
+            assertEquals(120.0D, migrated.collateralValue(), 0.000_001D);
+            assertEquals(120.0D, migrated.collateralAmount(), 0.000_001D);
+            assertEquals(1.0D, migrated.collateralPrice(), 0.000_001D);
+        } finally {
+            legacyLedger.close();
+        }
     }
 
     @Test
