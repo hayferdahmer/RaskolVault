@@ -134,6 +134,31 @@ public final class RaskolVaultAPI {
         return ConvertResult.fromQuote(quoteOpt.get());
     }
 
+    /**
+     * Идемпотентная конвертация. Для конвертаций с GLOBAL/EssentialsX действует
+     * компенсационный сценарий, поэтому полная идемпотентность пока не гарантируется.
+     */
+    public ConvertResult convertOnce(UUID player, String fromCurrency, String toCurrency,
+                                     double amount, String operationId) {
+        if (player == null || fromCurrency == null || toCurrency == null || !(amount > 0.0D)
+                || operationId == null || operationId.isBlank()) {
+            return ConvertResult.failure("invalid arguments");
+        }
+        String from = fromCurrency.toUpperCase(Locale.ROOT);
+        String to = toCurrency.toUpperCase(Locale.ROOT);
+
+        String blockReason = plugin.getConvertEngine().blockReason(player, from, to, amount);
+        if (!blockReason.isEmpty()) {
+            return ConvertResult.failure(blockReason);
+        }
+
+        var quoteOpt = plugin.getConvertEngine().execute(player, from, to, amount, operationId);
+        if (quoteOpt.isEmpty()) {
+            return ConvertResult.failure("conversion failed: course or balance changed");
+        }
+        return ConvertResult.fromQuote(quoteOpt.get());
+    }
+
     /** Актуальный курс from→to (без комиссий). 0 если пара эмбарго или нет резерва. */
     public double rate(String fromCurrency, String toCurrency) {
         if (fromCurrency == null || toCurrency == null) return 0.0D;
