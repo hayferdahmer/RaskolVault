@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 4;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
@@ -114,6 +114,9 @@ public final class SQLiteLedger {
                 st.execute("CREATE TABLE IF NOT EXISTS shares ("
                         + "id TEXT PRIMARY KEY, nation TEXT NOT NULL, owner TEXT NOT NULL,"
                         + "grams REAL NOT NULL, issued_at INTEGER NOT NULL, last_payout INTEGER NOT NULL)");
+                st.execute("CREATE TABLE IF NOT EXISTS operation_requests ("
+                        + "operation_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,"
+                        + "created_at INTEGER NOT NULL)");
                 if (version < SCHEMA_VERSION) st.execute("PRAGMA user_version=" + SCHEMA_VERSION);
             }
             ok = true;
@@ -273,6 +276,108 @@ public final class SQLiteLedger {
             c.commit(); ok = true;
         } catch (SQLException e) { rollbackQuiet(c); throw new LedgerException("commitAbsoluteChecked: " + e.getMessage(), e); }
         finally { finish(c, ok); }
+    }
+
+    /**
+     * Идемпотентная транзакция кошелька. Повтор с тем же ключом и отпечатком
+     * подтверждает уже совершённую операцию, не меняя балансы повторно.
+     */
+    public boolean commitAbsoluteCheckedOnce(String operationId, String fingerprint,
+                                             List<CheckedBalance> balances,
+                                             List<Transaction> txs) {
+        if (operationId == null || operationId.isBlank() || operationId.length() > 128
+                || fingerprint == null || fingerprint.isBlank() || fingerprint.length() > 512) {
+            throw new LedgerException("invalid idempotency key or fingerprint");
+        }
+
+        List<AbsoluteBalance> absolute = new ArrayList<>();
+        for (CheckedBalance balance : balances) {
+            absolute.add(new AbsoluteBalance(balance.owner(), balance.currencyId(), balance.newAmount()));
+            if (!Double.isFinite(balance.expectedOld()) || balance.expectedOld() < 0.0D) {
+                throw new LedgerException("invalid expected balance: "
+                        + balance.owner() + "/" + balance.currencyId());
+            }
+        }
+        guardNonNegative(absolute);
+        guardTransactions(txs);
+
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try {
+            c.setAutoCommit(false);
+
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT fingerprint FROM operation_requests WHERE operation_id=?")) {
+                ps.setString(1, operationId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        String storedFingerprint = rs.getString(1);
+                        if (!fingerprint.equals(storedFingerprint)) {
+                            throw new SQLException("idempotency key reused with a different payload");
+                        }
+                        c.commit();
+                        ok = true;
+                        return true;
+                    }
+                }
+            }
+
+            applyCheckedBalances(c, balances);
+
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO operation_requests(operation_id, fingerprint, created_at) VALUES(?,?,?)")) {
+                ps.setString(1, operationId);
+                ps.setString(2, fingerprint);
+                ps.setLong(3, System.currentTimeMillis());
+                ps.executeUpdate();
+            }
+
+            for (Transaction transaction : txs) {
+                insertTx(c, transaction);
+            }
+            c.commit();
+            ok = true;
+            return true;
+        } catch (SQLException e) {
+            rollbackQuiet(c);
+            throw new LedgerException("commitAbsoluteCheckedOnce: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
+    private void applyCheckedBalances(Connection c, List<CheckedBalance> balances) throws SQLException {
+        for (CheckedBalance balance : balances) {
+            int updated;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE balances SET amount=?, updated_at=? WHERE uuid=? AND currency_id=? AND amount=?")) {
+                ps.setDouble(1, balance.newAmount());
+                ps.setLong(2, System.currentTimeMillis());
+                ps.setString(3, balance.owner().toString());
+                ps.setString(4, balance.currencyId());
+                ps.setDouble(5, balance.expectedOld());
+                updated = ps.executeUpdate();
+            }
+
+            if (updated == 0) {
+                if (Double.compare(balance.expectedOld(), 0.0D) != 0) {
+                    throw new SQLException("optimistic lock failed: "
+                            + balance.owner() + "/" + balance.currencyId());
+                }
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO balances(uuid, currency_id, amount, updated_at) "
+                                + "VALUES(?,?,?,?) ON CONFLICT(uuid, currency_id) DO NOTHING")) {
+                    ps.setString(1, balance.owner().toString());
+                    ps.setString(2, balance.currencyId());
+                    ps.setDouble(3, balance.newAmount());
+                    ps.setLong(4, System.currentTimeMillis());
+                    if (ps.executeUpdate() == 0) {
+                        throw new SQLException("optimistic insert conflict: "
+                                + balance.owner() + "/" + balance.currencyId());
+                    }
+                }
+            }
+        }
     }
 
     private long insertTx(Connection c, Transaction tx) throws SQLException {
