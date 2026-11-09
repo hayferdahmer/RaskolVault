@@ -481,10 +481,47 @@ public final class BankService implements Listener {
 
     public synchronized void accrueAll() {
         long now = System.currentTimeMillis();
-        for (BankAccount a : accounts.values()) if (a.isActive()) a.accrue(now, params(a.nation()).demandRate());
-        for (BankLoan l : loans.values()) if (l.isActive()) l.accrueTo(now);
-        saveAccounts();
-        saveLoans();
+        boolean changed = false;
+        for (BankAccount account : accounts.values()) {
+            if (account.isActive()) {
+                account.accrue(now, params(account.nation()).demandRate());
+                changed = true;
+            }
+        }
+        for (BankLoan loan : loans.values()) {
+            if (loan.isActive()) {
+                loan.accrueTo(now);
+                changed = true;
+            }
+        }
+        if (!changed) {
+            return;
+        }
+
+        // Начисления по всем вкладам и кредитам фиксируются одним коммитом.
+        // Нельзя сохранять два набора отдельно: сбой между ними рассинхронизирует долг и активы банка.
+        boolean committed;
+        try {
+            committed = wallets.applyBatchOnce("bank:accrual:" + now,
+                    List.of(), List.of(), List.of(), bankSnapshot(), List.of());
+        } catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось атомарно сохранить начисления банка: "
+                    + exception.getMessage());
+            committed = false;
+        }
+        if (!committed) {
+            // Восстанавливаем состояние из SQLite: оно является источником истины,
+            // а начисления, не прошедшие коммит, не должны оставаться в оперативной памяти.
+            accounts.clear();
+            loans.clear();
+            pools.clear();
+            interestReserves.clear();
+            repaidCount.clear();
+            defaultedCount.clear();
+            pendingReturns.clear();
+            loadFromSqlite();
+            plugin.getLogger().severe("Начисления банка отменены: состояние восстановлено из SQLite.");
+        }
     }
 
     private void releaseCollateral(BankLoan l) {
