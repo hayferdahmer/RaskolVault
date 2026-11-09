@@ -446,7 +446,8 @@ public final class WalletService {
             }
             normalizedReserves.merge(delta.nation(), delta.delta(), Double::sum);
         }
-        if (normalizedWallets.isEmpty() && normalizedReserves.isEmpty()) {
+        if (normalizedWallets.isEmpty() && normalizedReserves.isEmpty() && bankSnapshot == null
+                && escrowChanges.isEmpty()) {
             return false;
         }
 
