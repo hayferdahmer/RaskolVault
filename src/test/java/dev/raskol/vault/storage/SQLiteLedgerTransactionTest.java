@@ -3,6 +3,8 @@ package dev.raskol.vault.storage;
 
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyType;
+import dev.raskol.vault.api.transaction.Transaction;
+import dev.raskol.vault.api.transaction.TransactionType;
 import org.bukkit.plugin.Plugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -113,9 +115,12 @@ class SQLiteLedgerTransactionTest {
 
         ledger.commitAbsoluteCheckedOnce("bank-open-atomic-001", "bank-open-fingerprint",
                 List.of(new SQLiteLedger.CheckedBalance(owner, "GLD", 100.0D, 75.0D)),
-                List.of(), List.of(), snapshot, List.of());
+                List.of(), List.of(), snapshot,
+                List.of(new Transaction(-1L, 150L, owner, null, "GLD", 25.0D,
+                        TransactionType.PAY, "bank:deposit:open:atomic-deposit", null)));
 
         assertEquals(75.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
+        assertEquals(1L, ledger.countTransactions());
         assertEquals(25.0D, ledger.bankAccountsAll().get(0).principal(), 0.000_001D);
         assertEquals(0.0D, ledger.bankLoansAll().get(0).principal(), 0.000_001D);
         assertEquals("REPAID", ledger.bankLoansAll().get(0).status());
