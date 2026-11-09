@@ -74,7 +74,7 @@ class SQLiteLedgerTransactionTest {
         ledger.replaceBankLoans(List.of(new SQLiteLedger.BankLoanRow(
                 "loan-1", borrower, "Заёмщик", "raskol", 500.0D, "GLD", 0.10D, 30,
                 100L, 300L, 50.0D, 5.0D, 200L, "ACTIVE", "CURRENCY", "SILVER",
-                null, 600.0D, 4)));
+                null, 600.0D, 300.0D, 2.0D, 4)));
         ledger.replaceBankPools(List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 900.0D, 25.0D)));
         ledger.replaceBankCredit(List.of(new SQLiteLedger.BankCreditRow(player, 3, 1)));
         ledger.replaceBankPending(List.of(new SQLiteLedger.BankPendingRow("return-test-001", player, "item-data")));
@@ -83,6 +83,9 @@ class SQLiteLedgerTransactionTest {
         assertEquals("TERM_30", ledger.bankAccountsAll().get(0).term());
         assertEquals(50.0D, ledger.bankLoansAll().get(0).repaid(), 0.000_001D);
         assertEquals("CURRENCY", ledger.bankLoansAll().get(0).collateralType());
+        assertEquals(600.0D, ledger.bankLoansAll().get(0).collateralValue(), 0.000_001D);
+        assertEquals(300.0D, ledger.bankLoansAll().get(0).collateralAmount(), 0.000_001D);
+        assertEquals(2.0D, ledger.bankLoansAll().get(0).collateralPrice(), 0.000_001D);
         assertEquals(900.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
         assertEquals(25.0D, ledger.bankPoolsAll().get(0).interestReserve(), 0.000_001D);
         assertEquals(3, ledger.bankCreditAll().get(0).repaidCount());
