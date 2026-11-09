@@ -426,8 +426,9 @@ public final class SQLiteLedger {
                     changed = ps.executeUpdate();
                 }
             } else if (escrow.delete()) {
+                // Сохраняем tombstone: ticket нельзя повторно использовать после закрытия.
                 try (PreparedStatement ps = c.prepareStatement(
-                        "DELETE FROM escrow WHERE ticket=? AND owner=? AND currency_id=? AND amount=?")) {
+                        "UPDATE escrow SET amount=0 WHERE ticket=? AND owner=? AND currency_id=? AND amount=?")) {
                     ps.setString(1, escrow.ticket());
                     ps.setString(2, escrow.owner().toString());
                     ps.setString(3, escrow.currencyId());
@@ -632,10 +633,37 @@ public final class SQLiteLedger {
 
     public void escrowDelete(String ticket) {
         Connection c = pool.borrow(); boolean ok = false;
-        try (PreparedStatement ps = c.prepareStatement("DELETE FROM escrow WHERE ticket=?")) {
+        try (PreparedStatement ps = c.prepareStatement("UPDATE escrow SET amount=0 WHERE ticket=?")) {
             ps.setString(1, ticket); ps.executeUpdate(); ok = true;
         } catch (SQLException e) { throw new LedgerException("escrowDelete: " + e.getMessage(), e); }
         finally { finish(c, ok); }
+    }
+
+    public void escrowUpdate(String ticket, UUID owner, String currencyId,
+                            double expectedOld, double newAmount) {
+        if (ticket == null || ticket.isBlank() || owner == null
+                || currencyId == null || currencyId.isBlank()
+                || !Double.isFinite(expectedOld) || expectedOld <= 0.0D
+                || !Double.isFinite(newAmount) || newAmount < 0.0D) {
+            throw new LedgerException("invalid escrow update: " + ticket);
+        }
+        Connection c = pool.borrow(); boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE escrow SET amount=? WHERE ticket=? AND owner=? AND currency_id=? AND amount=?")) {
+            ps.setDouble(1, newAmount);
+            ps.setString(2, ticket);
+            ps.setString(3, owner.toString());
+            ps.setString(4, currencyId);
+            ps.setDouble(5, expectedOld);
+            if (ps.executeUpdate() == 0) {
+                throw new SQLException("escrow optimistic lock failed: " + ticket);
+            }
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("escrowUpdate: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
     }
 
     // ---------- exchange orders ----------
