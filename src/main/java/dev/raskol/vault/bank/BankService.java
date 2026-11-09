@@ -287,6 +287,7 @@ public final class BankService implements Listener {
             collateralValue = appraisal(collateralItem);
             if (collateralValue < required) return "оценка залога " + fmt(collateralValue) + " < требуемых " + fmt(required);
             itemB64 = serialize(collateralItem);
+            if (itemB64 == null || itemB64.isBlank()) return "не удалось сериализовать предмет залога";
         } else {
             return "для обеспеченного кредита укажите залог";
         }
