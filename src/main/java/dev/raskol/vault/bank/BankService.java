@@ -490,11 +490,19 @@ public final class BankService implements Listener {
         double expectedInterest = interestReserves.values().stream().mapToDouble(Double::doubleValue).sum();
         double storedInterest = storedPools.stream().mapToDouble(SQLiteLedger.BankPoolRow::interestReserve).sum();
 
+        java.util.Set<String> expectedPoolKeys = new java.util.HashSet<>(pools.keySet());
+        expectedPoolKeys.addAll(interestReserves.keySet());
+        java.util.Set<UUID> expectedCreditPlayers = new java.util.HashSet<>(repaidCount.keySet());
+        expectedCreditPlayers.addAll(defaultedCount.keySet());
         boolean valid = storedAccounts.size() == accounts.size()
                 && storedLoans.size() == loans.size()
-                && storedPools.size() == Math.max(pools.size(), interestReserves.size())
+                && storedPools.size() == expectedPoolKeys.size()
                 && storedPending.size() == pendingReturns.values().stream().mapToInt(List::size).sum()
-                && storedCredit.size() == Math.max(repaidCount.size(), defaultedCount.size())
+                && storedCredit.size() == expectedCreditPlayers.size()
+                && Double.isFinite(expectedDepositPrincipal) && Double.isFinite(storedDepositPrincipal)
+                && Double.isFinite(expectedLoanPrincipal) && Double.isFinite(storedLoanPrincipal)
+                && Double.isFinite(expectedPool) && Double.isFinite(storedPool)
+                && Double.isFinite(expectedInterest) && Double.isFinite(storedInterest)
                 && Math.abs(expectedDepositPrincipal - storedDepositPrincipal) < 1.0E-8D
                 && Math.abs(expectedLoanPrincipal - storedLoanPrincipal) < 1.0E-8D
                 && Math.abs(expectedPool - storedPool) < 1.0E-8D
