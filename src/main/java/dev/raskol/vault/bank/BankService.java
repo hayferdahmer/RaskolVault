@@ -274,6 +274,10 @@ public final class BankService implements Listener {
                 || currency == null || currency.isBlank() || !Double.isFinite(amount)
                 || !(amount > 0.0D)) return "некорректные параметры кредита";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
+        // До появления отдельного учёта изъятых активов и их фактической реализации
+        // нельзя считать оценку залога ликвидными средствами банка.
+        if (collateralType == BankLoan.CollateralType.CURRENCY)
+            return "валютный залог временно отключён: готовится учёт изъятого актива и его реализация";
         // Не допускаем выдачу новых залоговых кредитов, пока протоколы оценки и резервирования не стали crash-safe.
         if (collateralType == BankLoan.CollateralType.ITEM)
             return "предметный залог временно отключён: готовится безопасное резервирование с восстановлением после сбоя";
