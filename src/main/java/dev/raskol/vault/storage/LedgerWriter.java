@@ -5,23 +5,18 @@ import org.bukkit.plugin.Plugin;
 
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
- * Единственный упорядоченный писатель леджера (1.0.3).
+ * Единственный упорядоченный писатель SQLite-леджера.
  *
- * Модель: main-thread делает мгновенную проекцию баланса в кэше и ставит
- * атомарный коммит в очередь; этот поток применяет коммиты строго FIFO,
- * поэтому порядок операций совпадает с порядком проекций, гонок нет.
- *
- * Backpressure: если очередь полна — запись выполняется синхронно на потоке
- * вызывающего (защита от бесконечного роста памяти под лавиной операций).
- *
- * Отказоустойчивость: ошибка записи = SEVERE с полными данными транзакции
- * для ручного восстановления; кэш НАМЕРЕННО не откатывается (откат затёр бы
- * более поздние проекции). Счётчик failed — материал для алертов 1.0.4.
+ * Все принятые задания выполняются одним потоком FIFO. Переполнение очереди
+ * создаёт backpressure: отправитель ждёт свободного места, но не пишет в БД
+ * самостоятельно. Это сохраняет единственного владельца записи.
  */
 public final class LedgerWriter {
 
@@ -31,6 +26,7 @@ public final class LedgerWriter {
     private final Plugin plugin;
     private final BlockingQueue<Job> queue;
     private final Thread thread;
+    private final Object lifecycleLock = new Object();
     private final AtomicLong applied = new AtomicLong(0L);
     private final AtomicLong failed = new AtomicLong(0L);
     private volatile boolean running = true;
@@ -47,70 +43,144 @@ public final class LedgerWriter {
 
     private void loop() {
         while (running || !queue.isEmpty()) {
-            Job job;
             try {
-                job = queue.poll(100L, TimeUnit.MILLISECONDS);
+                Job job = queue.poll(100L, TimeUnit.MILLISECONDS);
+                if (job != null) {
+                    execute(job);
+                }
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
+                if (!running && queue.isEmpty()) {
+                    return;
+                }
             }
-            if (job == null) {
-                continue;
-            }
-            execute(job);
         }
     }
 
     private void execute(Job job) {
+        boolean success = false;
         try {
             job.write().run();
             applied.incrementAndGet();
-            if (job.callback() != null) {
-                job.callback().accept(true);
-            }
+            success = true;
         } catch (Throwable t) {
             failed.incrementAndGet();
             plugin.getLogger().severe("RaskolVault: запись леджера провалена: " + t);
-            if (job.callback() != null) {
-                job.callback().accept(false);
+        }
+
+        if (job.callback() != null) {
+            try {
+                job.callback().accept(success);
+            } catch (Throwable callbackError) {
+                plugin.getLogger().severe("RaskolVault: ошибка callback писателя леджера: "
+                        + callbackError);
             }
         }
     }
 
-    /** Асинхронная постановка. Очередь полна → синхронное выполнение на потоке вызывающего. */
+    /**
+     * Асинхронная постановка. При переполнении очередь создаёт backpressure.
+     * Запись никогда не переносится на поток Bukkit-вызова.
+     */
     public void submit(Runnable write, Consumer<Boolean> callback) {
         Job job = new Job(write, callback);
-        if (!running || !queue.offer(job)) {
+
+        // Вложенная постановка из потока писателя выполняется сразу, иначе
+        // единственный поток мог бы ждать место в собственной очереди.
+        if (Thread.currentThread() == thread) {
             execute(job);
+            return;
+        }
+
+        synchronized (lifecycleLock) {
+            if (!running) {
+                notifyRejected(job);
+                return;
+            }
+            try {
+                queue.put(job);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                notifyRejected(job);
+            }
         }
     }
 
-    /** Синхронная постановка с ожиданием результата (контракт Core-хука и админок). */
-    public boolean submitSync(Runnable write, long timeoutMillis) {
-        java.util.concurrent.CompletableFuture<Boolean> future =
-                new java.util.concurrent.CompletableFuture<>();
-        submit(write, future::complete);
+    /**
+     * Синхронная постановка с подтверждением фактического завершения записи.
+     * Метод не возвращает false по тайм-ауту, пока задание ещё может записаться.
+     */
+    public boolean submitSync(Runnable write) {
+        if (Thread.currentThread() == thread) {
+            try {
+                write.run();
+                applied.incrementAndGet();
+                return true;
+            } catch (Throwable t) {
+                failed.incrementAndGet();
+                plugin.getLogger().severe("RaskolVault: запись леджера провалена: " + t);
+                return false;
+            }
+        }
+
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        submit(write, result::complete);
         try {
-            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            return result.get();
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        } catch (Exception e) {
+            // Прерывание вызывающего потока не отменяет уже принятую запись.
+            // Дожидаемся результата, чтобы вызывающий код не повторил операцию
+            // с неопределённым исходом.
+            boolean interrupted = true;
+            while (true) {
+                try {
+                    boolean completed = result.get();
+                    if (interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return completed;
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                } catch (ExecutionException impossible) {
+                    if (interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return false;
+                }
+            }
+        } catch (ExecutionException e) {
+            plugin.getLogger().severe("RaskolVault: не удалось получить результат записи: " + e);
             return false;
         }
     }
 
-    /** Graceful shutdown: дождаться писателя, затем добить остаток на потоке вызывающего. */
+    private void notifyRejected(Job job) {
+        if (job.callback() != null) {
+            try {
+                job.callback().accept(false);
+            } catch (Throwable callbackError) {
+                plugin.getLogger().severe("RaskolVault: ошибка callback отклонённой записи: "
+                        + callbackError);
+            }
+        }
+    }
+
+    /**
+     * Останавливает приём новых заданий и дожидается завершения всех принятых.
+     * Не выполняет остаток очереди параллельно с рабочим потоком.
+     */
     public void close(long drainTimeoutMillis) {
-        running = false;
+        synchronized (lifecycleLock) {
+            running = false;
+        }
+        thread.interrupt();
         try {
-            thread.join(drainTimeoutMillis);
+            // Корректное завершение важнее тайм-аута: нельзя закрывать пул БД,
+            // пока писатель ещё использует соединение.
+            thread.join();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        }
-        Job job;
-        while ((job = queue.poll()) != null) {
-            execute(job);
+            plugin.getLogger().severe("RaskolVault: ожидание остановки писателя прервано; "
+                    + "пул SQLite нельзя безопасно закрывать до завершения потока.");
         }
     }
 
