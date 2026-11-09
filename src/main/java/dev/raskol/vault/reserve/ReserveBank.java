@@ -141,6 +141,19 @@ public final class ReserveBank {
             double fee = round2dec(amount * seigniorage, currency);
             double net = round2dec(amount - fee, currency);
             UUID treasury = treasuryUuid(nation);
+            if (currency.type() == CurrencyType.GLOBAL) {
+                if (!wallets.deposit(treasury, currency.id(), net,
+                        TransactionType.MINT, "mint:" + nation)) {
+                    return false;
+                }
+                if (fee > 0.0D && !wallets.withdraw(treasury, currency.id(), fee,
+                        TransactionType.BURN, "seigniorage:" + nation)) {
+                    plugin.getLogger().severe("RaskolVault: сеньораж GLOBAL не удалось списать "
+                            + "после начисления; требуется ручная сверка казны " + nation);
+                }
+                invalidateCache();
+                return true;
+            }
 
             // Сохраняем текущую семантику последовательных операций:
             // сначала начисляется net, затем из казны списывается fee.
