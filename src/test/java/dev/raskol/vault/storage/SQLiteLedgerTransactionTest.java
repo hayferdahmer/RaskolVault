@@ -168,6 +168,39 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void itemCollateralReturnIsCommittedWithLoanRepaymentAndIsIdempotent() {
+        UUID borrower = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(borrower, "GLD", 100.0D)), List.of());
+
+        SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
+                List.of(),
+                List.of(new SQLiteLedger.BankLoanRow("item-loan", borrower, "Игрок", "raskol",
+                        0.0D, "GLD", 0.10D, 30, 100L, 200L, 110.0D, 0.0D,
+                        200L, "REPAID", "ITEM", null, "serialized-item", 120.0D, 0)),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 10.0D, 0.0D)),
+                List.of(),
+                List.of(new SQLiteLedger.BankPendingRow(borrower, "serialized-item")));
+
+        ledger.commitAbsoluteCheckedOnce("item-loan-repay-atomic", "item-loan-repay-fingerprint",
+                List.of(new SQLiteLedger.CheckedBalance(borrower, "GLD", 100.0D, 0.0D)),
+                List.of(), List.of(), snapshot,
+                List.of(new Transaction(-1L, 250L, borrower, null, "GLD", 100.0D,
+                        TransactionType.PAY, "bank:loan:repay:item-loan", null)));
+
+        // Повторная доставка/обработка той же команды не должна добавлять предмет повторно.
+        ledger.commitAbsoluteCheckedOnce("item-loan-repay-atomic", "item-loan-repay-fingerprint",
+                List.of(new SQLiteLedger.CheckedBalance(borrower, "GLD", 0.0D, 0.0D)),
+                List.of(), List.of(), snapshot, List.of());
+
+        assertEquals(0.0D, ledger.getBalance(borrower, "GLD"), 0.000_001D);
+        assertEquals("REPAID", ledger.bankLoansAll().get(0).status());
+        assertEquals(1, ledger.bankPendingAll().size());
+        assertEquals("serialized-item", ledger.bankPendingAll().get(0).itemBase64());
+        assertEquals(1L, ledger.countTransactions());
+    }
+
+    @Test
     void bankOnlySnapshotCanCommitWithoutWalletDeltas() {
         SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
                 List.of(), List.of(),
