@@ -145,6 +145,27 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void seizedCollateralAssetLotIsStoredInsideAtomicBankSnapshot() {
+        UUID borrower = UUID.randomUUID();
+        SQLiteLedger.BankAssetLotRow lot = new SQLiteLedger.BankAssetLotRow(
+                "collateral-loan-asset-1", "ITEM", "raskol", borrower, "loan-asset-1",
+                null, 1.0D, 1.0D, "serialized-item", "GLD", 150.0D,
+                10.0D, 100.0D, "HELD");
+        SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(lot));
+
+        ledger.commitAbsoluteCheckedOnce("bank-asset-lot-commit", "bank-asset-lot-fingerprint",
+                List.of(), List.of(), List.of(), snapshot, List.of());
+
+        SQLiteLedger.BankAssetLotRow stored = ledger.bankAssetLotsAll().get(0);
+        assertEquals("collateral-loan-asset-1", stored.lotId());
+        assertEquals("ITEM", stored.assetType());
+        assertEquals("serialized-item", stored.itemBase64());
+        assertEquals(150.0D, stored.lockedValue(), 0.000_001D);
+        assertEquals("HELD", stored.status());
+    }
+
+    @Test
     void itemCollateralIntentSurvivesRestartUntilExplicitlyAcknowledged() {
         UUID player = UUID.randomUUID();
         SQLiteLedger.BankCollateralIntentRow intent = new SQLiteLedger.BankCollateralIntentRow(
