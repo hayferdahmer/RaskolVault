@@ -5,10 +5,13 @@ import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.api.currency.Currency;
 import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.currency.CurrencyType;
+import dev.raskol.vault.api.transaction.Transaction;
 import dev.raskol.vault.api.transaction.TransactionType;
 import dev.raskol.vault.reserve.ReserveBank;
 import dev.raskol.vault.wallet.WalletService;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -106,36 +109,151 @@ public final class ConvertEngine {
     }
 
     public Optional<Quote> execute(UUID owner, String fromId, String toId, double amount) {
-        Optional<Quote> q = quote(owner, fromId, toId, amount);
-        if (q.isEmpty()) return q;
-        Quote quote = q.get();
-        boolean fromNat = !fromId.equalsIgnoreCase(currencies.globalId());
-        boolean toNat = !toId.equalsIgnoreCase(currencies.globalId());
+        return execute(owner, fromId, toId, amount, UUID.randomUUID().toString());
+    }
 
-        if (fromNat && !bank.reserveDebit(fromNation(fromId), quote.goldFlow())) return Optional.empty();
-        if (toNat && !bank.reserveCredit(toNation(toId), quote.goldFlow())) {
-            if (fromNat) bank.reserveCredit(fromNation(fromId), quote.goldFlow());
+    /**
+     * Выполняет конвертацию с ключом идемпотентности.
+     * Внутренние валюты и резервы фиксируются одной транзакцией SQLite.
+     */
+    public Optional<Quote> execute(UUID owner, String fromId, String toId,
+                                   double amount, String operationId) {
+        bank.invalidateCache();
+        Optional<Quote> quoteResult = quote(owner, fromId, toId, amount);
+        if (quoteResult.isEmpty()) {
+            return quoteResult;
+        }
+
+        Quote quote = quoteResult.get();
+        Currency from = currencies.get(quote.fromId()).orElse(null);
+        Currency to = currencies.get(quote.toId()).orElse(null);
+        if (from == null || to == null || operationId == null || operationId.isBlank()) {
             return Optional.empty();
         }
-        if (!wallets.withdraw(owner, fromId, amount, TransactionType.CONVERT, "convert:" + fromId + "->" + toId)) {
-            if (toNat) bank.reserveDebit(toNation(toId), quote.goldFlow());
-            if (fromNat) bank.reserveCredit(fromNation(fromId), quote.goldFlow());
-            return Optional.empty();
+
+        if (from.type() != CurrencyType.GLOBAL && to.type() != CurrencyType.GLOBAL) {
+            return executeInternal(owner, from, to, quote, operationId)
+                    ? quoteResult : Optional.empty();
         }
-        if (!wallets.deposit(owner, toId, quote.net(), TransactionType.CONVERT, "convert:" + fromId + "->" + toId)) {
-            wallets.deposit(owner, fromId, amount, TransactionType.CONVERT, "convert:rollback");
-            if (toNat) bank.reserveDebit(toNation(toId), quote.goldFlow());
-            if (fromNat) bank.reserveCredit(fromNation(fromId), quote.goldFlow());
-            return Optional.empty();
-        }
+
+        return executeWithExternalGlobal(owner, from, to, quote);
+    }
+
+    private boolean executeInternal(UUID owner, Currency from, Currency to,
+                                    Quote quote, String operationId) {
+        boolean fromReserve = !from.id().equalsIgnoreCase(currencies.globalId());
+        boolean toReserve = !to.id().equalsIgnoreCase(currencies.globalId());
+
+        List<WalletService.WalletDelta> walletDeltas = new ArrayList<>();
+        walletDeltas.add(new WalletService.WalletDelta(owner, from.id(), -quote.amount()));
+        walletDeltas.add(new WalletService.WalletDelta(owner, to.id(), quote.net()));
+
+        List<Transaction> transactions = new ArrayList<>();
+        transactions.add(new Transaction(-1L, System.currentTimeMillis(), owner, null,
+                from.id(), quote.amount(), TransactionType.CONVERT,
+                "convert:" + from.id() + "->" + to.id(), null));
+        transactions.add(new Transaction(-1L, System.currentTimeMillis(), null, owner,
+                to.id(), quote.net(), TransactionType.CONVERT,
+                "convert:" + from.id() + "->" + to.id(), null));
+
         if (quote.taxNation() != null && quote.taxInTo() > 0.0D) {
-            if (!wallets.deposit(ReserveBank.treasuryUuid(quote.taxNation()), toId, quote.taxInTo(),
-                    TransactionType.CONVERT, "convert:tax:" + quote.taxNation())) {
-                plugin.getLogger().warning("RaskolVault: налог конвертации в казну "
-                        + quote.taxNation() + " не зачислен (" + quote.taxInTo() + " " + toId + ")");
+            UUID treasury = ReserveBank.treasuryUuid(quote.taxNation());
+            walletDeltas.add(new WalletService.WalletDelta(treasury, to.id(), quote.taxInTo()));
+            transactions.add(new Transaction(-1L, System.currentTimeMillis(), null, treasury,
+                    to.id(), quote.taxInTo(), TransactionType.CONVERT,
+                    "convert:tax:" + quote.taxNation(), null));
+        }
+
+        List<WalletService.ReserveDelta> reserveDeltas = new ArrayList<>();
+        if (fromReserve) {
+            reserveDeltas.add(new WalletService.ReserveDelta(from.nationId(), -quote.goldFlow()));
+        }
+        if (toReserve) {
+            reserveDeltas.add(new WalletService.ReserveDelta(to.nationId(), quote.goldFlow()));
+        }
+
+        boolean committed = wallets.applyBatchOnce(operationId,
+                walletDeltas, reserveDeltas, transactions);
+        if (committed) {
+            bank.invalidateCache();
+        }
+        return committed;
+    }
+
+    /**
+     * Путь для GLOBAL/EssentialsX. Внешний backend не участвует в SQLite-транзакции,
+     * поэтому используем компенсацию и отдельно сигнализируем о её невозможности.
+     */
+    private Optional<Quote> executeWithExternalGlobal(UUID owner, Currency from, Currency to,
+                                                       Quote quote) {
+        boolean fromReserve = !from.id().equalsIgnoreCase(currencies.globalId());
+        boolean toReserve = !to.id().equalsIgnoreCase(currencies.globalId());
+
+        if (fromReserve && !bank.reserveDebit(fromNation(from.id()), quote.goldFlow())) {
+            return Optional.empty();
+        }
+        if (toReserve && !bank.reserveCredit(toNation(to.id()), quote.goldFlow())) {
+            if (fromReserve) restoreReserveCredit(fromNation(from.id()), quote.goldFlow());
+            return Optional.empty();
+        }
+
+        if (!wallets.withdraw(owner, from.id(), quote.amount(), TransactionType.CONVERT,
+                "convert:" + from.id() + "->" + to.id())) {
+            rollbackReserves(from, to, quote, fromReserve, toReserve);
+            return Optional.empty();
+        }
+
+        if (!wallets.deposit(owner, to.id(), quote.net(), TransactionType.CONVERT,
+                "convert:" + from.id() + "->" + to.id())) {
+            restoreWallet(owner, from.id(), quote.amount(), "convert:rollback:source");
+            rollbackReserves(from, to, quote, fromReserve, toReserve);
+            return Optional.empty();
+        }
+
+        if (quote.taxNation() != null && quote.taxInTo() > 0.0D) {
+            UUID treasury = ReserveBank.treasuryUuid(quote.taxNation());
+            if (!wallets.deposit(treasury, to.id(), quote.taxInTo(), TransactionType.CONVERT,
+                    "convert:tax:" + quote.taxNation())) {
+                boolean targetRestored = wallets.withdraw(owner, to.id(), quote.net(),
+                        TransactionType.CONVERT, "convert:rollback:target");
+                boolean sourceRestored = wallets.deposit(owner, from.id(), quote.amount(),
+                        TransactionType.CONVERT, "convert:rollback:source");
+                rollbackReserves(from, to, quote, fromReserve, toReserve);
+                if (!targetRestored || !sourceRestored) {
+                    plugin.getLogger().severe("RaskolVault: КРИТИЧЕСКАЯ ошибка компенсации конвертации "
+                            + from.id() + " -> " + to.id() + "; требуется ручная сверка.");
+                }
+                return Optional.empty();
             }
         }
-        return q;
+
+        bank.invalidateCache();
+        return Optional.of(quote);
+    }
+
+    private void restoreReserveCredit(String nation, double amount) {
+        if (!bank.reserveCredit(nation, amount)) {
+            plugin.getLogger().severe("RaskolVault: не удалось восстановить резерв нации " + nation);
+        }
+    }
+
+    private void rollbackReserves(Currency from, Currency to, Quote quote,
+                                  boolean fromReserve, boolean toReserve) {
+        if (toReserve && !bank.reserveDebit(toNation(to.id()), quote.goldFlow())) {
+            plugin.getLogger().severe("RaskolVault: не удалось откатить резерв нации "
+                    + toNation(to.id()));
+        }
+        if (fromReserve && !bank.reserveCredit(fromNation(from.id()), quote.goldFlow())) {
+            plugin.getLogger().severe("RaskolVault: не удалось восстановить резерв нации "
+                    + fromNation(from.id()));
+        }
+    }
+
+    private void restoreWallet(UUID owner, String currencyId, double amount, String reason) {
+        if (!wallets.deposit(owner, currencyId, amount, TransactionType.CONVERT, reason)) {
+            plugin.getLogger().severe("RaskolVault: не удалось вернуть средства игроку "
+                    + owner + " в валюте " + currencyId);
+        }
     }
 
     private String fromNation(String currencyId) {
