@@ -247,7 +247,12 @@ public final class BankGui implements Listener {
         }
         if (raw instanceof LoanCollateralHolder) {
             if (slot == 22) { openLoanType(p); return; }
-            if (slot == 11) { msg(p, "&cВалютный залог временно отключён: требуется корректная оценка и учёт залогового актива."); return; }
+            if (slot == 11) {
+                msg(p, "&eВведите код валюты залога и сумму кредита: SILVER 100. Залог рассчитается по текущему курсу и будет зафиксирован.");
+                chatField.put(p.getUniqueId(), "loan-sec-currency");
+                p.closeInventory();
+                return;
+            }
             if (slot == 13) {
                 msg(p, "&eПредметный залог оформляется через защищённое резервирование. Введите сумму кредита.");
                 chatField.put(p.getUniqueId(), "loan-sec-item");
@@ -277,7 +282,7 @@ public final class BankGui implements Listener {
                 }
                 double loanAmount = Numbers.parseDouble(parts[1], -1);
                 if (!(loanAmount > 0.0D)) {
-                    msg(p, "&cСумма должна быть больше нуля");
+                    msg(p, "&cСумма кредита должна быть больше нуля");
                     return;
                 }
                 String err = bank().applyLoan(uuid, p.getName(), nation, glb(), loanAmount, 30,
