@@ -37,7 +37,7 @@ public final class RaskolVaultAPI {
     /** Баланс игрока в указанной валюте. 0.0 если игрока/валюты нет. */
     public double getBalance(UUID player, String currencyId) {
         if (player == null || currencyId == null) return 0.0D;
-        return plugin.getWallets().getBalance(player, currencyId.toUpperCase());
+        return plugin.getWallets().getBalance(player, currencyId.toUpperCase(Locale.ROOT));
     }
 
     /** Достаточно ли средств у игрока. */
@@ -48,14 +48,14 @@ public final class RaskolVaultAPI {
     /** Списать amount с игрока. reason попадает в аудит-лог транзакций. */
     public boolean withdraw(UUID player, String currencyId, double amount, String reason) {
         if (player == null || currencyId == null || !(amount > 0.0D)) return false;
-        return plugin.getWallets().withdraw(player, currencyId.toUpperCase(), amount,
+        return plugin.getWallets().withdraw(player, currencyId.toUpperCase(Locale.ROOT), amount,
                 TransactionType.PAY, reason == null ? "api" : reason);
     }
 
     /** Начислить amount игроку. reason попадает в аудит-лог транзакций. */
     public boolean deposit(UUID player, String currencyId, double amount, String reason) {
         if (player == null || currencyId == null || !(amount > 0.0D)) return false;
-        return plugin.getWallets().deposit(player, currencyId.toUpperCase(), amount,
+        return plugin.getWallets().deposit(player, currencyId.toUpperCase(Locale.ROOT), amount,
                 TransactionType.PAY, reason == null ? "api" : reason);
     }
 
@@ -77,8 +77,8 @@ public final class RaskolVaultAPI {
         if (player == null || fromCurrency == null || toCurrency == null || !(amount > 0.0D)) {
             return ConvertResult.failure("invalid arguments");
         }
-        String from = fromCurrency.toUpperCase();
-        String to = toCurrency.toUpperCase();
+        String from = fromCurrency.toUpperCase(Locale.ROOT);
+        String to = toCurrency.toUpperCase(Locale.ROOT);
         
         // Проверка блокировки
         String blockReason = plugin.getConvertEngine().blockReason(player, from, to, amount);
@@ -98,7 +98,7 @@ public final class RaskolVaultAPI {
     /** Актуальный курс from→to (без комиссий). 0 если пара эмбарго или нет резерва. */
     public double rate(String fromCurrency, String toCurrency) {
         if (fromCurrency == null || toCurrency == null) return 0.0D;
-        return plugin.getConvertEngine().rate(fromCurrency.toUpperCase(), toCurrency.toUpperCase());
+        return plugin.getConvertEngine().rate(fromCurrency.toUpperCase(Locale.ROOT), toCurrency.toUpperCase(Locale.ROOT));
     }
 
     /** Базовая комиссия обмена (сейчас 2% по умолчанию). */
@@ -109,7 +109,7 @@ public final class RaskolVaultAPI {
     /** Налог нации-цели (если есть). 0 по умолчанию. */
     public double taxRate(String toCurrencyId) {
         if (toCurrencyId == null) return 0.0D;
-        Currency cur = plugin.getCurrencies().get(toCurrencyId.toUpperCase()).orElse(null);
+        Currency cur = plugin.getCurrencies().get(toCurrencyId.toUpperCase(Locale.ROOT)).orElse(null);
         if (cur == null || cur.nationId() == null) return 0.0D;
         return plugin.getReserveBank().taxOf(cur.nationId());
     }
@@ -160,7 +160,7 @@ public final class RaskolVaultAPI {
     /** Цена валюты в GLD. */
     public double priceOf(String currencyId) {
         if (currencyId == null) return 0.0D;
-        Currency cur = plugin.getCurrencies().get(currencyId.toUpperCase()).orElse(null);
+        Currency cur = plugin.getCurrencies().get(currencyId.toUpperCase(Locale.ROOT)).orElse(null);
         return cur == null ? 0.0D : plugin.getReserveBank().priceOf(cur);
     }
 
@@ -174,7 +174,7 @@ public final class RaskolVaultAPI {
 
     /** Общая эмиссия валюты (сумма всех балансов игроков). */
     public double supplyOf(String currencyId) {
-        return currencyId == null ? 0.0D : plugin.getReserveBank().supplyOf(currencyId.toUpperCase());
+        return currencyId == null ? 0.0D : plugin.getReserveBank().supplyOf(currencyId.toUpperCase(Locale.ROOT));
     }
 
     /** Паритет нации (установленный королём). */
@@ -185,7 +185,7 @@ public final class RaskolVaultAPI {
     /** Максимум, который можно доминтить при текущем резерве/покрытии. */
     public double maxMint(String nation, String currencyId) {
         if (nation == null || currencyId == null) return 0.0D;
-        return plugin.getReserveBank().maxMint(nation, currencyId.toUpperCase());
+        return plugin.getReserveBank().maxMint(nation, currencyId.toUpperCase(Locale.ROOT));
     }
 
     // ============ Валюты ============
@@ -201,20 +201,20 @@ public final class RaskolVaultAPI {
 
     /** Существует ли валюта. */
     public boolean currencyExists(String currencyId) {
-        return currencyId != null && plugin.getCurrencies().get(currencyId.toUpperCase()).isPresent();
+        return currencyId != null && plugin.getCurrencies().get(currencyId.toUpperCase(Locale.ROOT)).isPresent();
     }
 
     /** Торгуется ли валюта (не заблокирована эмбарго/удалением нации). */
     public boolean isTradeable(String currencyId) {
         if (currencyId == null) return false;
-        Currency c = plugin.getCurrencies().get(currencyId.toUpperCase()).orElse(null);
+        Currency c = plugin.getCurrencies().get(currencyId.toUpperCase(Locale.ROOT)).orElse(null);
         return c != null && c.tradeable();
     }
 
     /** Пара эмбарго (в rates.yml). */
     public boolean isEmbargo(String fromCurrency, String toCurrency) {
         if (fromCurrency == null || toCurrency == null) return false;
-        return plugin.getRates().isEmbargoed(fromCurrency.toUpperCase(), toCurrency.toUpperCase());
+        return plugin.getRates().isEmbargoed(fromCurrency.toUpperCase(Locale.ROOT), toCurrency.toUpperCase(Locale.ROOT));
     }
 
     // ============ Права (делегат LuckPermsHook) ============
