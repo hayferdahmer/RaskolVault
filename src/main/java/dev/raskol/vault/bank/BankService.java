@@ -870,7 +870,9 @@ public final class BankService implements Listener {
                         BankLoan.CollateralType.valueOf(section.getString("collateralType", "NONE")),
                         section.getString("collateralCurrency", null), section.getString("collateralItem", null),
                         section.getDouble("collateralValue", 0.0D),
-                        section.getDouble("collateralAmount", section.getDouble("collateralValue", 0.0D)),
+                        section.getDouble("collateralAmount",
+                                "CURRENCY".equals(section.getString("collateralType", "NONE"))
+                                        ? section.getDouble("collateralValue", 0.0D) : 0.0D),
                         section.getDouble("collateralPrice", 1.0D), section.getInt("creditScore", 0));
                 loan.setRepaid(section.getDouble("repaid", 0.0D));
                 loan.setAccrued(section.getDouble("accrued", 0.0D));
