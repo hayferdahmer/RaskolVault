@@ -262,7 +262,7 @@ public final class BankService implements Listener {
         double rate = p.loanRate() + p.unsecuredPremium() + creditRateBonus(borrower);
         String loanId = UUID.randomUUID().toString();
         return createLoan(loanId, borrower, borrowerName, nation, currency, amount, termDays, rate,
-                BankLoan.CollateralType.NONE, null, null, 0.0D);
+                BankLoan.CollateralType.NONE, null, null, 0.0D, 0.0D, 1.0D);
     }
 
     /** Обеспеченный кредит (залог предметом/валютой, ratio 1.2). */
@@ -275,8 +275,6 @@ public final class BankService implements Listener {
                 || !(amount > 0.0D)) return "некорректные параметры кредита";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
         // Не допускаем выдачу новых залоговых кредитов, пока протоколы оценки и резервирования не стали crash-safe.
-        if (collateralType == BankLoan.CollateralType.CURRENCY)
-            return "валютный залог временно отключён: требуется фиксация курса и отдельный учёт залогового актива";
         if (collateralType == BankLoan.CollateralType.ITEM)
             return "предметный залог временно отключён: готовится безопасное резервирование с восстановлением после сбоя";
         BankParams p = params(nation);
@@ -285,13 +283,32 @@ public final class BankService implements Listener {
         if (pool(nation, currency) < amount) return "недостаточно ликвидности в пуле";
         double required = amount * p.collateralRatio();
         double collateralValue = 0;
+        double collateralAmount = 0;
+        double collateralPrice = 1.0D;
         String itemB64 = null;
         String loanId = UUID.randomUUID().toString();
         if (collateralType == BankLoan.CollateralType.CURRENCY) {
-            if (collateralCurrency == null) return "укажите валюту залога";
+            if (collateralCurrency == null || collateralCurrency.isBlank()) return "укажите валюту залога";
             if (collateralCurrency.equalsIgnoreCase(currency)) return "нельзя брать кредит под залог той же валюты";
-            if (!wallets.has(borrower, collateralCurrency, required)) return "недостаточно залога";
-            collateralValue = required;
+            Currency collateralCurrencyDefinition = plugin.getCurrencies().get(collateralCurrency).orElse(null);
+            Currency loanCurrencyDefinition = plugin.getCurrencies().get(currency).orElse(null);
+            if (collateralCurrencyDefinition == null || loanCurrencyDefinition == null)
+                return "валюта залога или кредита не зарегистрирована";
+            double collateralGldPrice = bank.priceOf(collateralCurrencyDefinition);
+            double loanGldPrice = bank.priceOf(loanCurrencyDefinition);
+            if (!Double.isFinite(collateralGldPrice) || collateralGldPrice <= 0.0D
+                    || !Double.isFinite(loanGldPrice) || loanGldPrice <= 0.0D)
+                return "невозможно безопасно оценить валютный залог: курс отсутствует или некорректен";
+            collateralPrice = collateralGldPrice / loanGldPrice;
+            if (!Double.isFinite(collateralPrice) || collateralPrice <= 0.0D)
+                return "некорректный курс валютного залога";
+            collateralAmount = required / collateralPrice;
+            if (!Double.isFinite(collateralAmount) || collateralAmount <= 0.0D)
+                return "некорректное количество валютного залога";
+            collateralValue = collateralAmount * collateralPrice;
+            if (!Double.isFinite(collateralValue) || collateralValue + 1.0E-8D < required)
+                return "оценка залога ниже требуемой";
+            if (!wallets.has(borrower, collateralCurrency, collateralAmount)) return "недостаточно залога";
         } else if (collateralType == BankLoan.CollateralType.ITEM) {
             if (collateralItem == null) return "предмет залога не передан";
             collateralValue = appraisal(collateralItem);
@@ -303,12 +320,13 @@ public final class BankService implements Listener {
         }
         double rate = p.loanRate() + creditRateBonus(borrower);
         return createLoan(loanId, borrower, borrowerName, nation, currency, amount, termDays, rate,
-                collateralType, collateralCurrency, itemB64, collateralValue);
+                collateralType, collateralCurrency, itemB64, collateralValue, collateralAmount, collateralPrice);
     }
 
     private synchronized String createLoan(String id, UUID borrower, String borrowerName,
                               String nation, String currency, double amount, int termDays, double rate,
-                              BankLoan.CollateralType ctype, String ccur, String citem, double cvalue) {
+                              BankLoan.CollateralType ctype, String ccur, String citem, double cvalue,
+                              double camount, double cprice) {
         long now = System.currentTimeMillis();
         long due = now + termDays * 86_400_000L;
         if (id == null || id.isBlank() || !Double.isFinite(amount) || !(amount > 0.0D)
@@ -319,7 +337,7 @@ public final class BankService implements Listener {
         double oldPool = pools.getOrDefault(key, 0.0D);
         if (oldPool < amount) return "недостаточно ликвидности в пуле";
         BankLoan loan = new BankLoan(id, borrower, borrowerName, nation, amount, currency, rate, termDays,
-                now, due, ctype, ccur, citem, cvalue, creditScore(borrower));
+                now, due, ctype, ccur, citem, cvalue, camount, cprice, creditScore(borrower));
         loans.put(id, loan);
         pools.put(key, oldPool - amount);
 
@@ -328,9 +346,9 @@ public final class BankService implements Listener {
         List<Transaction> transactions = new ArrayList<>();
         transactions.add(new Transaction(-1L, now, null, borrower, currency, amount,
                 TransactionType.PAY, "bank:loan:disburse:" + id, null));
-        if (ctype == BankLoan.CollateralType.CURRENCY && ccur != null && cvalue > 0.0D) {
-            walletChanges.add(new WalletService.WalletDelta(borrower, ccur, -cvalue));
-            transactions.add(new Transaction(-1L, now, borrower, null, ccur, cvalue,
+        if (ctype == BankLoan.CollateralType.CURRENCY && ccur != null && camount > 0.0D) {
+            walletChanges.add(new WalletService.WalletDelta(borrower, ccur, -camount));
+            transactions.add(new Transaction(-1L, now, borrower, null, ccur, camount,
                     TransactionType.PAY, "bank:collateral:lock:" + id, null));
         }
 
@@ -460,6 +478,14 @@ public final class BankService implements Listener {
                 ? List.of(new WalletService.WalletDelta(l.borrower(), l.currencyId(), borrowerSurplus))
                 : List.of();
         List<Transaction> liquidationJournal = new ArrayList<>();
+        if (l.collateralType() == BankLoan.CollateralType.CURRENCY
+                && l.collateralCurrency() != null && l.collateralAmount() > 0.0D) {
+            // Залог становится активом банка; его стоимость конвертируется в валюту кредита
+            // по зафиксированному при выдаче курсу, а не по текущему рыночному курсу.
+            liquidationJournal.add(new Transaction(-1L, now, l.borrower(), null, l.collateralCurrency(),
+                    l.collateralAmount(), TransactionType.PAY, "bank:collateral:seize:" + loanId,
+                    "{\"lockedPrice\":" + l.collateralPrice() + ",\"loanValue\":" + l.collateralValue() + "}"));
+        }
         if (proceeds > 0.0D) {
             liquidationJournal.add(new Transaction(-1L, now, l.borrower(), null, l.currencyId(), proceeds,
                     TransactionType.PAY, "bank:loan:liquidate:" + loanId, null));
