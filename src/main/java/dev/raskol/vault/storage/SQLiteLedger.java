@@ -263,6 +263,27 @@ public final class SQLiteLedger {
         guardNonNegative(absolute);
     }
 
+    /** Проверяет наличие завершённой операции по уникальному ключу. */
+    public boolean operationExists(String operationId) {
+        if (operationId == null || operationId.isBlank() || operationId.length() > 128) {
+            return false;
+        }
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT 1 FROM operation_requests WHERE operation_id=?")) {
+            ps.setString(1, operationId);
+            try (ResultSet rs = ps.executeQuery()) {
+                ok = true;
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("operationExists: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
+    }
+
     /** Проверяет, был ли уже подтверждён запрос с данным ключом. */
     public boolean operationCommitted(String operationId, String fingerprint) {
         if (operationId == null || operationId.isBlank() || operationId.length() > 128
