@@ -550,6 +550,12 @@ public final class SQLiteLedger {
     }
 
     public boolean reserveAdd(String nation, double delta) {
+        if (nation == null || nation.isBlank() || !Double.isFinite(delta)) {
+            return false;
+        }
+        if (delta == 0.0D) {
+            return true;
+        }
         Connection c = pool.borrow(); boolean ok = false;
         try {
             long now = System.currentTimeMillis(); int rows;
@@ -573,6 +579,9 @@ public final class SQLiteLedger {
     }
 
     public void reserveSet(String nation, double amount) {
+        if (nation == null || nation.isBlank() || !Double.isFinite(amount) || amount < 0.0D) {
+            throw new LedgerException("invalid reserve value: " + nation);
+        }
         Connection c = pool.borrow(); boolean ok = false;
         try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO reserves(nation, amount, updated_at) VALUES(?,?,?) "
@@ -596,6 +605,11 @@ public final class SQLiteLedger {
 
     // ---------- escrow ----------
     public void escrowInsert(String ticket, UUID owner, String currencyId, double amount) {
+        if (ticket == null || ticket.isBlank() || owner == null
+                || currencyId == null || currencyId.isBlank()
+                || !Double.isFinite(amount) || amount <= 0.0D) {
+            throw new LedgerException("invalid escrow insert: " + ticket);
+        }
         Connection c = pool.borrow(); boolean ok = false;
         try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO escrow(ticket, owner, currency_id, amount, created_at) VALUES(?,?,?,?,?)")) {
