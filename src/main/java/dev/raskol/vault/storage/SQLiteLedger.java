@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 7;
+    public static final int SCHEMA_VERSION = 8;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
@@ -57,6 +57,8 @@ public final class SQLiteLedger {
     public record BankPoolRow(String nation, String currencyId, double pool, double interestReserve) {}
     public record BankCreditRow(UUID player, int repaidCount, int defaultedCount) {}
     public record BankPendingRow(String returnId, UUID player, String itemBase64) {}
+    public record BankCollateralIntentRow(String intentId, UUID player, String loanId,
+                                           String itemBase64, long createdAt) {}
     public record BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
                                List<BankPoolRow> pools, List<BankCreditRow> credit,
                                List<BankPendingRow> pendingReturns) {
@@ -218,6 +220,11 @@ public final class SQLiteLedger {
                 }
                 st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_pending_return_id ON bank_pending_returns(return_id)");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_bank_pending_player ON bank_pending_returns(player)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_collateral_intents ("
+                        + "intent_id TEXT PRIMARY KEY, player TEXT NOT NULL, loan_id TEXT NOT NULL UNIQUE,"
+                        + "item_base64 TEXT NOT NULL, created_at INTEGER NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_bank_collateral_intents_player "
+                        + "ON bank_collateral_intents(player)");
                 st.execute("CREATE TABLE IF NOT EXISTS bank_storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
                 st.execute("CREATE TABLE IF NOT EXISTS operation_requests ("
                         + "operation_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,"
@@ -910,6 +917,48 @@ public final class SQLiteLedger {
             ok=true;
         }catch(SQLException e){throw new LedgerException("bankPendingAll: "+e.getMessage(),e);}
         finally{finish(c,ok);}return out;
+    }
+
+    public void createBankCollateralIntent(BankCollateralIntentRow row) {
+        if (row == null || blank(row.intentId()) || row.player() == null || blank(row.loanId())
+                || blank(row.itemBase64()) || row.createdAt() <= 0L) {
+            throw new LedgerException("invalid bank collateral intent");
+        }
+        Connection c = pool.borrow(); boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO bank_collateral_intents(intent_id,player,loan_id,item_base64,created_at) VALUES(?,?,?,?,?)")) {
+            ps.setString(1, row.intentId()); ps.setString(2, row.player().toString());
+            ps.setString(3, row.loanId()); ps.setString(4, row.itemBase64()); ps.setLong(5, row.createdAt());
+            ps.executeUpdate(); ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("createBankCollateralIntent: " + e.getMessage(), e);
+        } finally { finish(c, ok); }
+    }
+
+    public List<BankCollateralIntentRow> bankCollateralIntentsAll() {
+        List<BankCollateralIntentRow> out = new ArrayList<>();
+        Connection c = pool.borrow(); boolean ok = false;
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT intent_id,player,loan_id,item_base64,created_at "
+                     + "FROM bank_collateral_intents ORDER BY created_at,intent_id")) {
+            while (rs.next()) out.add(new BankCollateralIntentRow(rs.getString(1),
+                    UUID.fromString(rs.getString(2)), rs.getString(3), rs.getString(4), rs.getLong(5)));
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("bankCollateralIntentsAll: " + e.getMessage(), e);
+        } finally { finish(c, ok); }
+        return out;
+    }
+
+    public void deleteBankCollateralIntent(String intentId) {
+        if (blank(intentId)) throw new LedgerException("invalid bank collateral intent id");
+        Connection c = pool.borrow(); boolean ok = false;
+        try (PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM bank_collateral_intents WHERE intent_id=?")) {
+            ps.setString(1, intentId); ps.executeUpdate(); ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("deleteBankCollateralIntent: " + e.getMessage(), e);
+        } finally { finish(c, ok); }
     }
 
     // ---------- reserves ----------
