@@ -87,10 +87,19 @@ public final class WalletService {
 
     public Map<UUID, Map<String, Double>> cacheSnapshot() {
         Map<UUID, Map<String, Double>> out = new HashMap<>();
-        for (Map.Entry<UUID, Map<String, Double>> entry : cache.entrySet()) {
-            out.put(entry.getKey(), new HashMap<>(entry.getValue()));
+        for (ReentrantLock lock : walletLocks) {
+            lock.lock();
         }
-        return out;
+        try {
+            for (Map.Entry<UUID, Map<String, Double>> entry : cache.entrySet()) {
+                out.put(entry.getKey(), new HashMap<>(entry.getValue()));
+            }
+            return out;
+        } finally {
+            for (int i = walletLocks.length - 1; i >= 0; i--) {
+                walletLocks[i].unlock();
+            }
+        }
     }
 
     public int cachedRows() {
