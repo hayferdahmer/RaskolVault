@@ -135,6 +135,7 @@ RaskolVault заменяет одно-валютную модель на **си�
 - [`docs/BANK_INTEREST_LIABILITIES.md`](docs/BANK_INTEREST_LIABILITIES.md) — долговые обязательства банка по невыплаченным процентам вкладчиков
 - [`docs/BANK_BALANCE_SHEET.md`](docs/BANK_BALANCE_SHEET.md) — баланс банка, активы, обязательства и сверка платёжеспособности по валютам
 - [`docs/BANK_REPAYMENT_IDEMPOTENCY.md`](docs/BANK_REPAYMENT_IDEMPOTENCY.md) — защита погашения кредитов от повторного списания
+- [`docs/BANK_OVERDUE_POLICY.md`](docs/BANK_OVERDUE_POLICY.md) — льготный период и политика просрочки кредитов
 - [`INTEGRATION.md`](INTEGRATION.md) — API для плагинов-партнёров
 
 </details>
