@@ -847,16 +847,13 @@ public final class BankService implements Listener {
 
             if (!loanCommitted && !markerFound) {
                 ItemStack original = deserialize(intent.itemBase64());
-                boolean originalStillPresent = false;
-                if (original != null) {
-                    for (ItemStack item : player.getInventory().getContents()) {
-                        if (item != null && !item.getType().isAir()
-                                && item.isSimilar(original) && item.getAmount() >= original.getAmount()) {
-                            originalStillPresent = true;
-                            break;
-                        }
-                    }
-                }
+                ItemStack reservedSlotItem = player.getInventory().getItemInMainHand();
+                // Предмет резервируется именно из основной руки. Поиск похожего стака
+                // во всём инвентаре опасен: чужой идентичный предмет можно принять за залог.
+                boolean originalStillPresent = original != null
+                        && reservedSlotItem != null && !reservedSlotItem.getType().isAir()
+                        && reservedSlotItem.isSimilar(original)
+                        && reservedSlotItem.getAmount() >= original.getAmount();
                 List<SQLiteLedger.BankPendingRow> playerPending =
                         pendingReturns.computeIfAbsent(owner, ignored -> new ArrayList<>());
                 boolean pendingAlreadyExists = playerPending.stream()
