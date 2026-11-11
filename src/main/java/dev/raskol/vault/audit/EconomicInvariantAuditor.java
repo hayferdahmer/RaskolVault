@@ -64,7 +64,22 @@ public final class EconomicInvariantAuditor {
         }
         out.add((escOK ? OK : FAIL) + "Escrow: таблица == балансы escrow-аккаунтов");
 
-        // 4. Round-trip без арбитража
+        // 4. Банковская сверка: активы и обязательства считаются отдельно по валютам.
+        // Удерживаемый залог показывается справочно и не включается в активы.
+        for (var sheet : plugin.getBankService().allBalanceSheets()) {
+            boolean finite = Double.isFinite(sheet.totalAssets())
+                    && Double.isFinite(sheet.totalLiabilities())
+                    && Double.isFinite(sheet.equity())
+                    && Double.isFinite(sheet.heldCollateralAppraisal());
+            boolean solvent = finite && sheet.equity() >= -1.0E-6D;
+            out.add((solvent ? OK : FAIL) + "Банк " + sheet.nation() + "/" + sheet.currencyId()
+                    + ": активы=" + sheet.totalAssets()
+                    + ", обязательства=" + sheet.totalLiabilities()
+                    + ", капитал=" + sheet.equity()
+                    + ", удерживаемый залог (вне активов)=" + sheet.heldCollateralAppraisal());
+        }
+
+        // 5. Round-trip без арбитража
         boolean rtOK = true;
         List<Currency> all = plugin.getCurrencies().all();
         for (Currency a : all) for (Currency b : all) {
