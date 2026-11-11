@@ -514,6 +514,47 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void bankRepaymentRetryUsesStableIntentFingerprintDespiteChangedSnapshot() {
+        UUID borrower = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(borrower, "GLD", 100.0D)), List.of());
+
+        String operationId = "bank:loan:repay:request-001";
+        String fingerprint = "bank-loan-repay:v1|" + borrower
+                + "|loan-001|" + Double.toHexString(25.0D);
+        SQLiteLedger.BankSnapshot firstSnapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 25.0D, 0.0D)),
+                List.of(), List.of());
+        ledger.commitAbsoluteCheckedOnce(operationId, fingerprint,
+                List.of(new SQLiteLedger.CheckedBalance(borrower, "GLD", 100.0D, 75.0D)),
+                List.of(), List.of(), firstSnapshot,
+                List.of(new Transaction(-1L, 1_000L, borrower, null, "GLD", 25.0D,
+                        TransactionType.PAY, "bank:loan:repay:loan-001", null)));
+
+        // Повтор того же намерения может прийти с новым snapshot и новым временем.
+        // Стабильный fingerprint должен подтвердить исходную операцию, а не применить платёж повторно.
+        SQLiteLedger.BankSnapshot changedRetrySnapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 50.0D, 0.0D)),
+                List.of(), List.of());
+        ledger.commitAbsoluteCheckedOnce(operationId, fingerprint,
+                List.of(new SQLiteLedger.CheckedBalance(borrower, "GLD", 75.0D, 50.0D)),
+                List.of(), List.of(), changedRetrySnapshot,
+                List.of(new Transaction(-1L, 2_000L, borrower, null, "GLD", 25.0D,
+                        TransactionType.PAY, "bank:loan:repay:loan-001", null)));
+
+        assertEquals(75.0D, ledger.getBalance(borrower, "GLD"), 0.000_001D);
+        assertEquals(25.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
+        assertEquals(1L, ledger.countTransactions());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                ledger.operationCommitted(operationId, fingerprint));
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                operationId, fingerprint + "|different-amount",
+                List.of(), List.of(), List.of(), changedRetrySnapshot, List.of()));
+    }
+
+    @Test
     void failedIdempotentCommitDoesNotReserveTheOperationKey() {
         UUID player = UUID.randomUUID();
         String operationId = "wallet-withdraw-001";
