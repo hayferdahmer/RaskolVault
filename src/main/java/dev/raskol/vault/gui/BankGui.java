@@ -113,11 +113,13 @@ public final class BankGui implements Listener {
         long now = System.currentTimeMillis();
         for (int i = 0; i < GRID.length && i < loans.size(); i++) {
             BankLoan l = loans.get(i);
-            inv.setItem(GRID[i], it(l.isOverdue(now) ? Material.REDSTONE_BLOCK : Material.PAPER,
+            boolean recovery = l.status() == BankLoan.Status.RECOVERY;
+            inv.setItem(GRID[i], it(l.isOverdue(now) || recovery ? Material.REDSTONE_BLOCK : Material.PAPER,
                     "&6Кредит &7" + l.id().substring(0, 8), List.of(
                     "&7Остаток: &c" + Numbers.fmt(l.outstanding(now)) + " " + l.currencyId(),
                     "&7Залог: &f" + l.collateralType(),
-                    l.isOverdue(now) ? "&cПРОСРОЧЕН" : "&7До: &f" + TimeFormat.daysLeft(l.dueAt(), now),
+                    recovery ? "&cВЗЫСКАНИЕ · остаток долга" :
+                            (l.isOverdue(now) ? "&cПРОСРОЧЕН" : "&7До: &f" + TimeFormat.daysLeft(l.dueAt(), now)),
                     "&eКлик — детали")));
         }
         for (int i = loans.size(); i < GRID.length; i++) inv.setItem(GRID[i], GuiItems.pane());
@@ -136,7 +138,8 @@ public final class BankGui implements Listener {
                 "&7Тело: &f" + Numbers.fmt(l.principal()),
                 "&7Остаток: &c" + Numbers.fmt(l.outstanding(now)),
                 "&7Ставка: &f" + Numbers.pct(l.rateAnnual()),
-                "&7Залог: &f" + l.collateralType())));
+                "&7Залог: &f" + l.collateralType(),
+                l.status() == BankLoan.Status.RECOVERY ? "&cСтатус: взыскание, проценты заморожены" : "&7Статус: " + l.status())));
         inv.setItem(11, it(Material.GOLD_NUGGET, "&aПогасить часть", List.of("&eКлик → ввод суммы")));
         inv.setItem(15, it(Material.EMERALD_BLOCK, "&aПогасить полностью", List.of("&7Сумма: &f" + Numbers.fmt(l.outstanding(now)))));
         inv.setItem(22, it(Material.ARROW, "&7Назад", List.of()));
