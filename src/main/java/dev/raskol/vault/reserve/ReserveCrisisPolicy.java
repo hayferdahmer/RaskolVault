@@ -29,7 +29,7 @@ public final class ReserveCrisisPolicy {
             if (coverage < recoveryThreshold) {
                 return Level.CRISIS;
             }
-            return coverage < recoveryThreshold ? Level.WARNING : Level.NORMAL;
+            return Level.NORMAL;
         }
 
         if (coverage < crisisThreshold) {
