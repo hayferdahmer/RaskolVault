@@ -64,11 +64,7 @@ public final class ReserveGui implements Listener {
         inv.setItem(28, item(Material.HOPPER, "&cВывод",
                 List.of("&7Вывести золото из резерва себе", "&7Лимит: 25% резерва в сутки", "&7Клик → ввод суммы в чат")));
         inv.setItem(29, item(Material.ARROW, "&7Назад в кабинет", List.of()));
-        inv.setItem(31, item(Material.BOOK, "&6Справка",
-                List.of("&7Резерв обеспечивает национальную валюту.",
-                        "&7Покрытие = резерв / (эмиссия × паритет).",
-                        "&7Покрытие < 100% → валюта дешевеет.",
-                        "&7Покрытие < 50% → КРИЗИС.")));
+        ReserveBank.CrisisLevelPlaceholder unused = null;
         for (int i = 36; i < 54; i++) inv.setItem(i, item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of()));
         king.openInventory(inv);
     }
