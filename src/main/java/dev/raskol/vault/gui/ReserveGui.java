@@ -3,6 +3,7 @@ package dev.raskol.vault.gui;
 
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.reserve.ReserveBank;
+import dev.raskol.vault.reserve.ReserveCrisisPolicy;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -64,7 +65,19 @@ public final class ReserveGui implements Listener {
         inv.setItem(28, item(Material.HOPPER, "&cВывод",
                 List.of("&7Вывести золото из резерва себе", "&7Лимит: 25% резерва в сутки", "&7Клик → ввод суммы в чат")));
         inv.setItem(29, item(Material.ARROW, "&7Назад в кабинет", List.of()));
-        ReserveBank.CrisisLevelPlaceholder unused = null;
+        ReserveCrisisPolicy.Level crisis = bank.crisisState(nation);
+        double coverage = bank.coverageOfNation(nation);
+        String crisisLabel = switch (crisis) {
+            case NORMAL -> "&aНОРМА";
+            case WARNING -> "&eПРЕДУПРЕЖДЕНИЕ";
+            case CRISIS -> "&cКРИЗИС";
+        };
+        inv.setItem(31, item(Material.BOOK, "&6Справка и состояние резерва",
+                List.of("&7Покрытие: &f" + fmt(coverage * 100.0D) + "%",
+                        "&7Состояние: " + crisisLabel,
+                        "&7Покрытие = резерв / (эмиссия × паритет).",
+                        "&7Кризис: ниже 50%; выход: от 60%.",
+                        "&7В кризисе эмиссия и вывод запрещены.")));
         for (int i = 36; i < 54; i++) inv.setItem(i, item(Material.BLACK_STAINED_GLASS_PANE, "&8·", List.of()));
         king.openInventory(inv);
     }
