@@ -343,7 +343,7 @@ public final class RaskolVault extends JavaPlugin {
             "&6 ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚══════╝ ╚═╝  ╚═╝  ╚═════╝  ╚══════╝",
             "&8 ────────────────────────────────────────────────",
             "&7        VAULT &8· &fзолотой стандарт &8· &6v" + getPluginMeta().getVersion(),
-            "&7        РАСКОЛ &8| &fДВЕ КОРОНЫ &8· &6Paper 1.21",
+            "&7        РАСКОЛ &8| &fДВЕ КОРОНЫ &8· &6Paper 26.2 · Java 25",
             "&8 ────────────────────────────────────────────────"
         };
         var console = Bukkit.getConsoleSender();
