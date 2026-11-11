@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class SQLiteLedger {
 
-    public static final int SCHEMA_VERSION = 9;
+    public static final int SCHEMA_VERSION = 10;
 
     public record AbsoluteBalance(UUID owner, String currencyId, double newAmount) {}
     public record CheckedBalance(UUID owner, String currencyId, double expectedOld, double newAmount) {}
@@ -63,13 +63,21 @@ public final class SQLiteLedger {
                                   String currencyId, double amount, double lockedPrice, String itemBase64,
                                   String valuationCurrencyId, double lockedValue,
                                   double recoverableInterest, double recoverablePrincipal, String status) {}
+    public record BankInterestPayableRow(String id, UUID owner, String ownerName, String nation,
+                                         String currencyId, double amount, long createdAt) {}
     public record BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
                                List<BankPoolRow> pools, List<BankCreditRow> credit,
-                               List<BankPendingRow> pendingReturns, List<BankAssetLotRow> assetLots) {
+                               List<BankPendingRow> pendingReturns, List<BankAssetLotRow> assetLots,
+                               List<BankInterestPayableRow> interestPayables) {
         public BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
                             List<BankPoolRow> pools, List<BankCreditRow> credit,
                             List<BankPendingRow> pendingReturns) {
-            this(accounts, loans, pools, credit, pendingReturns, List.of());
+            this(accounts, loans, pools, credit, pendingReturns, List.of(), List.of());
+        }
+        public BankSnapshot(List<BankAccountRow> accounts, List<BankLoanRow> loans,
+                            List<BankPoolRow> pools, List<BankCreditRow> credit,
+                            List<BankPendingRow> pendingReturns, List<BankAssetLotRow> assetLots) {
+            this(accounts, loans, pools, credit, pendingReturns, assetLots, List.of());
         }
         public BankSnapshot {
             accounts = List.copyOf(accounts);
@@ -78,6 +86,7 @@ public final class SQLiteLedger {
             credit = List.copyOf(credit);
             pendingReturns = List.copyOf(pendingReturns);
             assetLots = List.copyOf(assetLots);
+            interestPayables = List.copyOf(interestPayables);
         }
     }
     public record ExchangeOrderRow(String id, UUID owner, String nation, String sellCurrency,
@@ -243,6 +252,14 @@ public final class SQLiteLedger {
                         + "item_base64 TEXT NOT NULL, created_at INTEGER NOT NULL)");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_bank_collateral_intents_player "
                         + "ON bank_collateral_intents(player)");
+                st.execute("CREATE TABLE IF NOT EXISTS bank_interest_payables ("
+                        + "id TEXT PRIMARY KEY, owner TEXT NOT NULL, owner_name TEXT NOT NULL,"
+                        + "nation TEXT NOT NULL, currency_id TEXT NOT NULL, amount REAL NOT NULL,"
+                        + "created_at INTEGER NOT NULL)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_bank_interest_payables_owner "
+                        + "ON bank_interest_payables(owner)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_bank_interest_payables_pool "
+                        + "ON bank_interest_payables(nation,currency_id,created_at,id)");
                 st.execute("CREATE TABLE IF NOT EXISTS bank_storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
                 st.execute("CREATE TABLE IF NOT EXISTS operation_requests ("
                         + "operation_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,"
@@ -590,6 +607,13 @@ public final class SQLiteLedger {
                 throw new LedgerException("invalid pending collateral row in atomic snapshot");
             }
         }
+        for (BankInterestPayableRow row : snapshot.interestPayables()) {
+            if (row == null || blank(row.id()) || row.owner() == null || blank(row.nation())
+                    || blank(row.currencyId()) || !Double.isFinite(row.amount()) || row.amount() <= 0.0D
+                    || row.createdAt() <= 0L) {
+                throw new LedgerException("invalid bank interest payable row in atomic snapshot");
+            }
+        }
     }
 
     private boolean blank(String value) {
@@ -604,6 +628,7 @@ public final class SQLiteLedger {
             st.executeUpdate("DELETE FROM bank_credit");
             st.executeUpdate("DELETE FROM bank_pending_returns");
             st.executeUpdate("DELETE FROM bank_asset_lots");
+            st.executeUpdate("DELETE FROM bank_interest_payables");
         }
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO bank_accounts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
             for (BankAccountRow r : snapshot.accounts()) {
@@ -646,6 +671,21 @@ public final class SQLiteLedger {
             for (BankPendingRow r : snapshot.pendingReturns()) {
                 ps.setString(1,r.returnId()); ps.setString(2,r.player().toString());
                 ps.setString(3,r.itemBase64()); ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+        try (PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO bank_interest_payables(id,owner,owner_name,nation,currency_id,amount,created_at) "
+                        + "VALUES(?,?,?,?,?,?,?)")) {
+            for (BankInterestPayableRow r : snapshot.interestPayables()) {
+                ps.setString(1, r.id());
+                ps.setString(2, r.owner().toString());
+                ps.setString(3, r.ownerName());
+                ps.setString(4, r.nation());
+                ps.setString(5, r.currencyId());
+                ps.setDouble(6, r.amount());
+                ps.setLong(7, r.createdAt());
+                ps.addBatch();
             }
             ps.executeBatch();
         }
@@ -977,6 +1017,26 @@ public final class SQLiteLedger {
         } catch (SQLException e) {
             throw new LedgerException("bankAssetLotsAll: " + e.getMessage(), e);
         } finally { finish(c, ok); }
+        return out;
+    }
+
+    public List<BankInterestPayableRow> bankInterestPayablesAll() {
+        List<BankInterestPayableRow> out = new ArrayList<>();
+        Connection c = pool.borrow();
+        boolean ok = false;
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT id,owner,owner_name,nation,currency_id,amount,created_at "
+                     + "FROM bank_interest_payables ORDER BY created_at,id")) {
+            while (rs.next()) {
+                out.add(new BankInterestPayableRow(rs.getString(1), UUID.fromString(rs.getString(2)),
+                        rs.getString(3), rs.getString(4), rs.getString(5), rs.getDouble(6), rs.getLong(7)));
+            }
+            ok = true;
+        } catch (SQLException e) {
+            throw new LedgerException("bankInterestPayablesAll: " + e.getMessage(), e);
+        } finally {
+            finish(c, ok);
+        }
         return out;
     }
 
