@@ -11,11 +11,13 @@ import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.wallet.WalletService;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.DoubleSupplier;
 
@@ -33,6 +35,9 @@ public final class ReserveBank {
                                  double coverage, boolean changed) {
     }
 
+    public record CrisisTransition(String nation, String currencyId, CrisisSnapshot snapshot) {
+    }
+
     private static final long CACHE_TTL_MS = 5000L;
 
     private final RaskolVault plugin;
@@ -44,6 +49,8 @@ public final class ReserveBank {
     private final Map<String, Long> cacheExpiry = new ConcurrentHashMap<>();
     private final Map<String, ReentrantLock> mintLocks = new ConcurrentHashMap<>();
     private final Map<String, ReserveCrisisPolicy.Level> crisisStates = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedQueue<CrisisTransition> pendingCrisisTransitions =
+            new ConcurrentLinkedQueue<>();
 
     public ReserveBank(RaskolVault plugin, WalletService wallets,
                        CurrencyRegistry currencies, SQLiteLedger ledger) {
@@ -100,8 +107,21 @@ public final class ReserveBank {
                 plugin.getConfig().getDouble("reserve.crisis-threshold", coverageFloor()),
                 plugin.getConfig().getDouble("reserve.recovery-threshold", 0.60D));
         crisisStates.put(key, current);
-        return new CrisisSnapshot(previous, current, coverage,
+        CrisisSnapshot snapshot = new CrisisSnapshot(previous, current, coverage,
                 previous != null && previous != current);
+        if (snapshot.changed()) {
+            pendingCrisisTransitions.add(new CrisisTransition(nation, currencyId, snapshot));
+        }
+        return snapshot;
+    }
+
+    public List<CrisisTransition> drainCrisisTransitions() {
+        List<CrisisTransition> transitions = new ArrayList<>();
+        CrisisTransition transition;
+        while ((transition = pendingCrisisTransitions.poll()) != null) {
+            transitions.add(transition);
+        }
+        return transitions;
     }
 
     public ReserveCrisisPolicy.Level crisisState(String nation, String currencyId) {
