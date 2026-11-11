@@ -526,16 +526,30 @@ public final class BankService implements Listener {
         pools.put(key, oldPool + principalPart);
         interestReserves.put(key, oldInterestReserve + interestPart);
         loans.put(loanId, staged);
-        SQLiteLedger.BankAssetLotRow previousCollateralLot = fullyRepaid
-                ? assetLots.remove("collateral-" + loanId) : null;
+        String collateralLotId = "collateral-" + loanId;
+        SQLiteLedger.BankAssetLotRow currentCollateralLot = assetLots.get(collateralLotId);
+        boolean collateralHeld = currentCollateralLot != null && "HELD".equals(currentCollateralLot.status());
+        boolean collateralCanBeReturned = l.status() == BankLoan.Status.ACTIVE || collateralHeld;
+        SQLiteLedger.BankAssetLotRow previousCollateralLot = null;
+        if (fullyRepaid) {
+            previousCollateralLot = assetLots.remove(collateralLotId);
+        } else if (collateralHeld) {
+            // Частичный платёж до продажи залога уменьшает сумму, которую продажа ещё может покрыть.
+            previousCollateralLot = currentCollateralLot;
+            assetLots.put(collateralLotId, new SQLiteLedger.BankAssetLotRow(
+                    currentCollateralLot.lotId(), currentCollateralLot.assetType(), currentCollateralLot.nation(),
+                    currentCollateralLot.sourceBorrower(), currentCollateralLot.sourceLoanId(),
+                    currentCollateralLot.currencyId(), currentCollateralLot.amount(), currentCollateralLot.lockedPrice(),
+                    currentCollateralLot.itemBase64(), currentCollateralLot.valuationCurrencyId(),
+                    currentCollateralLot.lockedValue(), staged.accrued(), staged.principal(), "HELD"));
+        }
 
         List<WalletService.WalletDelta> walletChanges = new ArrayList<>();
         walletChanges.add(new WalletService.WalletDelta(borrower, l.currencyId(), -pay));
         List<Transaction> transactions = new ArrayList<>();
         transactions.add(new Transaction(-1L, now, borrower, null, l.currencyId(), pay,
                 TransactionType.PAY, "bank:loan:repay:" + loanId, null));
-        boolean collateralStillPledged = l.status() == BankLoan.Status.ACTIVE;
-        if (fullyRepaid && collateralStillPledged && l.collateralType() == BankLoan.CollateralType.CURRENCY
+        if (fullyRepaid && collateralCanBeReturned && l.collateralType() == BankLoan.CollateralType.CURRENCY
                 && l.collateralCurrency() != null && l.collateralAmount() > 0.0D) {
             walletChanges.add(new WalletService.WalletDelta(borrower, l.collateralCurrency(), l.collateralAmount()));
             transactions.add(new Transaction(-1L, now, null, borrower, l.collateralCurrency(),
@@ -544,7 +558,7 @@ public final class BankService implements Listener {
 
         boolean pendingCollateralReturn = false;
         List<SQLiteLedger.BankPendingRow> previousPending = null;
-        if (fullyRepaid && collateralStillPledged && l.collateralType() == BankLoan.CollateralType.ITEM) {
+        if (fullyRepaid && collateralCanBeReturned && l.collateralType() == BankLoan.CollateralType.ITEM) {
             // Возврат предмета сначала попадает в тот же SQLite-коммит, что и закрытие кредита.
             // Доставка выполняется после фиксации, чтобы сбой сервера не потерял залог между операциями.
             previousPending = new ArrayList<>(pendingReturns.getOrDefault(borrower, List.of()));
