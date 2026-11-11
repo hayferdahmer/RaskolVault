@@ -1299,7 +1299,17 @@ public final class BankService implements Listener {
     }
 
     public synchronized boolean saveAll() {
-        return saveAccounts() && saveLoans() && savePools() && saveCredit() && savePending();
+        // Все банковские операции уже сохраняются атомарными snapshot-коммитами.
+        // При выключении повторно фиксируем целостный снимок одной SQLite-транзакцией,
+        // не перезаписывая отдельные таблицы последовательно и не теряя asset lots.
+        try {
+            return wallets.applyBatchOnce("bank:shutdown-snapshot:" + UUID.randomUUID(),
+                    List.of(), List.of(), List.of(), bankSnapshot(), List.of());
+        } catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось атомарно сохранить банковский snapshot при выключении: "
+                    + exception.getMessage());
+            return false;
+        }
     }
 
     private static String serialize(ItemStack item) {
