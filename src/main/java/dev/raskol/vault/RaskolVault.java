@@ -269,7 +269,7 @@ public final class RaskolVault extends JavaPlugin {
         long inflationMinutes = getConfig().getLong("reserve.check-interval-minutes", 60);
         if (inflationMinutes > 0) {
             long period = inflationMinutes * 60L * 20L;
-            inflationTask = getServer().getScheduler().runTaskTimerAsynchronously(this, inflationCheckpoint, period, period);
+            inflationTask = getServer().getScheduler().runTaskTimer(this, inflationCheckpoint, period, period);
         }
         long reconcileMinutes = getConfig().getLong("storage.reconcile-interval-minutes", 30);
         if (reconcileMinutes > 0) {
