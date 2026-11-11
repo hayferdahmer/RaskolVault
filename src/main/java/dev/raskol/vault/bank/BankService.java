@@ -777,6 +777,9 @@ public final class BankService implements Listener {
         for (SQLiteLedger.BankPendingRow row : new ArrayList<>(rows)) {
             if (hasDeliveredCollateral(player, row.returnId())) {
                 markCollateralReceipt(player, row.returnId());
+                // Сначала фиксируем квитанцию и состояние инвентаря игрока на диск,
+                // и только затем удаляем durable-запись возврата из SQLite.
+                player.saveData();
                 acknowledgeCollateralReturn(owner, row);
                 continue;
             }
@@ -807,6 +810,8 @@ public final class BankService implements Listener {
             }
             // Квитанция хранится в данных игрока и остаётся с ним, даже если предмет переложен в сундук.
             markCollateralReceipt(player, row.returnId());
+            // Подтверждение в SQLite допустимо только после сохранения предмета и квитанции.
+            player.saveData();
             delivered++;
             acknowledgeCollateralReturn(owner, row);
         }
