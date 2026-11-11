@@ -39,7 +39,13 @@ public final class BankGui implements Listener {
     public static final class DepositsHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
     public static final class DepositTermHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
     public static final class LoansHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
-    public static final class LoanDetailHolder implements InventoryHolder { final String loanId; LoanDetailHolder(String id){this.loanId=id;} private Inventory inv; @Override public Inventory getInventory() { return inv; } }
+    public static final class LoanDetailHolder implements InventoryHolder {
+        final String loanId;
+        final String repaymentRequestId = UUID.randomUUID().toString();
+        LoanDetailHolder(String id) { this.loanId = id; }
+        private Inventory inv;
+        @Override public Inventory getInventory() { return inv; }
+    }
     public static final class LoanTypeHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
     public static final class LoanCollateralHolder implements InventoryHolder { private Inventory inv; @Override public Inventory getInventory() { return inv; } }
 
@@ -253,9 +259,15 @@ public final class BankGui implements Listener {
             if (slot == 22) { openLoans(p); return; }
             BankLoan l = bank().getLoan(lh.loanId);
             if (l == null) return;
-            if (slot == 11) { p.closeInventory(); chatField.put(uuid, "repay-amount:" + lh.loanId); msg(p, "&7Введите сумму погашения:"); return; }
+            if (slot == 11) {
+                p.closeInventory();
+                chatField.put(uuid, "repay-amount:" + lh.loanId + ":" + lh.repaymentRequestId);
+                msg(p, "&7Введите сумму погашения:");
+                return;
+            }
             if (slot == 15) {
-                String err = bank().repayLoan(uuid, lh.loanId, l.projectedOutstanding(System.currentTimeMillis()));
+                String err = bank().repayLoan(uuid, lh.loanId,
+                        l.projectedOutstanding(System.currentTimeMillis()), lh.repaymentRequestId);
                 msg(p, err == null ? "&aКредит погашен" : "&c" + err);
                 openLoans(p);
             }
@@ -339,7 +351,9 @@ public final class BankGui implements Listener {
             }
             if (field.startsWith("repay-amount:")) {
                 if (!(v > 0)) { msg(p, "&cСумма > 0"); openLoans(p); return; }
-                String err = bank().repayLoan(uuid, field.substring("repay-amount:".length()), v);
+                String[] request = field.split(":", 3);
+                if (request.length != 3) { msg(p, "&cСессия погашения недействительна"); openLoans(p); return; }
+                String err = bank().repayLoan(uuid, request[1], v, request[2]);
                 msg(p, err == null ? "&aПогашение принято" : "&c" + err);
                 openLoans(p);
             }
