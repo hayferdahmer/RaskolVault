@@ -132,6 +132,7 @@ RaskolVault заменяет одно-валютную модель на **си�
 - [`docs/RESERVE_CRISIS.md`](docs/RESERVE_CRISIS.md) — состояния валютного резерва и кризисный протокол
 - [`docs/BANK_COLLATERAL_PROTOCOL.md`](docs/BANK_COLLATERAL_PROTOCOL.md) — учёт залоговых активов и восстановление предметного залога
 - [`docs/BANK_RECOURSE.md`](docs/BANK_RECOURSE.md) — регрессное взыскание и учёт остатка долга после реализации залога
+- [`docs/BANK_INTEREST_LIABILITIES.md`](docs/BANK_INTEREST_LIABILITIES.md) — долговые обязательства банка по невыплаченным процентам вкладчиков
 - [`INTEGRATION.md`](INTEGRATION.md) — API для плагинов-партнёров
 
 </details>
