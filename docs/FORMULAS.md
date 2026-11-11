@@ -178,10 +178,14 @@ seigniorage        = 0.02       (сеньораж при минте, сжига�
 
 Ежечасная самодиагностика (`audit.interval-minutes`):
 1. `Σ balances[currency]` сходится с резервом и sink'ами
-2. `Σ active_loans ≤ Σ deposits × reserveMultiplier`
-3. `Σ active_deposits ≥ Σ outstanding_accrued`
-4. WAL-checkpoint OK
-5. `writer.failed == 0` за последний интервал
+2. `Σ outstanding_loans_in_GLD ≤ reserveOf(nation) × reserveMultiplier`
+3. банковские активы и обязательства сверяются отдельно по каждой валюте
+4. отрицательный собственный капитал банка (`assets < liabilities`) отмечается как FAIL
+5. удерживаемый залог не включается в денежные активы до фактической реализации
+6. WAL-checkpoint OK
+7. `writer.failed == 0` за последний интервал
+
+Формулы банковского баланса и ограничения сверки: [BANK_BALANCE_SHEET.md](BANK_BALANCE_SHEET.md). Сверка является агрегированным snapshot-анализом, а не полноценным double-entry general ledger.
 
 При провале — WARN в лог.
 
