@@ -7,6 +7,7 @@ import dev.raskol.vault.api.currency.CurrencyRegistry;
 import dev.raskol.vault.api.currency.CurrencyType;
 import dev.raskol.vault.hook.TownyHook;
 import dev.raskol.vault.reserve.ReserveBank;
+import dev.raskol.vault.reserve.ReserveCrisisPolicy;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 
@@ -44,18 +45,27 @@ public final class InflationCheckpoint implements Runnable {
             }
             String nation = c.nationId();
             double cov = bank.coverageOf(nation, c.id());
-            Double prev = prevCoverage.put(nation, cov);
-            if (prev != null) {
-                if (prev >= 1.0D && cov < bank.coverageFloor()) {
-                    broadcast(nation, "&c⚠ КРИЗИС: покрытие " + pct(cov)
-                            + " ниже пола. Валюта " + c.id() + " девальвирована до резерв/эмиссия.");
-                } else if (prev >= 1.0D && cov < 1.0D) {
-                    broadcast(nation, "&eВнимание: покрытие " + pct(cov)
-                            + " < 100%. Валюта " + c.id() + " девальвирована.");
-                } else if (prev < 1.0D && cov >= 1.0D) {
-                    broadcast(nation, "&aРе-вальвация: покрытие " + pct(cov)
-                            + " ≥ 100%. Валюта " + c.id() + " вернулась к паритету.");
+            ReserveBank.CrisisSnapshot crisis = bank.refreshCrisisState(nation, c.id());
+            if (crisis.changed()) {
+                if (crisis.current() == ReserveCrisisPolicy.Level.CRISIS) {
+                    broadcast(nation, "&c⚠ КРИЗИС ВАЛЮТЫ " + c.id() + ": покрытие "
+                            + pct(crisis.coverage()) + ". Эмиссия и вывод из резерва приостановлены.");
+                } else if (crisis.previous() == ReserveCrisisPolicy.Level.CRISIS) {
+                    broadcast(nation, "&aКризис валюты " + c.id() + " преодолён: покрытие "
+                            + pct(crisis.coverage()) + ". Ограничения сняты.");
+                } else if (crisis.current() == ReserveCrisisPolicy.Level.WARNING) {
+                    broadcast(nation, "&eПредупреждение: покрытие валюты " + c.id()
+                            + " снизилось до " + pct(crisis.coverage()) + ".");
+                } else {
+                    broadcast(nation, "&aРезерв валюты " + c.id() + " восстановился: покрытие "
+                            + pct(crisis.coverage()) + ".");
                 }
+            }
+
+            Double prev = prevCoverage.put(nation, cov);
+            if (prev != null && prev < 1.0D && cov >= 1.0D) {
+                broadcast(nation, "&aРе-вальвация: покрытие " + pct(cov)
+                        + " ≥ 100%. Валюта " + c.id() + " вернулась к паритету.");
             }
         }
         long bulletinEvery = Math.max(1L,
