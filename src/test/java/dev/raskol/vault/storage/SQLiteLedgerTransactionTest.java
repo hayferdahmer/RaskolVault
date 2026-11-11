@@ -151,8 +151,10 @@ class SQLiteLedgerTransactionTest {
                 "collateral-loan-asset-1", "ITEM", "raskol", borrower, "loan-asset-1",
                 null, 1.0D, 1.0D, "serialized-item", "GLD", 150.0D,
                 10.0D, 100.0D, "HELD");
+        SQLiteLedger.BankInterestPayableRow payable = new SQLiteLedger.BankInterestPayableRow(
+                "deposit-interest-001", borrower, "Игрок", "raskol", "GLD", 17.5D, 1_700L);
         SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
-                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(lot));
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(lot), List.of(payable));
 
         ledger.commitAbsoluteCheckedOnce("bank-asset-lot-commit", "bank-asset-lot-fingerprint",
                 List.of(), List.of(), List.of(), snapshot, List.of());
@@ -163,6 +165,11 @@ class SQLiteLedgerTransactionTest {
         assertEquals("serialized-item", stored.itemBase64());
         assertEquals(150.0D, stored.lockedValue(), 0.000_001D);
         assertEquals("HELD", stored.status());
+        assertEquals(1, ledger.bankInterestPayablesAll().size());
+        SQLiteLedger.BankInterestPayableRow storedPayable = ledger.bankInterestPayablesAll().get(0);
+        assertEquals("deposit-interest-001", storedPayable.id());
+        assertEquals(borrower, storedPayable.owner());
+        assertEquals(17.5D, storedPayable.amount(), 0.000_001D);
     }
 
     @Test
@@ -250,6 +257,31 @@ class SQLiteLedgerTransactionTest {
                     if (type == char.class) return (char) 0;
                     return null;
                 });
+    }
+
+    @Test
+    void schemaNineMigrationCreatesInterestPayableStorage() throws Exception {
+        Path legacyFile = tempDir.resolve("legacy-v9.db");
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + legacyFile.toAbsolutePath());
+             Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA user_version=9");
+        }
+        SQLiteLedger legacyLedger = new SQLiteLedger(testPlugin(), legacyFile.toFile(), 1, "FULL", 2_000L);
+        try {
+            legacyLedger.init();
+            assertEquals(10, SQLiteLedger.SCHEMA_VERSION);
+            assertEquals(0, legacyLedger.bankInterestPayablesAll().size());
+            UUID owner = UUID.randomUUID();
+            SQLiteLedger.BankInterestPayableRow payable = new SQLiteLedger.BankInterestPayableRow(
+                    "migration-payable-1", owner, "Игрок", "raskol", "GLD", 4.25D, 1_700L);
+            SQLiteLedger.BankSnapshot snapshot = new SQLiteLedger.BankSnapshot(
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(payable));
+            legacyLedger.commitAbsoluteCheckedOnce("migration-payable-commit", "migration-payable",
+                    List.of(), List.of(), List.of(), snapshot, List.of());
+            assertEquals(4.25D, legacyLedger.bankInterestPayablesAll().get(0).amount(), 0.000_001D);
+        } finally {
+            legacyLedger.close();
+        }
     }
 
     @Test
