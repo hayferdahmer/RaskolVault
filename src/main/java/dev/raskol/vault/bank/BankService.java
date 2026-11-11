@@ -1103,7 +1103,6 @@ public final class BankService implements Listener {
             loan.setLastAccrualAt(row.lastAccrualAt());
             switch (row.status()) {
                 case "REPAID" -> loan.markRepaid();
-                case "DEFAULTED" -> loan.markDefaulted();
                 case "RECOVERY", "DEFAULTED" -> loan.markRecovery();
                 case "LIQUIDATED" -> {
                     if (loan.hasOutstandingBalance()) loan.markRecovery();
@@ -1174,7 +1173,6 @@ public final class BankService implements Listener {
                 loan.setLastAccrualAt(section.getLong("lastAccrualAt", loan.openedAt()));
                 switch (section.getString("status", "ACTIVE")) {
                     case "REPAID" -> loan.markRepaid();
-                    case "DEFAULTED" -> loan.markDefaulted();
                     case "RECOVERY", "DEFAULTED" -> loan.markRecovery();
                     case "LIQUIDATED" -> {
                         if (loan.hasOutstandingBalance()) loan.markRecovery();
