@@ -225,6 +225,12 @@ class SQLiteLedgerTransactionTest {
                 "intent-crash-001", player, "loan-crash-001", "serialized-item-payload", 1_700_000_000_000L);
 
         ledger.createBankCollateralIntent(intent);
+        SQLiteLedger.BankInterestPayableRow payable = new SQLiteLedger.BankInterestPayableRow(
+                "restart-interest-payable", player, "Игрок", "raskol", "GLD", 19.75D, 1_700L);
+        SQLiteLedger.BankSnapshot bankSnapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(payable));
+        ledger.commitAbsoluteCheckedOnce("restart-interest-payable-seed", "restart-interest-payable",
+                List.of(), List.of(), List.of(), bankSnapshot, List.of());
 
         SQLiteLedger.BankCollateralIntentRow stored = ledger.bankCollateralIntentsAll().get(0);
         assertEquals(intent.intentId(), stored.intentId());
@@ -239,6 +245,8 @@ class SQLiteLedgerTransactionTest {
         ledger.init();
         assertEquals(1, ledger.bankCollateralIntentsAll().size());
         assertEquals(intent.intentId(), ledger.bankCollateralIntentsAll().get(0).intentId());
+        assertEquals(1, ledger.bankInterestPayablesAll().size());
+        assertEquals(19.75D, ledger.bankInterestPayablesAll().get(0).amount(), 0.000_001D);
 
         ledger.deleteBankCollateralIntent(intent.intentId());
         org.junit.jupiter.api.Assertions.assertTrue(ledger.bankCollateralIntentsAll().isEmpty());
