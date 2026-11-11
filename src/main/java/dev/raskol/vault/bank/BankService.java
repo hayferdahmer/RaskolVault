@@ -129,11 +129,19 @@ public final class BankService implements Listener {
 
     public double maxLoans(String nation) { return bank.reserveOf(nation) * params(nation).reserveMultiplier(); }
 
+    private boolean hasUnresolvedRecovery(UUID borrower) {
+        if (borrower == null) return false;
+        return loans.values().stream().anyMatch(loan -> loan.borrower().equals(borrower)
+                && loan.hasOutstandingBalance()
+                && loan.status() != BankLoan.Status.ACTIVE);
+    }
+
     public double totalOutstandingLoans(String nation) {
         long now = System.currentTimeMillis();
         double sum = 0;
         for (BankLoan l : loans.values())
-            if (l.nation().equalsIgnoreCase(nation) && l.isActive()) sum += l.outstanding(now) * priceInGld(l.currencyId());
+            if (l.nation().equalsIgnoreCase(nation) && l.hasOutstandingBalance())
+                sum += l.outstanding(now) * priceInGld(l.currencyId());
         return sum;
     }
     private double priceInGld(String currencyId) {
@@ -257,6 +265,8 @@ public final class BankService implements Listener {
                 || !(amount > 0.0D)) return "некорректные параметры кредита";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
         BankParams p = params(nation);
+        if (hasUnresolvedRecovery(borrower))
+            return "новый кредит недоступен: сначала погасите остаток задолженности после взыскания";
         if (amount > unsecuredMax(borrower, nation))
             return "лимит необеспеченного кредита: " + fmt(unsecuredMax(borrower, nation)) + " (повышайте кредитный скор)";
         if (totalOutstandingLoans(nation) + amount * priceInGld(currency) > maxLoans(nation))
@@ -278,6 +288,8 @@ public final class BankService implements Listener {
         if (player == null || nation == null || nation.isBlank() || currency == null || currency.isBlank()
                 || !Double.isFinite(amount) || amount <= 0.0D) return "некорректные параметры кредита";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
+        if (hasUnresolvedRecovery(player.getUniqueId()))
+            return "новый кредит недоступен: сначала погасите остаток задолженности после взыскания";
         ItemStack hand = player.getInventory().getItemInMainHand();
         if (hand == null || hand.getType().isAir()) return "предмет залога не найден в руке";
         double required = amount * params(nation).collateralRatio();
@@ -350,6 +362,8 @@ public final class BankService implements Listener {
                 || currency == null || currency.isBlank() || !Double.isFinite(amount)
                 || !(amount > 0.0D)) return "некорректные параметры кредита";
         if (termDays != 7 && termDays != 30 && termDays != 90) return "срок: 7/30/90 дней";
+        if (hasUnresolvedRecovery(borrower))
+            return "новый кредит недоступен: сначала погасите остаток задолженности после взыскания";
         // Валютный залог учитывается отдельным активом; при ликвидации он не
         // попадает в денежный пул до подтверждения фактической реализации.
         // Не допускаем выдачу новых залоговых кредитов, пока протоколы оценки и резервирования не стали crash-safe.
@@ -477,7 +491,7 @@ public final class BankService implements Listener {
                 || !Double.isFinite(amount) || !(amount > 0.0D)) return "некорректная сумма погашения";
         BankLoan l = loans.get(loanId);
         if (l == null || !l.borrower().equals(borrower)) return "кредит не найден";
-        if (!l.isActive()) return "кредит закрыт";
+        if (!l.isRepayable() || !l.hasOutstandingBalance()) return "кредит закрыт";
         long now = System.currentTimeMillis();
         BankLoan staged = new BankLoan(l.id(), l.borrower(), l.borrowerName(), l.nation(),
                 l.principal(), l.currencyId(), l.rateAnnual(), l.termDays(), l.openedAt(), l.dueAt(),
@@ -486,6 +500,10 @@ public final class BankService implements Listener {
         staged.setRepaid(l.repaid());
         staged.setAccrued(l.accrued());
         staged.setLastAccrualAt(l.lastAccrualAt());
+        if (l.status() == BankLoan.Status.RECOVERY || l.status() == BankLoan.Status.DEFAULTED
+                || l.status() == BankLoan.Status.LIQUIDATED) {
+            staged.markRecovery();
+        }
         double out = staged.outstanding(now);
         double pay = Math.min(amount, out);
         if (!(pay > 0.0D)) return "нечего погашать";
@@ -516,7 +534,8 @@ public final class BankService implements Listener {
         List<Transaction> transactions = new ArrayList<>();
         transactions.add(new Transaction(-1L, now, borrower, null, l.currencyId(), pay,
                 TransactionType.PAY, "bank:loan:repay:" + loanId, null));
-        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.CURRENCY
+        boolean collateralStillPledged = l.status() == BankLoan.Status.ACTIVE;
+        if (fullyRepaid && collateralStillPledged && l.collateralType() == BankLoan.CollateralType.CURRENCY
                 && l.collateralCurrency() != null && l.collateralAmount() > 0.0D) {
             walletChanges.add(new WalletService.WalletDelta(borrower, l.collateralCurrency(), l.collateralAmount()));
             transactions.add(new Transaction(-1L, now, null, borrower, l.collateralCurrency(),
@@ -525,7 +544,7 @@ public final class BankService implements Listener {
 
         boolean pendingCollateralReturn = false;
         List<SQLiteLedger.BankPendingRow> previousPending = null;
-        if (fullyRepaid && l.collateralType() == BankLoan.CollateralType.ITEM) {
+        if (fullyRepaid && collateralStillPledged && l.collateralType() == BankLoan.CollateralType.ITEM) {
             // Возврат предмета сначала попадает в тот же SQLite-коммит, что и закрытие кредита.
             // Доставка выполняется после фиксации, чтобы сбой сервера не потерял залог между операциями.
             previousPending = new ArrayList<>(pendingReturns.getOrDefault(borrower, List.of()));
@@ -582,7 +601,7 @@ public final class BankService implements Listener {
         double oldInterestReserve = interestReserves.getOrDefault(key, 0.0D);
         int oldDefaultedCount = defaultedCount.getOrDefault(l.borrower(), 0);
 
-        staged.markLiquidated();
+        staged.markRecovery();
         if (l.collateralType() == BankLoan.CollateralType.CURRENCY
                 || l.collateralType() == BankLoan.CollateralType.ITEM) {
             String lotId = "collateral-" + loanId;
@@ -652,7 +671,7 @@ public final class BankService implements Listener {
      * proceeds — реально полученная сумма в валюте оценки лота, а не оценочная стоимость.
      */
     public synchronized String realizeCollateralAsset(String lotId, double proceeds) {
-        if (lotId == null || lotId.isBlank() || !Double.isFinite(proceeds) || proceeds <= 0.0D)
+        if (lotId == null || lotId.isBlank() || !Double.isFinite(proceeds) || proceeds < 0.0D)
             return "некорректные параметры реализации залога";
         SQLiteLedger.BankAssetLotRow lot = assetLots.get(lotId);
         if (lot == null) return "лот залога не найден";
@@ -662,6 +681,24 @@ public final class BankService implements Listener {
         double principalRecovered = Math.min(lot.recoverablePrincipal(),
                 Math.max(0.0D, proceeds - interestRecovered));
         double surplus = Math.max(0.0D, proceeds - interestRecovered - principalRecovered);
+        BankLoan sourceLoan = loans.get(lot.sourceLoanId());
+        if (sourceLoan == null || !sourceLoan.hasOutstandingBalance()
+                || !sourceLoan.borrower().equals(lot.sourceBorrower())) {
+            return "связанный кредит не найден или не содержит взыскиваемого долга";
+        }
+        BankLoan stagedLoan = new BankLoan(sourceLoan.id(), sourceLoan.borrower(), sourceLoan.borrowerName(),
+                sourceLoan.nation(), sourceLoan.principal(), sourceLoan.currencyId(), sourceLoan.rateAnnual(),
+                sourceLoan.termDays(), sourceLoan.openedAt(), sourceLoan.dueAt(), sourceLoan.collateralType(),
+                sourceLoan.collateralCurrency(), sourceLoan.collateralItemBase64(), sourceLoan.collateralValue(),
+                sourceLoan.collateralAmount(), sourceLoan.collateralPrice(), sourceLoan.creditScoreAtOpen());
+        stagedLoan.setRepaid(sourceLoan.repaid());
+        stagedLoan.setAccrued(sourceLoan.accrued());
+        stagedLoan.setLastAccrualAt(sourceLoan.lastAccrualAt());
+        stagedLoan.markRecovery();
+        stagedLoan.applyRepayment(interestRecovered + principalRecovered);
+        boolean debtSettled = !stagedLoan.hasOutstandingBalance();
+        if (debtSettled) stagedLoan.markLiquidated();
+
         String key = poolKey(lot.nation(), lot.valuationCurrencyId());
         double oldPool = pools.getOrDefault(key, 0.0D);
         double oldInterest = interestReserves.getOrDefault(key, 0.0D);
@@ -673,19 +710,23 @@ public final class BankService implements Listener {
                 lot.valuationCurrencyId(), lot.lockedValue(), lot.recoverableInterest(),
                 lot.recoverablePrincipal(), "REALIZED");
         assetLots.put(lotId, realized);
+        loans.put(stagedLoan.id(), stagedLoan);
 
         List<WalletService.WalletDelta> walletChanges = surplus > 0.0D
                 ? List.of(new WalletService.WalletDelta(lot.sourceBorrower(), lot.valuationCurrencyId(), surplus))
                 : List.of();
-        List<Transaction> journal = List.of(new Transaction(-1L, System.currentTimeMillis(),
-                null, null, lot.valuationCurrencyId(), proceeds,
-                TransactionType.PAY, "bank:collateral:realize:" + lotId,
-                "{\"proceeds\":" + proceeds + ",\"interest\":" + interestRecovered
-                        + ",\"principal\":" + principalRecovered + ",\"surplus\":" + surplus + "}"));
+        List<Transaction> journal = proceeds > 0.0D
+                ? List.of(new Transaction(-1L, System.currentTimeMillis(),
+                        null, null, lot.valuationCurrencyId(), proceeds,
+                        TransactionType.PAY, "bank:collateral:realize:" + lotId,
+                        "{\"proceeds\":" + proceeds + ",\"interest\":" + interestRecovered
+                                + ",\"principal\":" + principalRecovered + ",\"surplus\":" + surplus + "}"))
+                : List.of();
         boolean committed = wallets.applyBatchOnce("bank:collateral:realize:" + lotId,
                 walletChanges, List.of(), List.of(), bankSnapshot(), journal);
         if (!committed) {
             assetLots.put(lotId, lot);
+            loans.put(sourceLoan.id(), sourceLoan);
             pools.put(key, oldPool);
             if (oldInterest == 0.0D) interestReserves.remove(key); else interestReserves.put(key, oldInterest);
             return "реализация не подтверждена: состояние лота восстановлено";
@@ -1063,7 +1104,11 @@ public final class BankService implements Listener {
             switch (row.status()) {
                 case "REPAID" -> loan.markRepaid();
                 case "DEFAULTED" -> loan.markDefaulted();
-                case "LIQUIDATED" -> loan.markLiquidated();
+                case "RECOVERY", "DEFAULTED" -> loan.markRecovery();
+                case "LIQUIDATED" -> {
+                    if (loan.hasOutstandingBalance()) loan.markRecovery();
+                    else loan.markLiquidated();
+                }
                 default -> { }
             }
             loans.put(loan.id(), loan);
@@ -1130,7 +1175,11 @@ public final class BankService implements Listener {
                 switch (section.getString("status", "ACTIVE")) {
                     case "REPAID" -> loan.markRepaid();
                     case "DEFAULTED" -> loan.markDefaulted();
-                    case "LIQUIDATED" -> loan.markLiquidated();
+                    case "RECOVERY", "DEFAULTED" -> loan.markRecovery();
+                    case "LIQUIDATED" -> {
+                        if (loan.hasOutstandingBalance()) loan.markRecovery();
+                        else loan.markLiquidated();
+                    }
                     default -> { }
                 }
                 loans.put(id, loan);
