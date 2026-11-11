@@ -164,6 +164,26 @@ public final class BankService implements Listener {
      * Формирует сверку активов и обязательств отдельно по каждой валюте.
      * Оценка удерживаемого залога показывается справочно и не включается в активы.
      */
+    public synchronized List<BankBalanceSheet> allBalanceSheets() {
+        java.util.Set<String> nations = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (String key : pools.keySet()) {
+            int split = key.indexOf('|');
+            if (split > 0) nations.add(key.substring(0, split));
+        }
+        for (String key : interestReserves.keySet()) {
+            int split = key.indexOf('|');
+            if (split > 0) nations.add(key.substring(0, split));
+        }
+        for (BankAccount account : accounts.values()) nations.add(account.nation());
+        for (BankLoan loan : loans.values()) nations.add(loan.nation());
+        for (SQLiteLedger.BankInterestPayableRow claim : interestPayables.values()) nations.add(claim.nation());
+        for (SQLiteLedger.BankAssetLotRow lot : assetLots.values()) nations.add(lot.nation());
+
+        List<BankBalanceSheet> result = new ArrayList<>();
+        for (String nation : nations) result.addAll(balanceSheets(nation));
+        return List.copyOf(result);
+    }
+
     public synchronized List<BankBalanceSheet> balanceSheets(String nation) {
         if (nation == null || nation.isBlank()) return List.of();
         long now = System.currentTimeMillis();
