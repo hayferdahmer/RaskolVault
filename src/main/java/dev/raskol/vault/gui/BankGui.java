@@ -158,7 +158,7 @@ public final class BankGui implements Listener {
                 "&7Залог: &f" + l.collateralType(),
                 l.status() == BankLoan.Status.RECOVERY ? "&cСтатус: взыскание, проценты заморожены" : "&7Статус: " + l.status())));
         inv.setItem(11, it(Material.GOLD_NUGGET, "&aПогасить часть", List.of("&eКлик → ввод суммы")));
-        inv.setItem(15, it(Material.EMERALD_BLOCK, "&aПогасить полностью", List.of("&7Сумма: &f" + Numbers.fmt(l.outstanding(now)))));
+        inv.setItem(15, it(Material.EMERALD_BLOCK, "&aПогасить полностью", List.of("&7Сумма: &f" + Numbers.fmt(l.projectedOutstanding(now)))));
         inv.setItem(22, it(Material.ARROW, "&7Назад", List.of()));
         p.openInventory(inv);
     }
