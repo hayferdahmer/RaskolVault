@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Почасовой чекпоинт покрытия (1.1.2): кризис (покрытие<пола) и ре-вальвация
+ * Чекпоинт покрытия: кризисные переходы и ре-вальвация
  * (покрытие вернулось ≥100%) дают broadcast нации; еженедельный бюллетень экономики.
  */
 public final class InflationCheckpoint implements Runnable {
@@ -45,29 +45,35 @@ public final class InflationCheckpoint implements Runnable {
             }
             String nation = c.nationId();
             double cov = bank.coverageOf(nation, c.id());
-            ReserveBank.CrisisSnapshot crisis = bank.refreshCrisisState(nation, c.id());
-            if (crisis.changed()) {
-                if (crisis.current() == ReserveCrisisPolicy.Level.CRISIS) {
-                    broadcast(nation, "&c⚠ КРИЗИС ВАЛЮТЫ " + c.id() + ": покрытие "
-                            + pct(crisis.coverage()) + ". Эмиссия и вывод из резерва приостановлены.");
-                } else if (crisis.previous() == ReserveCrisisPolicy.Level.CRISIS) {
-                    broadcast(nation, "&aКризис валюты " + c.id() + " преодолён: покрытие "
-                            + pct(crisis.coverage()) + ". Ограничения сняты.");
-                } else if (crisis.current() == ReserveCrisisPolicy.Level.WARNING) {
-                    broadcast(nation, "&eПредупреждение: покрытие валюты " + c.id()
-                            + " снизилось до " + pct(crisis.coverage()) + ".");
-                } else {
-                    broadcast(nation, "&aРезерв валюты " + c.id() + " восстановился: покрытие "
-                            + pct(crisis.coverage()) + ".");
-                }
-            }
+            bank.refreshCrisisState(nation, c.id());
 
-            Double prev = prevCoverage.put(nation, cov);
+            String coverageKey = nation.toLowerCase(Locale.ROOT) + "|" + c.id().toLowerCase(Locale.ROOT);
+            Double prev = prevCoverage.put(coverageKey, cov);
             if (prev != null && prev < 1.0D && cov >= 1.0D) {
                 broadcast(nation, "&aРе-вальвация: покрытие " + pct(cov)
                         + " ≥ 100%. Валюта " + c.id() + " вернулась к паритету.");
             }
         }
+
+        for (ReserveBank.CrisisTransition transition : bank.drainCrisisTransitions()) {
+            ReserveBank.CrisisSnapshot crisis = transition.snapshot();
+            String nation = transition.nation();
+            String currencyId = transition.currencyId();
+            if (crisis.current() == ReserveCrisisPolicy.Level.CRISIS) {
+                broadcast(nation, "&c⚠ КРИЗИС ВАЛЮТЫ " + currencyId + ": покрытие "
+                        + pct(crisis.coverage()) + ". Эмиссия и вывод из резерва приостановлены.");
+            } else if (crisis.previous() == ReserveCrisisPolicy.Level.CRISIS) {
+                broadcast(nation, "&aКризис валюты " + currencyId + " преодолён: покрытие "
+                        + pct(crisis.coverage()) + ". Ограничения сняты.");
+            } else if (crisis.current() == ReserveCrisisPolicy.Level.WARNING) {
+                broadcast(nation, "&eПредупреждение: покрытие валюты " + currencyId
+                        + " снизилось до " + pct(crisis.coverage()) + ".");
+            } else {
+                broadcast(nation, "&aРезерв валюты " + currencyId + " восстановился: покрытие "
+                        + pct(crisis.coverage()) + ".");
+            }
+        }
+
         long bulletinEvery = Math.max(1L,
                 plugin.getConfig().getLong("reserve.bulletin.interval-minutes", 10080L)
                         / Math.max(1L, plugin.getConfig().getLong("reserve.check-interval-minutes", 60L)));
