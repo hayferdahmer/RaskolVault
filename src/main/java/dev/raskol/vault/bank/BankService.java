@@ -792,32 +792,27 @@ public final class BankService implements Listener {
         String key = poolKey(nation, currency);
         double available = Math.max(0.0D, interestReserves.getOrDefault(key, 0.0D));
         if (available <= 1.0E-8D) return false;
-        List<SQLiteLedger.BankInterestPayableRow> claims = interestPayables.values().stream()
-                .filter(row -> row.nation().equalsIgnoreCase(nation) && row.currencyId().equalsIgnoreCase(currency))
-                .sorted(java.util.Comparator.comparingLong(SQLiteLedger.BankInterestPayableRow::createdAt)
-                        .thenComparing(SQLiteLedger.BankInterestPayableRow::id)).toList();
-        boolean changed = false;
-        for (SQLiteLedger.BankInterestPayableRow claim : claims) {
-            if (available <= 1.0E-8D) break;
-            double paid = Math.min(available, claim.amount());
-            if (paid <= 1.0E-8D) continue;
-            available -= paid;
-            double remaining = claim.amount() - paid;
-            if (remaining <= 1.0E-8D) {
+        InterestPayableSettlement.Result result = InterestPayableSettlement.settle(
+                new ArrayList<>(interestPayables.values()), nation, currency, available);
+        for (InterestPayableSettlement.Payment payment : result.payments()) {
+            SQLiteLedger.BankInterestPayableRow claim = payment.claim();
+            if (payment.remaining() <= 1.0E-8D) {
                 interestPayables.remove(claim.id());
             } else {
                 interestPayables.put(claim.id(), new SQLiteLedger.BankInterestPayableRow(
                         claim.id(), claim.owner(), claim.ownerName(), claim.nation(),
-                        claim.currencyId(), remaining, claim.createdAt()));
+                        claim.currencyId(), payment.remaining(), claim.createdAt()));
             }
-            walletChanges.add(new WalletService.WalletDelta(claim.owner(), claim.currencyId(), paid));
-            transactions.add(new Transaction(-1L, now, null, claim.owner(), claim.currencyId(), paid,
+            walletChanges.add(new WalletService.WalletDelta(claim.owner(), claim.currencyId(), payment.amount()));
+            transactions.add(new Transaction(-1L, now, null, claim.owner(), claim.currencyId(), payment.amount(),
                     TransactionType.PAY, "bank:deposit:interest-payable:" + claim.id(),
-                    "{\"claim\":\"" + claim.id() + "\",\"remaining\":" + Math.max(0.0D, remaining) + "}"));
-            changed = true;
+                    "{\"claim\":\"" + claim.id() + "\",\"remaining\":" + payment.remaining() + "}"));
         }
-        if (changed) interestReserves.put(key, Math.max(0.0D, available));
-        return changed;
+        if (!result.payments().isEmpty()) {
+            interestReserves.put(key, result.reserveRemaining());
+            return true;
+        }
+        return false;
     }
 
     public List<SQLiteLedger.BankInterestPayableRow> interestPayables(UUID owner) {
