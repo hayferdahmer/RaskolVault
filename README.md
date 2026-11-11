@@ -1,39 +1,66 @@
-<div align="center">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="banner-light.svg">
+    <img alt="RaskolVault — золотой стандарт экономики РАСКОЛ" src="banner.svg" width="100%">
+  </picture>
+</p>
 
-<img src="banner.svg" alt="RaskolVault — золотой стандарт экономики РАСКОЛ" width="100%">
+<p align="center">
+  <b>Многовалютная финансовая инфраструктура для Paper 26.2</b><br>
+  <i>Сервер «РАСКОЛ | ДВЕ КОРОНЫ»</i>
+</p>
 
-**Многовалютная финансовая инфраструктура для Paper 26.2**
-*Сервер «РАСКОЛ | ДВЕ КОРОНЫ»*
+<p align="center">
+  <img alt="версия" src="https://img.shields.io/badge/версия-1.2.6-c9922c?style=flat-square&labelColor=1c150d">
+  <img alt="Java" src="https://img.shields.io/badge/Java-25-c9922c?style=flat-square&labelColor=1c150d">
+  <img alt="Paper" src="https://img.shields.io/badge/Paper-26.2-c9922c?style=flat-square&labelColor=1c150d">
+  <img alt="SQLite" src="https://img.shields.io/badge/SQLite-WAL-c9922c?style=flat-square&labelColor=1c150d">
+  <img alt="лицензия" src="https://img.shields.io/badge/лицензия-Proprietary-8e2f2a?style=flat-square&labelColor=1c150d">
+  <br>
+  <img alt="сборка" src="https://img.shields.io/github/check-runs/hayferdahmer/RaskolVault/main?style=flat-square&label=сборка&labelColor=1c150d">
+  <img alt="последний коммит" src="https://img.shields.io/github/last-commit/hayferdahmer/RaskolVault?style=flat-square&label=коммит&labelColor=1c150d&color=c9922c">
+  <img alt="коммитов" src="https://img.shields.io/github/commit-activity/m/hayferdahmer/RaskolVault?style=flat-square&label=коммитов%20в%20месяц&labelColor=1c150d&color=c9922c">
+  <img alt="звёзды" src="https://img.shields.io/github/stars/hayferdahmer/RaskolVault?style=flat-square&label=звёзды&labelColor=1c150d&color=c9922c">
+</p>
 
-`v1.2.6` · `Java 25` · `Paper 26.2` · `SQLite (WAL)` · `Proprietary`
+<p align="center"><img src="docs/assets/divider.svg" width="640" alt=""></p>
 
-</div>
+<details>
+<summary><b>Обзор</b></summary>
 
----
+<br>
 
-## Обзор
+RaskolVault заменяет одно-валютную модель на **систему национальных валют с золотым обеспечением**. Глобальная валюта `GLD` проксируется в EssentialsX; каждая нация Towny может выпускать собственную валюту, обеспеченную резервом казны. Цена нацвалюты = `min(паритет, резерв / эмиссия)`; покрытие ниже 50% вызывает кризис.
 
-RaskolVault заменяет одно-валютную модель на **систему национальных валют с золотым обеспечением**.
-Глобальная валюта `GLD` проксируется в EssentialsX; каждая нация Towny может выпускать собственную валюту, обеспеченную резервом казны. Цена нацвалюты = `min(паритет, резерв / эмиссия)`; покрытие ниже 50% вызывает кризис.
+</details>
 
-## Модули
+<details>
+<summary><b>Модули</b></summary>
 
-| Модуль | Сервис | Назначение |
-|---|---|---|
-| Кошелёк | `WalletService` | Балансы, переводы (≤6 блоков), история |
-| Обмен | `ConvertEngine` | Конвертация валют с комиссией и налогом |
-| Биржа | `ExchangeOrderService` | P2P-ордера на продажу/покупку валют |
-| Аукцион | `AuctionService` | Лоты предметов: торги / buyout, снайпинг-кап, репутация |
-| Банк | `BankService` | Вклады (процент), кредиты (необеспеченные / под залог) |
-| Налоги | `TaxService` | convert / exchange / market / auction → казна нации |
-| Казны | `NationTreasury`, `ReserveBank` | Резерв нации, золотой стандарт, покрытие |
+<br>
+
+| | Модуль | Сервис | Назначение |
+| :-: | ------- | ------------------------------- | ------------------------------------------------------- |
+| <img src="docs/assets/emblems/wallet.svg" width="36" alt=""> | Кошелёк | `WalletService` | Балансы, переводы (≤6 блоков), история |
+| <img src="docs/assets/emblems/exchange.svg" width="36" alt=""> | Обмен | `ConvertEngine` | Конвертация валют с комиссией и налогом |
+| <img src="docs/assets/emblems/exchange.svg" width="36" alt=""> | Биржа | `ExchangeOrderService` | P2P-ордера на продажу/покупку валют |
+| <img src="docs/assets/emblems/auction.svg" width="36" alt=""> | Аукцион | `AuctionService` | Лоты предметов: торги / buyout, снайпинг-кап, репутация |
+| <img src="docs/assets/emblems/bank.svg" width="36" alt=""> | Банк | `BankService` | Вклады (процент), кредиты (необеспеченные / под залог) |
+| <img src="docs/assets/emblems/tax.svg" width="36" alt=""> | Налоги | `TaxService` | convert / exchange / market / auction → казна нации |
+| <img src="docs/assets/emblems/treasury.svg" width="36" alt=""> | Казны | `NationTreasury`, `ReserveBank` | Резерв нации, золотой стандарт, покрытие |
 
 Хранение: `SQLiteLedger` (WAL, пул соединений, single-writer, checked transactions и idempotency keys) — источник истины для балансов, банковских счетов, кредитов, пулов, залоговых активов и очереди возврата предметов. `SafeStorage` использует атомарную запись YAML для вспомогательных конфигураций и резервных копий.
 
-## Команды
+</details>
+
+<details>
+<summary><b>Команды</b></summary>
+
+<br>
 
 | Команда | Описание | Доступ |
-|---|---|---|
+| ---------------------------------------- | ------------------------------------------- | ------------------- |
 | `/rv bank` | Банк и кошелёк (вклады, кредиты, переводы) | все |
 | `/rv bank admin assets` | Реестр залоговых активов | `raskolvault.admin` |
 | `/rv bank admin realize <lotId> <сумма>` | Подтверждение фактической реализации залога | `raskolvault.admin` |
@@ -47,7 +74,27 @@ RaskolVault заменяет одно-валютную модель на **си�
 
 > `/rv wallet` работает, но скрыт из tab-комплита для не-админов (кошелёк живёт внутри `/rv bank`).
 
-## Архитектура и гарантии\n\n- **Транзакционное ядро:** изменения кошельков, резервов, escrow и банковского снимка фиксируются одной SQLite-транзакцией.\n- **Идемпотентность:** операции получают ключ и fingerprint; повтор с тем же payload не применяет изменение повторно, а несовпадающий payload отклоняется.\n- **Банк и залоги:** валютные и предметные залоги учитываются отдельными asset lots. Оценка залога не считается денежным поступлением до подтверждения фактической реализации.\n- **Восстановление предметов:** durable intent и очередь возврата переживают рестарт; перед удалением очереди сохраняются данные игрока с квитанцией. Bukkit player data и SQLite не образуют общей ACID-транзакции, поэтому протокол не заявляет абсолютную exactly-once гарантию при любом типе отказа.\n- **Миграции:** схема SQLite версионируется; legacy YAML импортируется однократно и сохраняется как резервная копия.\n\nПодробности: [протокол залогов](docs/BANK_COLLATERAL_PROTOCOL.md), [миграция SQLite](docs/BANK_SQLITE_MIGRATION.md), [операционный регламент](OPERATIONS.md).\n\n## PlaceholderAPI
+</details>
+
+<details>
+<summary><b>Архитектура и гарантии</b></summary>
+
+<br>
+
+- **Транзакционное ядро:** изменения кошельков, резервов, escrow и банковского снимка фиксируются одной SQLite-транзакцией.
+- **Идемпотентность:** операции получают ключ и fingerprint; повтор с тем же payload не применяет изменение повторно, а несовпадающий payload отклоняется.
+- **Банк и залоги:** валютные и предметные залоги учитываются отдельными asset lots. Оценка залога не считается денежным поступлением до подтверждения фактической реализации.
+- **Восстановление предметов:** durable intent и очередь возврата переживают рестарт; перед удалением очереди сохраняются данные игрока с квитанцией. Bukkit player data и SQLite не образуют общей ACID-транзакции, поэтому протокол не заявляет абсолютную exactly-once гарантию при любом типе отказа.
+- **Миграции:** схема SQLite версионируется; legacy YAML импортируется однократно и сохраняется как резервная копия.
+
+Подробности: [протокол залогов](docs/BANK_COLLATERAL_PROTOCOL.md), [миграция SQLite](docs/BANK_SQLITE_MIGRATION.md), [операционный регламент](OPERATIONS.md).
+
+</details>
+
+<details>
+<summary><b>PlaceholderAPI</b></summary>
+
+<br>
 
 ```
 %raskolvault_balance_<CUR>%      баланс в валюте
@@ -59,14 +106,36 @@ RaskolVault заменяет одно-валютную модель на **си�
 %raskolvault_nation%             нация (Towny) или «—»
 ```
 
-## Установка
+</details>
+
+<details>
+<summary><b>Установка</b></summary>
+
+<br>
 
 1. `mvn clean package` → `target/raskol-vault-1.2.6.jar`
 2. Положить jar в `plugins/`
 3. Soft-зависимости: EssentialsX, Towny, LuckPerms, PlaceholderAPI
 4. Рестарт → `/rv guide`
 
-## Визуальные материалы\n\n- [Основной баннер](banner.svg) · [тёмная версия](banner-dark.svg) · [светлая версия](banner-light.svg)\n- [Social Preview (1280 × 640)](docs/assets/social/social-preview.svg)\n\n## Документация
+</details>
+
+<details>
+<summary><b>Визуальные материалы</b></summary>
+
+<br>
+
+- [Основной баннер](banner.svg) · [тёмная версия](banner-dark.svg) · [светлая версия](banner-light.svg)
+- [Social Preview (1280 × 640)](docs/assets/social/social-preview.svg)
+- Эмблемы модулей: [`docs/assets/emblems/`](docs/assets/emblems/)
+- Шапки страниц документации: [`docs/assets/headers/`](docs/assets/headers/)
+
+</details>
+
+<details>
+<summary><b>Документация</b></summary>
+
+<br>
 
 - [`OPERATIONS.md`](OPERATIONS.md) — ранбук: деплой, бэкапы, restore, инциденты
 - [`CHANGELOG.md`](CHANGELOG.md) — история версий
@@ -74,14 +143,17 @@ RaskolVault заменяет одно-валютную модель на **си�
 - [`docs/BANK_COLLATERAL_PROTOCOL.md`](docs/BANK_COLLATERAL_PROTOCOL.md) — учёт залоговых активов и восстановление предметного залога
 - [`INTEGRATION.md`](INTEGRATION.md) — API для плагинов-партнёров
 
-## Лицензия
+</details>
+
+<details>
+<summary><b>Лицензия</b></summary>
+
+<br>
 
 **RASKOL Proprietary License v1.0** © 2026 hayferdahmer. См. [`LICENSE`](LICENSE).
 
----
+</details>
 
-<div align="center">
+<p align="center"><img src="docs/assets/divider.svg" width="640" alt=""></p>
 
-**РАСКОЛ · ДВЕ КОРОНЫ** — экономика, которая держится на золоте
-
-</div>
+<p align="center"><b>РАСКОЛ · ДВЕ КОРОНЫ</b> — экономика, которая держится на золоте</p>
