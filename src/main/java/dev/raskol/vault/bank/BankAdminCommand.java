@@ -116,6 +116,7 @@ public final class BankAdminCommand {
         send(sender, "&7Выдано кредитов: &f" + fmt(b.totalOutstandingLoans(nation)));
         send(sender, "&7Лимит выдачи: &f" + fmt(b.maxLoans(nation)));
         send(sender, "&7Активных кредитов: &f" + b.activeLoans(nation).size());
+        send(sender, "&7Кредитов во взыскании: &c" + b.recoveryLoans(nation).size());
     }
 
     public List<String> tabComplete(CommandSender sender, String[] args) {
