@@ -822,6 +822,17 @@ public final class BankService implements Listener {
                         .thenComparing(SQLiteLedger.BankInterestPayableRow::id)).toList();
     }
 
+    public Map<String, Double> interestPayablesByCurrency(String nation) {
+        Map<String, Double> totals = new java.util.TreeMap<>();
+        if (nation == null || nation.isBlank()) return totals;
+        for (SQLiteLedger.BankInterestPayableRow row : interestPayables.values()) {
+            if (row.nation().equalsIgnoreCase(nation)) {
+                totals.merge(row.currencyId(), row.amount(), Double::sum);
+            }
+        }
+        return Map.copyOf(totals);
+    }
+
     public synchronized void accrueAll() {
         long now = System.currentTimeMillis();
         boolean changed = false;
