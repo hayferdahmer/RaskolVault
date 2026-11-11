@@ -12,6 +12,7 @@ import dev.raskol.vault.wallet.WalletService;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -103,6 +104,17 @@ public final class ReserveBank {
         String key = crisisKey(nation, currencyId);
         double coverage = coverageOf(nation, currencyId);
         ReserveCrisisPolicy.Level previous = crisisStates.get(key);
+        if (previous == null) {
+            String stored = plugin.getConfig().getString("reserve.crisis-state." + persistedKey(key));
+            if (stored != null) {
+                try {
+                    previous = ReserveCrisisPolicy.Level.valueOf(stored);
+                } catch (IllegalArgumentException ignored) {
+                    plugin.getLogger().warning("Некорректное сохранённое состояние кризиса для "
+                            + nation + "/" + currencyId + "; состояние будет рассчитано заново.");
+                }
+            }
+        }
         ReserveCrisisPolicy.Level current = ReserveCrisisPolicy.next(previous, coverage,
                 plugin.getConfig().getDouble("reserve.crisis-threshold", coverageFloor()),
                 plugin.getConfig().getDouble("reserve.recovery-threshold", 0.60D));
@@ -118,10 +130,23 @@ public final class ReserveBank {
     public List<CrisisTransition> drainCrisisTransitions() {
         List<CrisisTransition> transitions = new ArrayList<>();
         CrisisTransition transition;
+        boolean stateChanged = false;
         while ((transition = pendingCrisisTransitions.poll()) != null) {
             transitions.add(transition);
+            String key = crisisKey(transition.nation(), transition.currencyId());
+            plugin.getConfig().set("reserve.crisis-state." + persistedKey(key),
+                    transition.snapshot().current().name());
+            stateChanged = true;
+        }
+        if (stateChanged) {
+            plugin.saveConfig();
         }
         return transitions;
+    }
+
+    private static String persistedKey(String key) {
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(key.getBytes(StandardCharsets.UTF_8));
     }
 
     public ReserveCrisisPolicy.Level crisisState(String nation, String currencyId) {
