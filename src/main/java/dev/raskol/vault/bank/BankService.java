@@ -143,7 +143,7 @@ public final class BankService implements Listener {
         double sum = 0;
         for (BankLoan l : loans.values())
             if (l.nation().equalsIgnoreCase(nation) && l.hasOutstandingBalance())
-                sum += l.outstanding(now) * priceInGld(l.currencyId());
+                sum += l.projectedOutstanding(now) * priceInGld(l.currencyId());
         return sum;
     }
     private double priceInGld(String currencyId) {
@@ -155,8 +155,65 @@ public final class BankService implements Listener {
     public double totalDeposits(String nation) {
         double sum = 0;
         for (BankAccount a : accounts.values())
-            if (a.nation().equalsIgnoreCase(nation) && a.isActive()) sum += a.principal();
+            if (a.nation().equalsIgnoreCase(nation) && a.isActive())
+                sum += a.principal() * priceInGld(a.currencyId());
         return sum;
+    }
+
+    /**
+     * Формирует сверку активов и обязательств отдельно по каждой валюте.
+     * Оценка удерживаемого залога показывается справочно и не включается в активы.
+     */
+    public synchronized List<BankBalanceSheet> balanceSheets(String nation) {
+        if (nation == null || nation.isBlank()) return List.of();
+        long now = System.currentTimeMillis();
+        Map<String, double[]> totals = new java.util.TreeMap<>();
+        Map<String, Integer> heldLots = new java.util.HashMap<>();
+
+        for (Map.Entry<String, Double> entry : pools.entrySet()) {
+            String[] parts = entry.getKey().split("\\|", 2);
+            if (parts.length == 2 && parts[0].equalsIgnoreCase(nation)) {
+                totals.computeIfAbsent(parts[1], ignored -> new double[8])[0] += entry.getValue();
+            }
+        }
+        for (Map.Entry<String, Double> entry : interestReserves.entrySet()) {
+            String[] parts = entry.getKey().split("\\|", 2);
+            if (parts.length == 2 && parts[0].equalsIgnoreCase(nation)) {
+                totals.computeIfAbsent(parts[1], ignored -> new double[8])[1] += entry.getValue();
+            }
+        }
+        for (BankAccount account : accounts.values()) {
+            if (!account.nation().equalsIgnoreCase(nation) || !account.isActive()) continue;
+            double[] row = totals.computeIfAbsent(account.currencyId(), ignored -> new double[8]);
+            row[2] += account.principal();
+            row[3] += Math.max(0.0D, account.projectedAccrued(
+                    now, params(account.nation()).demandRate()));
+        }
+        for (BankLoan loan : loans.values()) {
+            if (!loan.nation().equalsIgnoreCase(nation) || !loan.hasOutstandingBalance()) continue;
+            double[] row = totals.computeIfAbsent(loan.currencyId(), ignored -> new double[8]);
+            row[4] += loan.principal();
+            row[5] += Math.max(0.0D, loan.projectedOutstanding(now) - loan.principal());
+        }
+        for (SQLiteLedger.BankInterestPayableRow claim : interestPayables.values()) {
+            if (!claim.nation().equalsIgnoreCase(nation)) continue;
+            totals.computeIfAbsent(claim.currencyId(), ignored -> new double[8])[6] += claim.amount();
+        }
+        for (SQLiteLedger.BankAssetLotRow lot : assetLots.values()) {
+            if (!lot.nation().equalsIgnoreCase(nation) || !"HELD".equals(lot.status())) continue;
+            double[] row = totals.computeIfAbsent(lot.valuationCurrencyId(), ignored -> new double[8]);
+            row[7] += lot.lockedValue();
+            heldLots.merge(lot.valuationCurrencyId(), 1, Integer::sum);
+        }
+
+        List<BankBalanceSheet> result = new ArrayList<>();
+        for (Map.Entry<String, double[]> entry : totals.entrySet()) {
+            double[] row = entry.getValue();
+            result.add(new BankBalanceSheet(nation, entry.getKey(),
+                    row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                    row[7], heldLots.getOrDefault(entry.getKey(), 0)));
+        }
+        return List.copyOf(result);
     }
 
     public int creditScore(UUID player) {
@@ -1116,6 +1173,7 @@ public final class BankService implements Listener {
     // ---------- персистентность ----------
     public synchronized void load() {
         accounts.clear(); loans.clear(); pools.clear(); interestReserves.clear(); assetLots.clear();
+        interestPayables.clear();
         repaidCount.clear(); defaultedCount.clear(); pendingReturns.clear();
 
         if (ledger.bankStorageInitialized()) {
