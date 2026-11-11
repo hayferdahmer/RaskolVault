@@ -225,7 +225,7 @@ public final class BankService implements Listener {
         } else {
             double penalty = staged.earlyPenalty(params(a.nation()).earlyPenaltyRate());
             payout = Math.max(0.0D, staged.principal() - penalty);
-            if (pool(a.nation(), a.currencyId()) < staged.principal()) {
+            if (pool(a.nation(), a.currencyId()) < payout) {
                 return "недостаточно ликвидности в банке — обратитесь к королю нации";
             }
         }
@@ -250,7 +250,8 @@ public final class BankService implements Listener {
             }
         }
 
-        pools.put(key, Math.max(0.0D, oldPool - staged.principal()));
+        double poolOutflow = interestEligible ? staged.principal() : payout;
+        pools.put(key, Math.max(0.0D, oldPool - poolOutflow));
         interestReserves.put(key, Math.max(0.0D,
                 interestReserve(staged.nation(), staged.currencyId()) - interest));
         staged.payOutAccrued();
