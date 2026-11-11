@@ -111,15 +111,31 @@ public final class BankAdminCommand {
         BankService b = plugin.getBankService();
         String glb = plugin.getCurrencies().globalId();
         send(sender, "&6=== Банк · " + nation + " ===");
-        send(sender, "&7Пул ликвидности: &f" + fmt(b.pool(nation, glb)) + " " + glb);
-        send(sender, "&7Процентный резерв: &f" + fmt(b.interestReserve(nation, glb)));
-        send(sender, "&7Вклады (тело): &f" + fmt(b.totalDeposits(nation)));
-        send(sender, "&7Остаток кредитного портфеля: &f" + fmt(b.totalOutstandingLoans(nation)));
-        send(sender, "&7Лимит выдачи: &f" + fmt(b.maxLoans(nation)));
+        send(sender, "&7Лимит кредитного портфеля (GLD): &f" + fmt(b.maxLoans(nation)) + " " + glb);
+        send(sender, "&7Кредитный портфель по текущему курсу (GLD): &f"
+                + fmt(b.totalOutstandingLoans(nation)) + " " + glb);
         send(sender, "&7Активных кредитов: &f" + b.activeLoans(nation).size());
         send(sender, "&7Кредитов во взыскании: &c" + b.recoveryLoans(nation).size());
-        for (Map.Entry<String, Double> entry : b.interestPayablesByCurrency(nation).entrySet()) {
-            send(sender, "&7Невыплаченные проценты: &e" + fmt(entry.getValue()) + " " + entry.getKey());
+        send(sender, "&6Баланс банка по валютам (сверка):");
+        for (BankBalanceSheet sheet : b.balanceSheets(nation)) {
+            String currency = sheet.currencyId();
+            send(sender, "&e" + currency + "&7 — ликвидность: &f" + fmt(sheet.cashAssets())
+                    + " &7(пул " + fmt(sheet.liquidityPool()) + " + процентный резерв "
+                    + fmt(sheet.interestReserve()) + ")");
+            send(sender, "&7  Кредиты: &f" + fmt(sheet.loanReceivables())
+                    + " &7(тело " + fmt(sheet.loanPrincipal()) + " + проценты "
+                    + fmt(sheet.loanAccruedInterest()) + ")");
+            send(sender, "&7  Обязательства: &f" + fmt(sheet.totalLiabilities())
+                    + " &7(вклады " + fmt(sheet.depositLiabilities()) + " + требования процентов "
+                    + fmt(sheet.unpaidInterestClaims()) + ")");
+            send(sender, "&7  Активы: &f" + fmt(sheet.totalAssets())
+                    + " &7| собственный капитал: " + (sheet.equity() < -0.000001D ? "&c" : "&a")
+                    + fmt(sheet.equity()) + " " + currency);
+            if (sheet.heldCollateralLots() > 0) {
+                send(sender, "&7  Удерживаемый залог (справочно, не актив): &f"
+                        + fmt(sheet.heldCollateralAppraisal()) + " " + currency
+                        + " &7· лотов: " + sheet.heldCollateralLots());
+            }
         }
     }
 
