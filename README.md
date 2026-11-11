@@ -1,8 +1,8 @@
 <div align="center">
 
-# ⚜ RASKOL VAULT
+<img src="banner.svg" alt="RaskolVault — золотой стандарт экономики РАСКОЛ" width="100%">
 
-**Многовалютное экономическое ядро для Paper 26.2**
+**Многовалютная финансовая инфраструктура для Paper 26.2**
 *Сервер «РАСКОЛ | ДВЕ КОРОНЫ»*
 
 `v1.2.6` · `Java 25` · `Paper 26.2` · `SQLite (WAL)` · `Proprietary`
@@ -28,7 +28,7 @@ RaskolVault заменяет одно-валютную модель на **си�
 | Налоги | `TaxService` | convert / exchange / market / auction → казна нации |
 | Казны | `NationTreasury`, `ReserveBank` | Резерв нации, золотой стандарт, покрытие |
 
-Хранение: `SQLiteLedger` (WAL, пул, single-writer) + `SafeStorage` (атомарный YAML).
+Хранение: `SQLiteLedger` (WAL, пул соединений, single-writer, checked transactions и idempotency keys) — источник истины для балансов, банковских счетов, кредитов, пулов, залоговых активов и очереди возврата предметов. `SafeStorage` использует атомарную запись YAML для вспомогательных конфигураций и резервных копий.
 
 ## Команды
 
@@ -47,7 +47,7 @@ RaskolVault заменяет одно-валютную модель на **си�
 
 > `/rv wallet` работает, но скрыт из tab-комплита для не-админов (кошелёк живёт внутри `/rv bank`).
 
-## PlaceholderAPI
+## Архитектура и гарантии\n\n- **Транзакционное ядро:** изменения кошельков, резервов, escrow и банковского снимка фиксируются одной SQLite-транзакцией.\n- **Идемпотентность:** операции получают ключ и fingerprint; повтор с тем же payload не применяет изменение повторно, а несовпадающий payload отклоняется.\n- **Банк и залоги:** валютные и предметные залоги учитываются отдельными asset lots. Оценка залога не считается денежным поступлением до подтверждения фактической реализации.\n- **Восстановление предметов:** durable intent и очередь возврата переживают рестарт; перед удалением очереди сохраняются данные игрока с квитанцией. Bukkit player data и SQLite не образуют общей ACID-транзакции, поэтому протокол не заявляет абсолютную exactly-once гарантию при любом типе отказа.\n- **Миграции:** схема SQLite версионируется; legacy YAML импортируется однократно и сохраняется как резервная копия.\n\nПодробности: [протокол залогов](docs/BANK_COLLATERAL_PROTOCOL.md), [миграция SQLite](docs/BANK_SQLITE_MIGRATION.md), [операционный регламент](OPERATIONS.md).\n\n## PlaceholderAPI
 
 ```
 %raskolvault_balance_<CUR>%      баланс в валюте
@@ -66,7 +66,7 @@ RaskolVault заменяет одно-валютную модель на **си�
 3. Soft-зависимости: EssentialsX, Towny, LuckPerms, PlaceholderAPI
 4. Рестарт → `/rv guide`
 
-## Документация
+## Визуальные материалы\n\n- [Основной баннер](banner.svg) · [тёмная версия](banner-dark.svg) · [светлая версия](banner-light.svg)\n- [Social Preview (1280 × 640)](docs/assets/social/social-preview.svg)\n\n## Документация
 
 - [`OPERATIONS.md`](OPERATIONS.md) — ранбук: деплой, бэкапы, restore, инциденты
 - [`CHANGELOG.md`](CHANGELOG.md) — история версий
