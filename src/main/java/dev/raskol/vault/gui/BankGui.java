@@ -133,7 +133,7 @@ public final class BankGui implements Listener {
             boolean recovery = l.status() == BankLoan.Status.RECOVERY;
             inv.setItem(GRID[i], it(l.isOverdue(now) || recovery ? Material.REDSTONE_BLOCK : Material.PAPER,
                     "&6Кредит &7" + l.id().substring(0, 8), List.of(
-                    "&7Остаток: &c" + Numbers.fmt(l.outstanding(now)) + " " + l.currencyId(),
+                    "&7Остаток: &c" + Numbers.fmt(l.projectedOutstanding(now)) + " " + l.currencyId(),
                     "&7Залог: &f" + l.collateralType(),
                     recovery ? "&cВЗЫСКАНИЕ · остаток долга" :
                             (l.isOverdue(now) ? "&cПРОСРОЧЕН" : "&7До: &f" + TimeFormat.daysLeft(l.dueAt(), now)),
@@ -153,7 +153,7 @@ public final class BankGui implements Listener {
         long now = System.currentTimeMillis();
         inv.setItem(13, it(Material.PAPER, "&6Сводка", List.of(
                 "&7Тело: &f" + Numbers.fmt(l.principal()),
-                "&7Остаток: &c" + Numbers.fmt(l.outstanding(now)),
+                "&7Остаток: &c" + Numbers.fmt(l.projectedOutstanding(now)),
                 "&7Ставка: &f" + Numbers.pct(l.rateAnnual()),
                 "&7Залог: &f" + l.collateralType(),
                 l.status() == BankLoan.Status.RECOVERY ? "&cСтатус: взыскание, проценты заморожены" : "&7Статус: " + l.status())));
@@ -255,7 +255,7 @@ public final class BankGui implements Listener {
             if (l == null) return;
             if (slot == 11) { p.closeInventory(); chatField.put(uuid, "repay-amount:" + lh.loanId); msg(p, "&7Введите сумму погашения:"); return; }
             if (slot == 15) {
-                String err = bank().repayLoan(uuid, lh.loanId, l.outstanding(System.currentTimeMillis()));
+                String err = bank().repayLoan(uuid, lh.loanId, l.projectedOutstanding(System.currentTimeMillis()));
                 msg(p, err == null ? "&aКредит погашен" : "&c" + err);
                 openLoans(p);
             }
