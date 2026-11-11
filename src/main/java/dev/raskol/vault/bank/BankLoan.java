@@ -116,6 +116,19 @@ public final class BankLoan {
         lastAccrualAt = to;
     }
 
+    /** Прогнозирует остаток на момент now, не изменяя объект и не фиксируя начисление. */
+    public double projectedAccrued(long now) {
+        if (status != Status.ACTIVE) return accrued;
+        long to = Math.min(now, dueAt);
+        if (to <= lastAccrualAt) return accrued;
+        double days = (to - lastAccrualAt) / 86_400_000.0D;
+        return accrued + principal * rateAnnual * days / 365.0D;
+    }
+
+    public double projectedOutstanding(long now) {
+        return Math.max(0.0D, principal + projectedAccrued(now));
+    }
+
     public double outstanding(long now) {
         accrueTo(now);
         // principal уже уменьшается в applyRepayment; repaid хранится только как история выплат.
