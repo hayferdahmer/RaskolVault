@@ -28,6 +28,11 @@ public final class ReserveBank {
     public record Advice(String title, List<String> lore) {
     }
 
+    public record CrisisSnapshot(ReserveCrisisPolicy.Level previous,
+                                 ReserveCrisisPolicy.Level current,
+                                 double coverage, boolean changed) {
+    }
+
     private static final long CACHE_TTL_MS = 5000L;
 
     private final RaskolVault plugin;
@@ -38,6 +43,7 @@ public final class ReserveBank {
     private final Map<String, Double> cacheValues = new ConcurrentHashMap<>();
     private final Map<String, Long> cacheExpiry = new ConcurrentHashMap<>();
     private final Map<String, ReentrantLock> mintLocks = new ConcurrentHashMap<>();
+    private final Map<String, ReserveCrisisPolicy.Level> crisisStates = new ConcurrentHashMap<>();
 
     public ReserveBank(RaskolVault plugin, WalletService wallets,
                        CurrencyRegistry currencies, SQLiteLedger ledger) {
@@ -77,6 +83,66 @@ public final class ReserveBank {
 
     public double reserveOf(String nation) {
         return cached("res:" + nation, () -> ledger.reserveGet(nation));
+    }
+
+    /**
+     * Пересчитывает состояние валюты. После входа в кризис ограничения сохраняются,
+     * пока покрытие не достигнет recovery-threshold.
+     */
+    public synchronized CrisisSnapshot refreshCrisisState(String nation, String currencyId) {
+        if (nation == null || nation.isBlank() || currencyId == null || currencyId.isBlank()) {
+            return new CrisisSnapshot(null, ReserveCrisisPolicy.Level.CRISIS, 0.0D, false);
+        }
+        String key = crisisKey(nation, currencyId);
+        double coverage = coverageOf(nation, currencyId);
+        ReserveCrisisPolicy.Level previous = crisisStates.get(key);
+        ReserveCrisisPolicy.Level current = ReserveCrisisPolicy.next(previous, coverage,
+                plugin.getConfig().getDouble("reserve.crisis-threshold", coverageFloor()),
+                plugin.getConfig().getDouble("reserve.recovery-threshold", 0.60D));
+        crisisStates.put(key, current);
+        return new CrisisSnapshot(previous, current, coverage,
+                previous != null && previous != current);
+    }
+
+    public ReserveCrisisPolicy.Level crisisState(String nation, String currencyId) {
+        return refreshCrisisState(nation, currencyId).current();
+    }
+
+    public boolean isInCrisis(String nation, String currencyId) {
+        return crisisState(nation, currencyId) == ReserveCrisisPolicy.Level.CRISIS;
+    }
+
+    public double coverageOfNation(String nation) {
+        double coverage = 1.0D;
+        boolean found = false;
+        for (Currency currency : currencies.all()) {
+            if (currency.type() == CurrencyType.NATIONAL && nation != null
+                    && nation.equalsIgnoreCase(currency.nationId())) {
+                coverage = Math.min(coverage, coverageOf(nation, currency.id()));
+                found = true;
+            }
+        }
+        return found ? coverage : 1.0D;
+    }
+
+    public boolean isNationInCrisis(String nation) {
+        return crisisState(nation) == ReserveCrisisPolicy.Level.CRISIS;
+    }
+
+    public ReserveCrisisPolicy.Level crisisState(String nation) {
+        ReserveCrisisPolicy.Level worst = ReserveCrisisPolicy.Level.NORMAL;
+        for (Currency currency : currencies.all()) {
+            if (currency.type() == CurrencyType.NATIONAL && nation != null
+                    && nation.equalsIgnoreCase(currency.nationId())) {
+                ReserveCrisisPolicy.Level level = crisisState(nation, currency.id());
+                if (level.ordinal() > worst.ordinal()) worst = level;
+            }
+        }
+        return worst;
+    }
+
+    private static String crisisKey(String nation, String currencyId) {
+        return nation.toLowerCase(Locale.ROOT) + "|" + currencyId.toLowerCase(Locale.ROOT);
     }
 
     public boolean reserveCredit(String nation, double gold) {
@@ -122,6 +188,7 @@ public final class ReserveBank {
     public boolean withdrawFromReserve(UUID player, String nation, double amount, String reason) {
         if (player == null || nation == null || nation.isBlank()
                 || !Double.isFinite(amount) || !(amount > 0.0D)
+                || isNationInCrisis(nation)
                 || amount > dailyWithdrawLimit(nation) + 1.0E-9D) return false;
         if (!ledger.reserveAdd(nation, -amount)) return false;
         String glb = currencies.globalId();
@@ -297,7 +364,8 @@ public final class ReserveBank {
     }
 
     public boolean canMint(String nation, String currencyId, double extra) {
-        return Double.isFinite(extra) && extra >= 0.0D
+        return !isInCrisis(nation, currencyId)
+                && Double.isFinite(extra) && extra >= 0.0D
                 && extra <= maxMint(nation, currencyId) + 1.0E-9D;
     }
 
