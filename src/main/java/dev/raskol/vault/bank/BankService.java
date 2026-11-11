@@ -216,7 +216,7 @@ public final class BankService implements Listener {
         staged.accrue(now, params(a.nation()).demandRate());
 
         boolean interestEligible = staged.isDemand() || staged.isMatured(now);
-        double payout;
+        double payout = 0.0D;
         double interest = 0.0D;
         if (interestEligible) {
             if (pool(a.nation(), a.currencyId()) < staged.principal()) {
