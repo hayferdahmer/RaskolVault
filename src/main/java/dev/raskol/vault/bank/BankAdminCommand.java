@@ -71,9 +71,9 @@ public final class BankAdminCommand {
     private void assets(CommandSender sender) {
         List<dev.raskol.vault.storage.SQLiteLedger.BankAssetLotRow> lots =
                 plugin.getBankService().collateralAssetLots();
-        send(sender, "&6=== Залоговые активы банка: " + lots.size() + " ===");
+        send(sender, "&6=== Реестр залоговых лотов банка: " + lots.size() + " ===");
         if (lots.isEmpty()) {
-            send(sender, "&7Активных залоговых лотов нет.");
+            send(sender, "&7Залоговых лотов нет.");
             return;
         }
         for (var lot : lots) {
@@ -113,7 +113,7 @@ public final class BankAdminCommand {
         send(sender, "&7Пул ликвидности: &f" + fmt(b.pool(nation, glb)) + " " + glb);
         send(sender, "&7Процентный резерв: &f" + fmt(b.interestReserve(nation, glb)));
         send(sender, "&7Вклады (тело): &f" + fmt(b.totalDeposits(nation)));
-        send(sender, "&7Выдано кредитов: &f" + fmt(b.totalOutstandingLoans(nation)));
+        send(sender, "&7Остаток кредитного портфеля: &f" + fmt(b.totalOutstandingLoans(nation)));
         send(sender, "&7Лимит выдачи: &f" + fmt(b.maxLoans(nation)));
         send(sender, "&7Активных кредитов: &f" + b.activeLoans(nation).size());
         send(sender, "&7Кредитов во взыскании: &c" + b.recoveryLoans(nation).size());
