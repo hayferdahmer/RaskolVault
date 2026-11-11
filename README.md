@@ -18,10 +18,10 @@
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-WAL-c9922c?style=flat-square&labelColor=1c150d">
   <img alt="лицензия" src="https://img.shields.io/badge/лицензия-Proprietary-8e2f2a?style=flat-square&labelColor=1c150d">
   <br>
-  <img alt="сборка" src="https://img.shields.io/github/check-runs/hayferdahmer/RaskolVault/main?style=flat-square&label=сборка&labelColor=1c150d">
-  <img alt="последний коммит" src="https://img.shields.io/github/last-commit/hayferdahmer/RaskolVault?style=flat-square&label=коммит&labelColor=1c150d&color=c9922c">
-  <img alt="коммитов" src="https://img.shields.io/github/commit-activity/m/hayferdahmer/RaskolVault?style=flat-square&label=коммитов%20в%20месяц&labelColor=1c150d&color=c9922c">
-  <img alt="звёзды" src="https://img.shields.io/github/stars/hayferdahmer/RaskolVault?style=flat-square&label=звёзды&labelColor=1c150d&color=c9922c">
+  <img alt="сборка" src="https://img.shields.io/github/check-runs/hayferdahmer/RaskolVault/main?style=flat-square&label=%D1%81%D0%B1%D0%BE%D1%80%D0%BA%D0%B0&labelColor=1c150d">
+  <img alt="последний коммит" src="https://img.shields.io/github/last-commit/hayferdahmer/RaskolVault?style=flat-square&label=%D0%BA%D0%BE%D0%BC%D0%BC%D0%B8%D1%82&labelColor=1c150d&color=c9922c">
+  <img alt="коммитов" src="https://img.shields.io/github/commit-activity/m/hayferdahmer/RaskolVault?style=flat-square&label=%D0%BA%D0%BE%D0%BC%D0%BC%D0%B8%D1%82%D0%BE%D0%B2%20%D0%B2%20%D0%BC%D0%B5%D1%81%D1%8F%D1%86&labelColor=1c150d&color=c9922c">
+  <img alt="звёзды" src="https://img.shields.io/github/stars/hayferdahmer/RaskolVault?style=flat-square&label=%D0%B7%D0%B2%D1%91%D0%B7%D0%B4%D1%8B&labelColor=1c150d&color=c9922c">
 </p>
 
 <p align="center"><img src="docs/assets/divider.svg" width="640" alt=""></p>
@@ -31,7 +31,7 @@
 
 <br>
 
-RaskolVault заменяет одно-валютную модель на **систему национальных валют с золотым обеспечением**. Глобальная валюта `GLD` проксируется в EssentialsX; каждая нация Towny может выпускать собственную валюту, обеспеченную резервом казны. Цена нацвалюты = `min(паритет, резерв / эмиссия)`. При покрытии ниже 50% включается кризис: блокируются новая эмиссия и вывод средств из резерва. Ограничения снимаются после восстановления покрытия до 60%; личные балансы игроков и обычные переводы не затрагиваются.
+RaskolVault заменяет одно-валютную модель на **систему национальных валют с золотым обеспечением**. Глобальная валюта `GLD` проксируется в EssentialsX; каждая нация Towny может выпускать собственную валюту, обеспеченную резервом казны. Цена нацвалюты = `min(паритет, резерв / эмиссия)`; покрытие ниже 50% вызывает кризис.
 
 </details>
 
@@ -83,7 +83,6 @@ RaskolVault заменяет одно-валютную модель на **си�
 
 - **Транзакционное ядро:** изменения кошельков, резервов, escrow и банковского снимка фиксируются одной SQLite-транзакцией.
 - **Идемпотентность:** операции получают ключ и fingerprint; повтор с тем же payload не применяет изменение повторно, а несовпадающий payload отклоняется.
-- **Резерв и валютный кризис:** состояния NORMAL / WARNING / CRISIS, гистерезис восстановления 50% → 60%, запрет эмиссии и вывода из резерва в кризисе. Внесение в резерв и переводы игроков остаются доступны; активы HELD не считаются резервом до фактической реализации.
 - **Банк и залоги:** валютные и предметные залоги учитываются отдельными asset lots. Оценка залога не считается денежным поступлением до подтверждения фактической реализации.
 - **Восстановление предметов:** durable intent и очередь возврата переживают рестарт; перед удалением очереди сохраняются данные игрока с квитанцией. Bukkit player data и SQLite не образуют общей ACID-транзакции, поэтому протокол не заявляет абсолютную exactly-once гарантию при любом типе отказа.
 - **Миграции:** схема SQLite версионируется; legacy YAML импортируется однократно и сохраняется как резервная копия.
@@ -129,13 +128,7 @@ RaskolVault заменяет одно-валютную модель на **си�
 - [`OPERATIONS.md`](OPERATIONS.md) — ранбук: деплой, бэкапы, restore, инциденты
 - [`CHANGELOG.md`](CHANGELOG.md) — история версий
 - [`docs/FORMULAS.md`](docs/FORMULAS.md) — экономические формулы и инварианты
-- [`docs/RESERVE_CRISIS.md`](docs/RESERVE_CRISIS.md) — состояния валютного резерва и кризисный протокол
 - [`docs/BANK_COLLATERAL_PROTOCOL.md`](docs/BANK_COLLATERAL_PROTOCOL.md) — учёт залоговых активов и восстановление предметного залога
-- [`docs/BANK_RECOURSE.md`](docs/BANK_RECOURSE.md) — регрессное взыскание и учёт остатка долга после реализации залога
-- [`docs/BANK_INTEREST_LIABILITIES.md`](docs/BANK_INTEREST_LIABILITIES.md) — долговые обязательства банка по невыплаченным процентам вкладчиков
-- [`docs/BANK_BALANCE_SHEET.md`](docs/BANK_BALANCE_SHEET.md) — баланс банка, активы, обязательства и сверка платёжеспособности по валютам
-- [`docs/BANK_REPAYMENT_IDEMPOTENCY.md`](docs/BANK_REPAYMENT_IDEMPOTENCY.md) — защита погашения кредитов от повторного списания
-- [`docs/BANK_OVERDUE_POLICY.md`](docs/BANK_OVERDUE_POLICY.md) — льготный период и политика просрочки кредитов
 - [`INTEGRATION.md`](INTEGRATION.md) — API для плагинов-партнёров
 
 </details>
