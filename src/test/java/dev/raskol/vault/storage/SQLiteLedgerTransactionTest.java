@@ -182,10 +182,12 @@ class SQLiteLedgerTransactionTest {
                 "collateral-rollback-lot", "ITEM", "raskol", owner, "loan-rollback-lot",
                 null, 1.0D, 1.0D, "serialized-item", "GLD", 150.0D,
                 12.0D, 100.0D, "HELD");
+        SQLiteLedger.BankInterestPayableRow payable = new SQLiteLedger.BankInterestPayableRow(
+                "rollback-payable", owner, "Игрок", "raskol", "GLD", 8.0D, 1_800L);
         SQLiteLedger.BankSnapshot initialSnapshot = new SQLiteLedger.BankSnapshot(
                 List.of(), List.of(),
                 List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 50.0D, 7.0D)),
-                List.of(), List.of(), List.of(heldLot));
+                List.of(), List.of(), List.of(heldLot), List.of(payable));
 
         ledger.commitAbsoluteCheckedOnce("asset-lot-rollback-seed", "seed-held-lot",
                 List.of(), List.of(), List.of(), initialSnapshot, List.of());
@@ -210,6 +212,8 @@ class SQLiteLedgerTransactionTest {
         assertEquals(1, ledger.bankAssetLotsAll().size());
         assertEquals("HELD", ledger.bankAssetLotsAll().get(0).status());
         assertEquals(150.0D, ledger.bankAssetLotsAll().get(0).lockedValue(), 0.000_001D);
+        assertEquals(1, ledger.bankInterestPayablesAll().size());
+        assertEquals(8.0D, ledger.bankInterestPayablesAll().get(0).amount(), 0.000_001D);
         org.junit.jupiter.api.Assertions.assertFalse(
                 ledger.operationExists("asset-lot-rollback-failure"));
     }
