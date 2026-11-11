@@ -4,6 +4,7 @@ package dev.raskol.vault.gui;
 import dev.raskol.vault.RaskolVault;
 import dev.raskol.vault.bank.BankAccount;
 import dev.raskol.vault.bank.BankLoan;
+import dev.raskol.vault.storage.SQLiteLedger;
 import dev.raskol.vault.bank.BankService;
 import dev.raskol.vault.util.GuiItems;
 import dev.raskol.vault.util.Numbers;
@@ -87,6 +88,21 @@ public final class BankGui implements Listener {
         }
         for (int i = deps.size(); i < GRID.length; i++) inv.setItem(GRID[i], GuiItems.pane());
         if (deps.isEmpty()) inv.setItem(22, it(Material.BARRIER, "&7Активных вкладов нет", List.of()));
+        List<SQLiteLedger.BankInterestPayableRow> payableRows = bank().interestPayables(p.getUniqueId());
+        if (!payableRows.isEmpty()) {
+            Map<String, Double> payableTotals = new java.util.TreeMap<>();
+            for (SQLiteLedger.BankInterestPayableRow row : payableRows) {
+                payableTotals.merge(row.currencyId(), row.amount(), Double::sum);
+            }
+            List<String> lore = new ArrayList<>();
+            lore.add("&7Банк должен вам начисленные проценты:");
+            for (Map.Entry<String, Double> entry : payableTotals.entrySet()) {
+                lore.add("&e" + Numbers.fmt(entry.getValue()) + " " + entry.getKey());
+            }
+            lore.add("&8Выплата производится по мере");
+            lore.add("&8пополнения процентного резерва.");
+            inv.setItem(4, it(Material.GOLD_NUGGET, "&6Проценты к выплате", lore));
+        }
         inv.setItem(49, it(Material.ARROW, "&7Назад", List.of()));
         p.openInventory(inv);
     }
@@ -202,7 +218,9 @@ public final class BankGui implements Listener {
                 if (GRID[i] != slot) continue;
                 if (i < deps.size()) {
                     String err = bank().closeDeposit(uuid, deps.get(i).id());
-                    msg(p, err == null ? "&aВклад закрыт, выплата зачислена" : "&c" + err);
+                    msg(p, err == null
+                            ? "&aВклад закрыт. Тело и доступные проценты зачислены; остаток процентов сохранён к выплате."
+                            : "&c" + err);
                     openDeposits(p);
                 }
                 return;
