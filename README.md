@@ -121,18 +121,6 @@ RaskolVault заменяет одно-валютную модель на **си�
 </details>
 
 <details>
-<summary><b>Визуальные материалы</b></summary>
-
-<br>
-
-- [Основной баннер](banner.svg) · [тёмная версия](banner-dark.svg) · [светлая версия](banner-light.svg)
-- [Social Preview (1280 × 640)](docs/assets/social/social-preview.svg)
-- Эмблемы модулей: [`docs/assets/emblems/`](docs/assets/emblems/)
-- Шапки страниц документации: [`docs/assets/headers/`](docs/assets/headers/)
-
-</details>
-
-<details>
 <summary><b>Документация</b></summary>
 
 <br>
