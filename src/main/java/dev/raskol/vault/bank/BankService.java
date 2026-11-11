@@ -63,6 +63,7 @@ public final class BankService implements Listener {
     private final Map<String, Double> pools = new ConcurrentHashMap<>();
     private final Map<String, Double> interestReserves = new ConcurrentHashMap<>();
     private final Map<String, SQLiteLedger.BankAssetLotRow> assetLots = new ConcurrentHashMap<>();
+    private final Map<String, SQLiteLedger.BankInterestPayableRow> interestPayables = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> repaidCount = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> defaultedCount = new ConcurrentHashMap<>();
     private final Map<UUID, List<SQLiteLedger.BankPendingRow>> pendingReturns = new ConcurrentHashMap<>();
@@ -213,19 +214,17 @@ public final class BankService implements Listener {
         staged.setLastAccrualAt(a.lastAccrualAt());
         staged.accrue(now, params(a.nation()).demandRate());
 
+        boolean interestEligible = staged.isDemand() || staged.isMatured(now);
         double payout;
         double interest = 0.0D;
-        if (staged.isDemand() || staged.isMatured(now)) {
+        if (interestEligible) {
             if (pool(a.nation(), a.currencyId()) < staged.principal()) {
                 return "недостаточно ликвидности в банке — обратитесь к королю нации";
             }
-            double availableInterest = interestReserve(a.nation(), a.currencyId());
-            interest = Math.min(staged.accrued(), Math.max(0.0D, availableInterest));
-            payout = staged.principal() + interest;
         } else {
             double penalty = staged.earlyPenalty(params(a.nation()).earlyPenaltyRate());
             payout = Math.max(0.0D, staged.principal() - penalty);
-            if (pool(a.nation(), a.currencyId()) < payout) {
+            if (pool(a.nation(), a.currencyId()) < staged.principal()) {
                 return "недостаточно ликвидности в банке — обратитесь к королю нации";
             }
         }
@@ -233,17 +232,36 @@ public final class BankService implements Listener {
         String key = poolKey(staged.nation(), staged.currencyId());
         double oldPool = pools.getOrDefault(key, 0.0D);
         double oldInterestReserve = interestReserves.getOrDefault(key, 0.0D);
+        Map<String, SQLiteLedger.BankInterestPayableRow> oldPayables = new HashMap<>(interestPayables);
+        List<WalletService.WalletDelta> walletChanges = new ArrayList<>();
+        List<Transaction> transactions = new ArrayList<>();
+
+        if (interestEligible) {
+            // Старые требования вкладчиков обслуживаются раньше нового закрываемого вклада.
+            settleInterestPayables(staged.nation(), staged.currencyId(), now, walletChanges, transactions);
+            interest = Math.min(staged.accrued(), Math.max(0.0D, interestReserve(staged.nation(), staged.currencyId())));
+            payout = staged.principal() + interest;
+            double unpaid = Math.max(0.0D, staged.accrued() - interest);
+            if (unpaid > 1.0E-8D) {
+                String payableId = "deposit-interest:" + accountId;
+                interestPayables.put(payableId, new SQLiteLedger.BankInterestPayableRow(
+                        payableId, owner, staged.ownerName(), staged.nation(), staged.currencyId(), unpaid, now));
+            }
+        }
+
         pools.put(key, Math.max(0.0D, oldPool - staged.principal()));
-        interestReserves.put(key, Math.max(0.0D, oldInterestReserve - interest));
+        interestReserves.put(key, Math.max(0.0D,
+                interestReserve(staged.nation(), staged.currencyId()) - interest));
         staged.payOutAccrued();
         staged.close();
         accounts.put(accountId, staged);
 
-        List<WalletService.WalletDelta> walletChanges = payout > 0.0D
-                ? List.of(new WalletService.WalletDelta(owner, staged.currencyId(), payout)) : List.of();
-        List<Transaction> transactions = payout > 0.0D
-                ? List.of(new Transaction(-1L, now, null, owner, staged.currencyId(), payout,
-                        TransactionType.PAY, "bank:deposit:close:" + accountId, null)) : List.of();
+        if (payout > 0.0D) {
+            walletChanges.add(new WalletService.WalletDelta(owner, staged.currencyId(), payout));
+            transactions.add(new Transaction(-1L, now, null, owner, staged.currencyId(), payout,
+                    TransactionType.PAY, "bank:deposit:close:" + accountId,
+                    "{\"principal\":" + staged.principal() + ",\"interestPaid\":" + interest + "}"));
+        }
         boolean committed = wallets.applyBatchOnce("bank:deposit:close:" + accountId,
                 walletChanges, List.of(), List.of(), bankSnapshot(), transactions);
         if (!committed) {
@@ -251,6 +269,8 @@ public final class BankService implements Listener {
             if (oldPool == 0.0D) pools.remove(key); else pools.put(key, oldPool);
             if (oldInterestReserve == 0.0D) interestReserves.remove(key);
             else interestReserves.put(key, oldInterestReserve);
+            interestPayables.clear();
+            interestPayables.putAll(oldPayables);
             return "не удалось закрыть вклад: транзакция не подтверждена";
         }
         return null;
@@ -765,9 +785,52 @@ public final class BankService implements Listener {
         return count;
     }
 
+    private boolean settleInterestPayables(String nation, String currency, long now,
+                                           List<WalletService.WalletDelta> walletChanges,
+                                           List<Transaction> transactions) {
+        String key = poolKey(nation, currency);
+        double available = Math.max(0.0D, interestReserves.getOrDefault(key, 0.0D));
+        if (available <= 1.0E-8D) return false;
+        List<SQLiteLedger.BankInterestPayableRow> claims = interestPayables.values().stream()
+                .filter(row -> row.nation().equalsIgnoreCase(nation) && row.currencyId().equalsIgnoreCase(currency))
+                .sorted(java.util.Comparator.comparingLong(SQLiteLedger.BankInterestPayableRow::createdAt)
+                        .thenComparing(SQLiteLedger.BankInterestPayableRow::id)).toList();
+        boolean changed = false;
+        for (SQLiteLedger.BankInterestPayableRow claim : claims) {
+            if (available <= 1.0E-8D) break;
+            double paid = Math.min(available, claim.amount());
+            if (paid <= 1.0E-8D) continue;
+            available -= paid;
+            double remaining = claim.amount() - paid;
+            if (remaining <= 1.0E-8D) {
+                interestPayables.remove(claim.id());
+            } else {
+                interestPayables.put(claim.id(), new SQLiteLedger.BankInterestPayableRow(
+                        claim.id(), claim.owner(), claim.ownerName(), claim.nation(),
+                        claim.currencyId(), remaining, claim.createdAt()));
+            }
+            walletChanges.add(new WalletService.WalletDelta(claim.owner(), claim.currencyId(), paid));
+            transactions.add(new Transaction(-1L, now, null, claim.owner(), claim.currencyId(), paid,
+                    TransactionType.PAY, "bank:deposit:interest-payable:" + claim.id(),
+                    "{\"claim\":\"" + claim.id() + "\",\"remaining\":" + Math.max(0.0D, remaining) + "}"));
+            changed = true;
+        }
+        if (changed) interestReserves.put(key, Math.max(0.0D, available));
+        return changed;
+    }
+
+    public List<SQLiteLedger.BankInterestPayableRow> interestPayables(UUID owner) {
+        if (owner == null) return List.of();
+        return interestPayables.values().stream().filter(row -> row.owner().equals(owner))
+                .sorted(java.util.Comparator.comparingLong(SQLiteLedger.BankInterestPayableRow::createdAt)
+                        .thenComparing(SQLiteLedger.BankInterestPayableRow::id)).toList();
+    }
+
     public synchronized void accrueAll() {
         long now = System.currentTimeMillis();
         boolean changed = false;
+        List<WalletService.WalletDelta> walletChanges = new ArrayList<>();
+        List<Transaction> journal = new ArrayList<>();
         for (BankAccount account : accounts.values()) {
             if (account.isActive()) {
                 account.accrue(now, params(account.nation()).demandRate());
@@ -780,18 +843,24 @@ public final class BankService implements Listener {
                 changed = true;
             }
         }
-        if (!changed) {
-            return;
+        java.util.Set<String> payablePools = new java.util.TreeSet<>();
+        for (SQLiteLedger.BankInterestPayableRow claim : interestPayables.values()) {
+            payablePools.add(poolKey(claim.nation(), claim.currencyId()));
         }
+        for (String key : payablePools) {
+            int split = key.indexOf('|');
+            if (split > 0 && settleInterestPayables(key.substring(0, split), key.substring(split + 1),
+                    now, walletChanges, journal)) changed = true;
+        }
+        if (!changed) return;
 
-        // Начисления по всем вкладам и кредитам фиксируются одним коммитом.
-        // Нельзя сохранять два набора отдельно: сбой между ними рассинхронизирует долг и активы банка.
+        // Начисления и выплаты ранее признанных обязательств фиксируются одним SQLite-коммитом.
         boolean committed;
         try {
             committed = wallets.applyBatchOnce("bank:accrual:" + now,
-                    List.of(), List.of(), List.of(), bankSnapshot(), List.of());
+                    walletChanges, List.of(), List.of(), bankSnapshot(), journal);
         } catch (RuntimeException exception) {
-            plugin.getLogger().severe("Не удалось атомарно сохранить начисления банка: "
+            plugin.getLogger().severe("Не удалось атомарно сохранить начисления и выплаты банка: "
                     + exception.getMessage());
             committed = false;
         }
@@ -806,6 +875,7 @@ public final class BankService implements Listener {
             defaultedCount.clear();
             pendingReturns.clear();
             assetLots.clear();
+            interestPayables.clear();
             loadFromSqlite();
             plugin.getLogger().severe("Начисления банка отменены: состояние восстановлено из SQLite.");
         }
@@ -1153,6 +1223,9 @@ public final class BankService implements Listener {
             pendingReturns.computeIfAbsent(row.player(), ignored -> new ArrayList<>()).add(row);
         }
         for (SQLiteLedger.BankAssetLotRow row : ledger.bankAssetLotsAll()) assetLots.put(row.lotId(), row);
+        for (SQLiteLedger.BankInterestPayableRow row : ledger.bankInterestPayablesAll()) {
+            interestPayables.put(row.id(), row);
+        }
     }
 
     private void loadLegacyYaml() {
@@ -1300,7 +1373,11 @@ public final class BankService implements Listener {
         }
         List<SQLiteLedger.BankAssetLotRow> assetRows = new ArrayList<>(assetLots.values());
         assetRows.sort(java.util.Comparator.comparing(SQLiteLedger.BankAssetLotRow::lotId));
-        return new SQLiteLedger.BankSnapshot(accountRows, loanRows, poolRows, creditRows, pendingRows, assetRows);
+        List<SQLiteLedger.BankInterestPayableRow> payableRows = new ArrayList<>(interestPayables.values());
+        payableRows.sort(java.util.Comparator.comparingLong(SQLiteLedger.BankInterestPayableRow::createdAt)
+                .thenComparing(SQLiteLedger.BankInterestPayableRow::id));
+        return new SQLiteLedger.BankSnapshot(accountRows, loanRows, poolRows, creditRows,
+                pendingRows, assetRows, payableRows);
     }
 
     public synchronized boolean saveAccounts() {
