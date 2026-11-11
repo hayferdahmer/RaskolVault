@@ -585,11 +585,38 @@ public final class BankService implements Listener {
         return null;
     }
 
+    /**
+     * Совместимый API для внутренних вызовов без внешнего токена повтора.
+     * GUI и другие пользовательские точки входа обязаны передавать стабильный requestId.
+     */
     public synchronized String repayLoan(UUID borrower, String loanId, double amount) {
+        return repayLoan(borrower, loanId, amount, UUID.randomUUID().toString());
+    }
+
+    /**
+     * Погашает кредит идемпотентно по токену одного пользовательского намерения.
+     * Повтор с тем же токеном и теми же параметрами возвращает успех без повторного списания.
+     */
+    public synchronized String repayLoan(UUID borrower, String loanId, double amount, String requestId) {
         if (borrower == null || loanId == null || loanId.isBlank()
-                || !Double.isFinite(amount) || !(amount > 0.0D)) return "некорректная сумма погашения";
+                || !Double.isFinite(amount) || !(amount > 0.0D)
+                || requestId == null || requestId.isBlank() || requestId.length() > 64) {
+            return "некорректная сумма или идентификатор погашения";
+        }
+        String operationId = "bank:loan:repay:" + requestId;
+        String requestFingerprint = "bank-loan-repay:v1|" + borrower + "|"
+                + loanId + "|" + Double.toHexString(amount);
         BankLoan l = loans.get(loanId);
         if (l == null || !l.borrower().equals(borrower)) return "кредит не найден";
+        try {
+            if (wallets.operationCommitted(operationId, requestFingerprint, borrower, l.currencyId())) {
+                return null;
+            }
+        } catch (RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось проверить повтор погашения кредита "
+                    + loanId + ": " + exception.getMessage());
+            return "не удалось проверить статус предыдущего погашения";
+        }
         if (!l.isRepayable() || !l.hasOutstandingBalance()) return "кредит закрыт";
         long now = System.currentTimeMillis();
         BankLoan staged = new BankLoan(l.id(), l.borrower(), l.borrowerName(), l.nation(),
@@ -670,9 +697,8 @@ public final class BankService implements Listener {
             pendingCollateralReturn = true;
         }
 
-        String operationId = "bank:loan:repay:" + loanId + ":" + UUID.randomUUID();
-        boolean committed = wallets.applyBatchOnce(operationId, walletChanges, List.of(),
-                List.of(), bankSnapshot(), transactions);
+        boolean committed = wallets.applyBatchOnce(operationId, requestFingerprint,
+                walletChanges, List.of(), List.of(), bankSnapshot(), transactions);
         if (!committed) {
             loans.put(loanId, l);
             if (previousCollateralLot != null) assetLots.put(previousCollateralLot.lotId(), previousCollateralLot);
