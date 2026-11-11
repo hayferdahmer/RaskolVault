@@ -529,11 +529,14 @@ public final class BankService implements Listener {
         String collateralLotId = "collateral-" + loanId;
         SQLiteLedger.BankAssetLotRow currentCollateralLot = assetLots.get(collateralLotId);
         boolean collateralHeld = currentCollateralLot != null && "HELD".equals(currentCollateralLot.status());
-        boolean collateralCanBeReturned = l.status() == BankLoan.Status.ACTIVE || collateralHeld;
+        boolean collateralAlreadyRealized = currentCollateralLot != null
+                && "REALIZED".equals(currentCollateralLot.status());
+        boolean collateralCanBeReturned = !collateralAlreadyRealized
+                && (l.status() == BankLoan.Status.ACTIVE || collateralHeld);
         SQLiteLedger.BankAssetLotRow previousCollateralLot = null;
-        if (fullyRepaid) {
+        if (fullyRepaid && collateralCanBeReturned) {
             previousCollateralLot = assetLots.remove(collateralLotId);
-        } else if (collateralHeld) {
+        } else if (!fullyRepaid && collateralHeld) {
             // Частичный платёж до продажи залога уменьшает сумму, которую продажа ещё может покрыть.
             previousCollateralLot = currentCollateralLot;
             assetLots.put(collateralLotId, new SQLiteLedger.BankAssetLotRow(
