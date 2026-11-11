@@ -117,6 +117,9 @@ public final class BankAdminCommand {
         send(sender, "&7Лимит выдачи: &f" + fmt(b.maxLoans(nation)));
         send(sender, "&7Активных кредитов: &f" + b.activeLoans(nation).size());
         send(sender, "&7Кредитов во взыскании: &c" + b.recoveryLoans(nation).size());
+        for (Map.Entry<String, Double> entry : b.interestPayablesByCurrency(nation).entrySet()) {
+            send(sender, "&7Невыплаченные проценты: &e" + fmt(entry.getValue()) + " " + entry.getKey());
+        }
     }
 
     public List<String> tabComplete(CommandSender sender, String[] args) {
