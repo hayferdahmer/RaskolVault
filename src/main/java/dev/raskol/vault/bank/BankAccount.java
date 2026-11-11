@@ -67,6 +67,17 @@ public final class BankAccount {
         };
     }
 
+    /** Рассчитывает начисленные проценты для отображения без изменения состояния вклада. */
+    public double projectedAccrued(long now, double demandRate) {
+        if (status != Status.ACTIVE) return accrued;
+        double rate = isDemand() ? demandRate : rateAnnual;
+        long to = isDemand() ? now : Math.min(now, maturesAt);
+        if (to <= lastAccrualAt) return accrued;
+        double days = (to - lastAccrualAt) / 86_400_000.0D;
+        return Math.min(principal * MAX_ACCRUED_RATIO,
+                accrued + principal * rate * days / 365.0D);
+    }
+
     /** Начислить проценты с cap accrued на MAX_ACCRUED_RATIO × principal. */
     public void accrue(long now, double demandRate) {
         if (status != Status.ACTIVE) return;
