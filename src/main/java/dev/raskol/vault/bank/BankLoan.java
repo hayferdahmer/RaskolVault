@@ -9,7 +9,7 @@ import java.util.UUID;
 public final class BankLoan {
 
     public enum CollateralType { NONE, CURRENCY, ITEM }
-    public enum Status { ACTIVE, REPAID, DEFAULTED, LIQUIDATED }
+    public enum Status { ACTIVE, RECOVERY, REPAID, DEFAULTED, LIQUIDATED }
 
     private final String id;
     private final UUID borrower;
@@ -91,6 +91,20 @@ public final class BankLoan {
     public void setLastAccrualAt(long v) { this.lastAccrualAt = v; }
 
     public boolean isActive() { return status == Status.ACTIVE; }
+
+    /** Долг остаётся обязательством заёмщика даже после изъятия залога. */
+    public boolean hasOutstandingBalance() {
+        return principal + accrued > 1.0E-6D
+                && (status == Status.ACTIVE || status == Status.RECOVERY
+                || status == Status.DEFAULTED || status == Status.LIQUIDATED);
+    }
+
+    /** Погашать можно как обычный кредит, так и остаток после взыскания. */
+    public boolean isRepayable() {
+        return status == Status.ACTIVE || status == Status.RECOVERY
+                || status == Status.DEFAULTED || status == Status.LIQUIDATED;
+    }
+
     public boolean isOverdue(long now) { return status == Status.ACTIVE && now > dueAt; }
 
     public void accrueTo(long now) {
@@ -138,5 +152,7 @@ public final class BankLoan {
 
     public void markRepaid() { this.status = Status.REPAID; }
     public void markDefaulted() { this.status = Status.DEFAULTED; }
+    /** Проценты после завершения взыскания залога замораживаются, остаток остаётся к погашению. */
+    public void markRecovery() { this.status = Status.RECOVERY; }
     public void markLiquidated() { this.status = Status.LIQUIDATED; }
 }
