@@ -99,7 +99,7 @@ cap: accrued ≤ principal × 2.0        (200% от тела)
 
 ### Кредиты
 ```
-required_collateral = amount × collateralRatio        (дефолт 1.5 = 150%)
+required_collateral = amount × collateralRatio        (дефолт 1.2 = 120%)
 rate_adjusted       = baseLoanRate + creditBonus(player)
 creditBonus         = -min(0.02, score × 0.002) + max(0, -score × 0.005)
 
@@ -107,7 +107,7 @@ accrueTo(now):
   days    = (min(now, dueAt) - lastAccrualAt) / 86400000
   accrued += principal × rate × days / 365
 
-outstanding(now) = principal + accrued - repaid
+outstanding(now) = principal + accrued   (principal уже уменьшается при погашении)
 
 applyRepayment(pay):
   interestPart  = min(pay, accrued)
@@ -127,22 +127,31 @@ totalOutstandingLoans(nation) = Σ (loan.outstanding × priceInGld(loan.currency
 ### Bank run защита
 При `closeDeposit` demand: если `pool < principal` → отказ «недостаточно ликвидности».
 
-### Ликвидация залога (просрочка)
+### Взыскание и реализация залога (просрочка)
+
+1. Кредит переводится в `RECOVERY`; начисление процентов замораживается.
+2. Залог переводится в `HELD`. Оценочная стоимость не считается выручкой и не зачисляется в пул.
+3. При подтверждении фактической реализации:
 ```
-proceeds   = collateralValue
-toInterest = min(outstanding, proceeds)   → interestReserve
-remainder  = max(0, proceeds - toInterest) → pool
+toInterest = min(recoverableInterest, actualProceeds) → interestReserve
+toPrincipal = min(recoverablePrincipal, actualProceeds - toInterest) → pool
+surplus = max(0, actualProceeds - toInterest - toPrincipal) → borrower
+uncoveredDebt = remaining principal + accrued interest → RECOVERY
 ```
-Игрок получает `defaulted` (score −= 2). Предмет-залог уничтожается.
+4. Недостаток остаётся долгом заёмщика; частичное и полное погашение доступны в `RECOVERY`.
+5. Новый кредит запрещён, пока у заёмщика есть непогашенный долг после взыскания.
+6. Залог, который ещё не реализован, возвращается при полном погашении долга.
+
+Оценка `PLEDGED/HELD` не включается в денежные активы. В банковском балансе показывается отдельно только справочная оценка лотов `HELD`.
 
 ### Кредитная история
 ```
 creditScore = repaidCount - 2 × defaultedCount
 ```
-Персистится в `data/bank-credit.yml`, переживает рестарты.
+Персистится в таблице `bank_credit` SQLite и переживает рестарты.
 
 ### Возврат залога оффлайн-игроку
-Если игрок оффлайн при погашении — предмет кладётся в `pendingReturns` (`data/bank-pending.yml`) и выдаётся при `PlayerJoinEvent`.
+Если игрок оффлайн при погашении — предмет помещается в durable-очередь `bank_pending_returns` SQLite и выдаётся при `PlayerJoinEvent` с квитанцией в PDC.
 
 ---
 
