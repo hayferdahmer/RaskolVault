@@ -80,10 +80,10 @@ public final class BankGui implements Listener {
         long now = System.currentTimeMillis();
         for (int i = 0; i < GRID.length && i < deps.size(); i++) {
             BankAccount a = deps.get(i);
-            a.accrue(now, bank().params(a.nation()).demandRate());
+            double projectedInterest = a.projectedAccrued(now, bank().params(a.nation()).demandRate());
             inv.setItem(GRID[i], it(Material.GOLD_BLOCK, "&6Вклад &7" + a.id().substring(0, 8), List.of(
                     "&7Тело: &f" + Numbers.fmt(a.principal()) + " " + a.currencyId(),
-                    "&7Начислено: &a" + Numbers.fmt(a.accrued()),
+                    "&7Начислено: &a" + Numbers.fmt(projectedInterest),
                     "&7Срок: &f" + (a.isDemand() ? "до востребования" : a.termDays() + " дн"),
                     "&cКлик = закрыть вклад")));
         }
