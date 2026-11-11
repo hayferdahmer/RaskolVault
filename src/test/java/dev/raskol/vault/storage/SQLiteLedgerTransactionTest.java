@@ -166,6 +166,48 @@ class SQLiteLedgerTransactionTest {
     }
 
     @Test
+    void failedBankSnapshotCommitRestoresExistingCollateralAssetLots() {
+        UUID owner = UUID.randomUUID();
+        ledger.commitAbsolute(List.of(
+                new SQLiteLedger.AbsoluteBalance(owner, "GLD", 100.0D)), List.of());
+
+        SQLiteLedger.BankAssetLotRow heldLot = new SQLiteLedger.BankAssetLotRow(
+                "collateral-rollback-lot", "ITEM", "raskol", owner, "loan-rollback-lot",
+                null, 1.0D, 1.0D, "serialized-item", "GLD", 150.0D,
+                12.0D, 100.0D, "HELD");
+        SQLiteLedger.BankSnapshot initialSnapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 50.0D, 7.0D)),
+                List.of(), List.of(), List.of(heldLot));
+
+        ledger.commitAbsoluteCheckedOnce("asset-lot-rollback-seed", "seed-held-lot",
+                List.of(), List.of(), List.of(), initialSnapshot, List.of());
+
+        SQLiteLedger.BankAssetLotRow conflictingLot = new SQLiteLedger.BankAssetLotRow(
+                "collateral-rollback-lot", "ITEM", "raskol", owner, "loan-rollback-lot",
+                null, 1.0D, 1.0D, "serialized-item", "GLD", 150.0D,
+                12.0D, 100.0D, "REALIZED");
+        SQLiteLedger.BankSnapshot invalidSnapshot = new SQLiteLedger.BankSnapshot(
+                List.of(), List.of(),
+                List.of(new SQLiteLedger.BankPoolRow("raskol", "GLD", 5.0D, 0.0D)),
+                List.of(), List.of(), List.of(heldLot, conflictingLot));
+
+        assertThrows(LedgerException.class, () -> ledger.commitAbsoluteCheckedOnce(
+                "asset-lot-rollback-failure", "duplicate-asset-lot",
+                List.of(new SQLiteLedger.CheckedBalance(owner, "GLD", 100.0D, 25.0D)),
+                List.of(), List.of(), invalidSnapshot, List.of()));
+
+        assertEquals(100.0D, ledger.getBalance(owner, "GLD"), 0.000_001D);
+        assertEquals(50.0D, ledger.bankPoolsAll().get(0).pool(), 0.000_001D);
+        assertEquals(7.0D, ledger.bankPoolsAll().get(0).interestReserve(), 0.000_001D);
+        assertEquals(1, ledger.bankAssetLotsAll().size());
+        assertEquals("HELD", ledger.bankAssetLotsAll().get(0).status());
+        assertEquals(150.0D, ledger.bankAssetLotsAll().get(0).lockedValue(), 0.000_001D);
+        org.junit.jupiter.api.Assertions.assertFalse(
+                ledger.operationExists("asset-lot-rollback-failure"));
+    }
+
+    @Test
     void itemCollateralIntentSurvivesRestartUntilExplicitlyAcknowledged() throws Exception {
         UUID player = UUID.randomUUID();
         SQLiteLedger.BankCollateralIntentRow intent = new SQLiteLedger.BankCollateralIntentRow(
