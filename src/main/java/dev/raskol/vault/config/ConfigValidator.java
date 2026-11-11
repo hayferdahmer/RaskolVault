@@ -31,6 +31,8 @@ public final class ConfigValidator {
         warnings.addAll(clamp(cfg, "storage.reconcile-interval-minutes", 0, 1440));
 
         warnings.addAll(clampDouble(cfg, "reserve.coverage-floor", 0.1D, 1.0D));
+        warnings.addAll(clampDouble(cfg, "reserve.crisis-threshold", 0.1D, 0.95D));
+        warnings.addAll(clampDouble(cfg, "reserve.recovery-threshold", 0.15D, 1.0D));
         warnings.addAll(clampDouble(cfg, "reserve.parity-min", 0.01D, 1.0D));
         warnings.addAll(clampDouble(cfg, "reserve.parity-max", 1.0D, 100.0D));
         warnings.addAll(clampDouble(cfg, "reserve.tax-max", 0.0D, 0.2D));
@@ -53,6 +55,15 @@ public final class ConfigValidator {
         if (pmin > pmax) {
             cfg.set("reserve.parity-max", pmin);
             warnings.add("reserve.parity-max < parity-min → parity-max приведён к " + pmin);
+        }
+
+        // Порог восстановления обязан быть выше порога входа в кризис.
+        double crisis = cfg.getDouble("reserve.crisis-threshold", 0.5D);
+        double recovery = cfg.getDouble("reserve.recovery-threshold", 0.6D);
+        if (recovery <= crisis) {
+            double corrected = Math.min(1.0D, crisis + 0.05D);
+            cfg.set("reserve.recovery-threshold", corrected);
+            warnings.add("reserve.recovery-threshold должен быть выше crisis-threshold → " + corrected);
         }
         return warnings;
     }
