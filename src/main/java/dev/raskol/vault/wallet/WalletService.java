@@ -419,7 +419,24 @@ public final class WalletService {
                                   List<SQLiteLedger.CheckedEscrow> escrowChanges,
                                   SQLiteLedger.BankSnapshot bankSnapshot,
                                   List<Transaction> transactions) {
-        if (operationId == null || operationId.isBlank()
+        return applyBatchOnce(operationId, null, walletDeltas, reserveDeltas,
+                escrowChanges, bankSnapshot, transactions);
+    }
+
+    /**
+     * Атомарно применяет пакет с отпечатком пользовательского намерения.
+     * Он остаётся неизменным при повторе после перезапуска, даже если банковский snapshot
+     * или временные метки уже изменились.
+     */
+    public boolean applyBatchOnce(String operationId, String requestFingerprint,
+                                  List<WalletDelta> walletDeltas,
+                                  List<ReserveDelta> reserveDeltas,
+                                  List<SQLiteLedger.CheckedEscrow> escrowChanges,
+                                  SQLiteLedger.BankSnapshot bankSnapshot,
+                                  List<Transaction> transactions) {
+        if (operationId == null || operationId.isBlank() || operationId.length() > 128
+                || (requestFingerprint != null
+                    && (requestFingerprint.isBlank() || requestFingerprint.length() > 512))
                 || walletDeltas == null || reserveDeltas == null
                 || escrowChanges == null || transactions == null) {
             return false;
@@ -457,7 +474,9 @@ public final class WalletService {
             return false;
         }
 
-        String fingerprint = batchFingerprint(normalizedWallets, normalizedReserves, escrowChanges, bankSnapshot, transactions);
+        String fingerprint = requestFingerprint == null
+                ? batchFingerprint(normalizedWallets, normalizedReserves, escrowChanges, bankSnapshot, transactions)
+                : requestFingerprint;
         Set<Integer> lockIndexes = new TreeSet<>();
         for (WalletKey key : normalizedWallets.keySet()) {
             lockIndexes.add(lockIndex(key.owner(), key.currencyId()));
@@ -521,6 +540,16 @@ public final class WalletService {
                 acquired.get(i).unlock();
             }
         }
+    }
+
+    /** Проверяет подтверждение запроса и синхронизирует кэш кошелька после повтора. */
+    public boolean operationCommitted(String operationId, String fingerprint, UUID owner, String currencyId) {
+        if (owner == null || currencyId == null || currencyId.isBlank()) return false;
+        boolean committed = ledger.operationCommitted(operationId, fingerprint);
+        if (committed && !currencies.globalId().equals(currencyId)) {
+            setCache(owner, currencyId, ledger.getBalance(owner, currencyId));
+        }
+        return committed;
     }
 
     private String batchFingerprint(Map<WalletKey, Double> wallets,
