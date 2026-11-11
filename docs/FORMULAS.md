@@ -93,7 +93,7 @@ cap: accrued ≤ principal × 2.0        (200% от тела)
 | TERM_30 | 3.5% |
 | TERM_90 | 5% |
 
-Досрочное закрытие срочного вклада: `penalty = principal × earlyPenaltyRate` (дефолт 2%), проценты сгорают.
+Досрочное закрытие срочного вклада: `penalty = principal × earlyPenaltyRate` (дефолт 2%), проценты сгорают; вкладчику выплачивается `principal - penalty`, и именно эта фактическая выплата списывается из пула. Штраф остаётся в пуле банка.
 
 Закрытие вклада до востребования или вклада после maturity: `interestPaid = min(accrued, availableInterestReserveAfterOlderClaims)`, `interestPayable = accrued - interestPaid`. Тело возвращается при достаточной ликвидности пула. Невыплаченная часть фиксируется в `bank_interest_payables` и обслуживается FIFO по мере появления процентного резерва. Досрочное закрытие срочного вклада до maturity по-прежнему не создаёт процентного обязательства.
 
