@@ -63,7 +63,7 @@ public final class ReserveGui implements Listener {
         inv.setItem(27, item(Material.GOLD_BLOCK, "&aДепозит",
                 List.of("&7Внести своё золото в резерв", "&7Клик → ввод суммы в чат")));
         inv.setItem(28, item(Material.HOPPER, "&cВывод",
-                List.of("&7Вывести золото из резерва себе", "&7Лимит: 25% резерва в сутки", "&7Клик → ввод суммы в чат")));
+                List.of("&7Вывести золото из резерва себе", "&7Лимит: 25% резерва в сутки", "&7Недоступно во время кризиса", "&7Клик → ввод суммы в чат")));
         inv.setItem(29, item(Material.ARROW, "&7Назад в кабинет", List.of()));
         ReserveCrisisPolicy.Level crisis = bank.crisisState(nation);
         double coverage = bank.coverageOfNation(nation);
@@ -136,6 +136,8 @@ public final class ReserveGui implements Listener {
             ok = bank.withdrawFromReserve(player.getUniqueId(), nation, amount, "gui-reserve");
             player.sendMessage(prefix() + (ok
                     ? "&aВыведено &f" + fmt(amount) + " GLD &aиз резерва " + nation
+                    : bank.isNationInCrisis(nation)
+                    ? "&cВывод приостановлен: нация находится в валютном кризисе."
                     : "&cОтказ: лимит 25% резерва в сутки или недостаточно резерва"));
         }
         Bukkit.getScheduler().runTask(plugin, () -> open(player, nation));
