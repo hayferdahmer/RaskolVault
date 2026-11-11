@@ -1007,6 +1007,17 @@ public final class BankService implements Listener {
         return out;
     }
 
+    public List<BankLoan> recoveryLoans(String nation) {
+        List<BankLoan> out = new ArrayList<>();
+        for (BankLoan l : loans.values()) {
+            if (l.nation().equalsIgnoreCase(nation)
+                    && l.status() == BankLoan.Status.RECOVERY && l.hasOutstandingBalance()) {
+                out.add(l);
+            }
+        }
+        return out;
+    }
+
     // ---------- персистентность ----------
     public synchronized void load() {
         accounts.clear(); loans.clear(); pools.clear(); interestReserves.clear(); assetLots.clear();
